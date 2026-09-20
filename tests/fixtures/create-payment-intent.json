@@ -1,0 +1,9 @@
+{
+  "amount_minor": "12345",
+  "currency": "USD",
+  "reference": "smoke-order-123",
+  "description": "Local smoke test",
+  "metadata": {
+    "suite": "smoke"
+  }
+}

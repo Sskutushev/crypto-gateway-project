@@ -1,0 +1,9 @@
+{
+  "amount_minor": "54321",
+  "currency": "USD",
+  "reference": "smoke-order-conflict",
+  "description": "Must not reuse the prior idempotency key",
+  "metadata": {
+    "suite": "smoke"
+  }
+}

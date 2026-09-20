@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:16.4-bookworm
+    environment:
+      POSTGRES_DB: gateway
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: gateway
+    ports:
+      - "127.0.0.1:54329:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d gateway"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    volumes:
+      - gateway-postgres:/var/lib/postgresql/data
+
+  gateway-api:
+    build:
+      context: .
+    environment:
+      GATEWAY_DATABASE_URL: postgres://gateway:gateway@postgres:5432/gateway
+      GATEWAY_BIND_ADDRESS: 0.0.0.0:8080
+      GATEWAY_RUN_MIGRATIONS: "true"
+      RUST_LOG: gateway_api=info,tower_http=info
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  gateway-postgres:
