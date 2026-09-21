@@ -1,5 +1,5 @@
 [package]
-name = "gateway-api"
+name = "gateway-scheduler"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,14 +7,15 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-anyhow.workspace = true
-axum.workspace = true
-gateway-http.workspace = true
-gateway-scheduler.workspace = true
-gateway-storage.workspace = true
+gateway-application.workspace = true
+thiserror.workspace = true
+time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

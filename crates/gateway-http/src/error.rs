@@ -1,15 +1,17 @@
 use axum::{Json, http::StatusCode, response::IntoResponse};
-use gateway_application::{RepositoryError, ServiceError};
+use gateway_application::{QuoteServiceError, RepositoryError, ServiceError};
 use serde::Serialize;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
     #[error("authentication failed")]
     Unauthorized,
-    #[error("request body must match the payment intent schema")]
+    #[error("request body does not match the endpoint schema")]
     InvalidJson,
     #[error(transparent)]
     Service(#[from] ServiceError),
+    #[error(transparent)]
+    Quote(#[from] QuoteServiceError),
     #[error(transparent)]
     Repository(#[from] RepositoryError),
     #[error("database readiness check failed")]
@@ -41,17 +43,20 @@ impl IntoResponse for ApiError {
                 "invalid_request",
                 error_message.clone(),
             ),
-            Self::Service(ServiceError::InvalidIdempotencyKey) => (
+            Self::Service(ServiceError::InvalidIdempotencyKey)
+            | Self::Quote(QuoteServiceError::InvalidIdempotencyKey) => (
                 StatusCode::BAD_REQUEST,
                 "invalid_idempotency_key",
                 error_message.clone(),
             ),
-            Self::Service(ServiceError::NotFound) => (
+            Self::Service(ServiceError::NotFound)
+            | Self::Quote(QuoteServiceError::PaymentIntentNotFound) => (
                 StatusCode::NOT_FOUND,
                 "payment_intent_not_found",
                 error_message.clone(),
             ),
             Self::Service(ServiceError::Repository(RepositoryError::IdempotencyConflict))
+            | Self::Quote(QuoteServiceError::Repository(RepositoryError::IdempotencyConflict))
             | Self::Repository(RepositoryError::IdempotencyConflict) => (
                 StatusCode::CONFLICT,
                 "idempotency_conflict",
@@ -68,12 +73,29 @@ impl IntoResponse for ApiError {
                 "invalid_request",
                 error_message.clone(),
             ),
+            Self::Quote(QuoteServiceError::Repository(
+                RepositoryError::PaymentIntentNotQuotable,
+            )) => (
+                StatusCode::CONFLICT,
+                "payment_intent_not_quotable",
+                error_message.clone(),
+            ),
+            Self::Quote(
+                QuoteServiceError::Quote(_)
+                | QuoteServiceError::Repository(
+                    RepositoryError::CollectorUnavailable | RepositoryError::AmountSlotsExhausted,
+                ),
+            ) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "quote_unavailable",
+                "a safe quote cannot be issued right now".to_owned(),
+            ),
             Self::NotReady => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "not_ready",
                 "the service cannot reach its database".to_owned(),
             ),
-            Self::Service(_) | Self::Repository(_) => {
+            Self::Service(_) | Self::Quote(_) | Self::Repository(_) => {
                 tracing::error!(error = %error_message, "request failed");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,

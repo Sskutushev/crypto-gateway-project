@@ -6,6 +6,11 @@
 
 mod money;
 mod payment_intent;
+mod quote;
 
 pub use money::{CurrencyCode, FiatAmount, MoneyError, RawAmount};
 pub use payment_intent::{PaymentIntent, PaymentIntentError, PaymentIntentStatus};
+pub use quote::{
+    IssuedQuote, PriceSnapshot, QuoteError, QuotePlan, QuotePolicySnapshot, RailHealth,
+    RailHealthSnapshot,
+};

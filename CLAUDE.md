@@ -23,26 +23,26 @@ Never claim a chain integration is ready until its adapter, independent
 verification, finality policy, adversarial tests, and reconciliation path all
 pass.
 
-## Current handoff: 2026-09-20
+## Current handoff: 2026-09-21
 
-The first executable vertical slice is complete and verified: merchant API-key
-authentication, merchant-isolated create/read payment intents, transactional
-idempotency, one creation audit event, string-only public money, explicit API
-errors, PostgreSQL integration coverage, and a non-root release container.
+Two slices are complete and verified, and neither is committed:
 
-The next production slice is quote and amount-lease lifecycle. Before editing,
-design the PostgreSQL constraints and domain transitions for all of these
-invariants:
+1. Quote and exact-amount lease lifecycle: immutable quotes, payment attempts,
+   one active lease per collector/raw-amount pair, separate quote and
+   late-payment deadlines, fail-closed evidence, and audited transitions.
+2. Bounded expiry scheduler (`crates/gateway-scheduler`): batched sweeps,
+   single-flight guard, capped retries for storage outages only, counters, and
+   shutdown between batches. `gateway-api` runs it and joins it before exit.
 
-- one active lease per collector address and exact raw amount;
-- one lease per payment attempt;
-- database arbitration under concurrent allocation;
-- quote expiry plus a separately explicit late-payment window;
-- no early release merely because payment is considered unlikely;
-- archive lease history in the same transaction that releases an expired slot;
-- preserve exact integer/string money at every boundary;
-- fail closed when pricing, policy, or rail health is unknown or stale;
-- audit every quote/lease state transition.
+The next production slice is authenticated internal ingestion of immutable
+price and rail-health snapshots. Today's snapshot rows are development
+fixtures, so issuance still rests on hand-seeded evidence. That slice needs:
+
+- an operator-authenticated internal write path, never the public merchant API;
+- two genuinely independent sources per asset, recorded per snapshot;
+- append-only snapshots: no update, no delete, no backdating;
+- freshness and disagreement monitoring that fails closed for new quotes;
+- proof that an ingestion outage leaves issued quotes replayable.
 
 Do not copy private Refty entities or the root workspace crypto specification
 into this public standalone product. Use it only as historical threat-model
@@ -52,8 +52,13 @@ Important local state at handoff:
 
 - branch: `feat/standalone-gateway-foundation`;
 - remote: `https://github.com/Sskutushev/crypto-gateway-project.git`;
-- Rust is not installed on the host, so use the pinned Docker toolchain;
+- Rust is not installed on the host. The pinned toolchain runs in the
+  `crypto-gateway-dev` container (`rust:1.90.0-bookworm`, `/workspace` bound to
+  this repository), and PostgreSQL runs in the Compose service on
+  `127.0.0.1:54329`. From the container that database is
+  `postgres://gateway:gateway@host.docker.internal:54329/gateway`, which the
+  ignored tests read from `GATEWAY_TEST_DATABASE_URL`;
 - the complete verification record and unavailable checks are in
   `docs/implementation-status.md`;
-- do not start TRON integration before quote/lease invariants and their
-  concurrency tests are complete.
+- do not start TRON integration before an independent verifier and
+  reconciliation path exist.

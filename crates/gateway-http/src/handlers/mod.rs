@@ -1,5 +1,6 @@
 pub mod health;
 mod payment_intents;
+mod quotes;
 
 use axum::{
     Router,
@@ -14,5 +15,9 @@ pub fn payment_intent_routes() -> Router<AppState> {
         .route(
             "/v1/payment-intents/{intent_id}",
             get(payment_intents::get_by_id),
+        )
+        .route(
+            "/v1/payment-intents/{intent_id}/quotes",
+            post(quotes::create),
         )
 }

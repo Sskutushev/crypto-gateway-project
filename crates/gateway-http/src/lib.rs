@@ -5,7 +5,7 @@ mod handlers;
 use std::{sync::Arc, time::Duration};
 
 use axum::{Router, http::StatusCode, middleware, routing::get};
-use gateway_application::{PaymentIntentService, SystemClock};
+use gateway_application::{PaymentIntentService, QuoteService, SystemClock};
 use gateway_storage::{PgPool, PostgresRepository};
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::{catch_panic::CatchPanicLayer, timeout::TimeoutLayer, trace::TraceLayer};
@@ -16,6 +16,7 @@ use crate::{auth::authenticate, handlers::health};
 pub struct AppState {
     pub repository: Arc<PostgresRepository>,
     pub payment_intents: Arc<PaymentIntentService<PostgresRepository, SystemClock>>,
+    pub quotes: Arc<QuoteService<PostgresRepository, SystemClock>>,
     pub pool: PgPool,
 }
 
@@ -27,9 +28,11 @@ impl AppState {
             Arc::clone(&repository),
             SystemClock,
         ));
+        let quotes = Arc::new(QuoteService::new(Arc::clone(&repository), SystemClock));
         Self {
             repository,
             payment_intents,
+            quotes,
             pool,
         }
     }
@@ -73,6 +76,11 @@ mod tests {
     const MERCHANT_TWO: Uuid = Uuid::from_u128(2);
     const KEY_ONE: Uuid = Uuid::from_u128(11);
     const KEY_TWO: Uuid = Uuid::from_u128(12);
+    const ASSET_ID: Uuid = Uuid::from_u128(21);
+    const COLLECTOR_ID: Uuid = Uuid::from_u128(22);
+    const PRICE_SNAPSHOT_ID: Uuid = Uuid::from_u128(23);
+    const QUOTE_POLICY_ID: Uuid = Uuid::from_u128(24);
+    const RAIL_HEALTH_SNAPSHOT_ID: Uuid = Uuid::from_u128(25);
     const SECRET_ONE: &str = "cg_test_merchant_one_0000000000000001";
     const SECRET_TWO: &str = "cg_test_merchant_two_0000000000000002";
     const IDEMPOTENCY_KEY: &str = "checkout_01JABCDEFGHJKMNPQRSTVWXYZ";
@@ -158,6 +166,134 @@ mod tests {
         assert_eq!(replay.headers()["idempotent-replayed"], "true");
         assert_eq!(json_body(replay).await?["id"], intent_id);
 
+        let quote_body = json!({"asset_id": ASSET_ID});
+        let quote = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                &format!("/v1/payment-intents/{intent_id}/quotes"),
+                Some(SECRET_ONE),
+                Some("quote_01JABCDEFGHJKMNPQRSTVWXYZ"),
+                Some(quote_body.clone()),
+            )?)
+            .await?;
+        assert_eq!(quote.status(), StatusCode::CREATED);
+        assert_eq!(quote.headers()["idempotent-replayed"], "false");
+        let quote = json_body(quote).await?;
+        assert_eq!(quote["amount_raw"], "1235");
+        assert_eq!(quote["collector_address"], "TContractCollector");
+        assert_eq!(quote["price_snapshot_id"], PRICE_SNAPSHOT_ID.to_string());
+        assert_eq!(
+            object_keys(&quote),
+            BTreeSet::from([
+                "amount_raw",
+                "asset_id",
+                "attempt_id",
+                "collector_address",
+                "collector_address_id",
+                "created_at",
+                "expires_at",
+                "fiat_amount",
+                "id",
+                "late_payment_until",
+                "payment_intent_id",
+                "policy_version",
+                "price_observed_at",
+                "price_snapshot_id",
+                "price_sources",
+                "quote_policy_id",
+                "rail_health_observed_at",
+                "rail_health_snapshot_id",
+                "rate_denominator",
+                "rate_numerator",
+            ])
+        );
+
+        let quote_replay = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                &format!("/v1/payment-intents/{intent_id}/quotes"),
+                Some(SECRET_ONE),
+                Some("quote_01JABCDEFGHJKMNPQRSTVWXYZ"),
+                Some(quote_body.clone()),
+            )?)
+            .await?;
+        assert_eq!(quote_replay.status(), StatusCode::OK);
+        assert_eq!(quote_replay.headers()["idempotent-replayed"], "true");
+        assert_eq!(json_body(quote_replay).await?["id"], quote["id"]);
+
+        let quote_key_conflict = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                &format!("/v1/payment-intents/{intent_id}/quotes"),
+                Some(SECRET_ONE),
+                Some("quote_01JABCDEFGHJKMNPQRSTVWXYZ"),
+                Some(json!({"asset_id": Uuid::from_u128(9_999)})),
+            )?)
+            .await?;
+        assert_error(
+            quote_key_conflict,
+            StatusCode::CONFLICT,
+            "idempotency_conflict",
+        )
+        .await?;
+
+        let quote_again = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                &format!("/v1/payment-intents/{intent_id}/quotes"),
+                Some(SECRET_ONE),
+                Some("quote_01JDIFFERENT000000000001"),
+                Some(quote_body.clone()),
+            )?)
+            .await?;
+        assert_error(
+            quote_again,
+            StatusCode::CONFLICT,
+            "payment_intent_not_quotable",
+        )
+        .await?;
+
+        let foreign_quote = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                &format!("/v1/payment-intents/{intent_id}/quotes"),
+                Some(SECRET_TWO),
+                Some("quote_01JFOREIGN00000000000001"),
+                Some(quote_body.clone()),
+            )?)
+            .await?;
+        assert_error(
+            foreign_quote,
+            StatusCode::NOT_FOUND,
+            "payment_intent_not_found",
+        )
+        .await?;
+
+        let injected_quote_fact = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                &format!("/v1/payment-intents/{intent_id}/quotes"),
+                Some(SECRET_ONE),
+                Some("quote_01JINJECTED0000000000001"),
+                Some(json!({
+                    "asset_id": ASSET_ID,
+                    "amount_raw": "1"
+                })),
+            )?)
+            .await?;
+        assert_error(
+            injected_quote_fact,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+        )
+        .await?;
+
         let conflict = app
             .clone()
             .oneshot(request(
@@ -236,7 +372,7 @@ mod tests {
             Some("checkout_01JCONCURRENT00000000001"),
             Some(concurrent_body.clone()),
         )?);
-        let second = app.oneshot(request(
+        let second = app.clone().oneshot(request(
             "POST",
             "/v1/payment-intents",
             Some(SECRET_ONE),
@@ -250,9 +386,49 @@ mod tests {
             (first.status() == StatusCode::CREATED && second.status() == StatusCode::OK)
                 || (first.status() == StatusCode::OK && second.status() == StatusCode::CREATED)
         );
+        let first = json_body(first).await?;
+        let second = json_body(second).await?;
+        assert_eq!(first["id"], second["id"]);
+        let concurrent_intent_id = first["id"].as_str().ok_or("missing concurrent intent id")?;
+
+        sqlx::query(
+            "INSERT INTO rail_health_snapshots (id, asset_id, health, observed_at) \
+             VALUES ($1, $2, 'unavailable', now())",
+        )
+        .bind(Uuid::now_v7())
+        .bind(ASSET_ID)
+        .execute(&pool)
+        .await?;
+        let unavailable_quote = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                &format!("/v1/payment-intents/{concurrent_intent_id}/quotes"),
+                Some(SECRET_ONE),
+                Some("quote_01JUNAVAILABLE00000000001"),
+                Some(json!({"asset_id": ASSET_ID})),
+            )?)
+            .await?;
+        assert_error(
+            unavailable_quote,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "quote_unavailable",
+        )
+        .await?;
+
+        let replay_during_outage = app
+            .oneshot(request(
+                "POST",
+                &format!("/v1/payment-intents/{intent_id}/quotes"),
+                Some(SECRET_ONE),
+                Some("quote_01JABCDEFGHJKMNPQRSTVWXYZ"),
+                Some(quote_body),
+            )?)
+            .await?;
+        assert_eq!(replay_during_outage.status(), StatusCode::OK);
         assert_eq!(
-            json_body(first).await?["id"],
-            json_body(second).await?["id"]
+            replay_during_outage.headers()["idempotent-replayed"],
+            "true"
         );
 
         let audit_count: i64 = sqlx::query_scalar(
@@ -266,12 +442,9 @@ mod tests {
 
     async fn reset_database(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         migrate(pool).await?;
-        sqlx::query(
-            "TRUNCATE audit_events, api_idempotency_records, payment_intents, \
-             merchant_api_keys, merchants CASCADE",
-        )
-        .execute(pool)
-        .await?;
+        sqlx::query("TRUNCATE chain_assets, merchants CASCADE")
+            .execute(pool)
+            .await?;
         for (merchant_id, key_id, external_id, secret) in [
             (MERCHANT_ONE, KEY_ONE, "merchant-one", SECRET_ONE),
             (MERCHANT_TWO, KEY_TWO, "merchant-two", SECRET_TWO),
@@ -296,6 +469,71 @@ mod tests {
             .execute(pool)
             .await?;
         }
+        sqlx::query(
+            r"
+            INSERT INTO chain_assets (
+                id, chain, network, chain_environment, contract_address_key,
+                display_symbol, decimals, status
+            ) VALUES ($1, 'tron', 'nile', 'testnet', $2, 'USDT', 6, 'active')
+            ",
+        )
+        .bind(ASSET_ID)
+        .bind([7_u8; 20].as_slice())
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO collector_addresses (
+                id, asset_id, address_key, address_text, state, valid_from
+            ) VALUES ($1, $2, $3, 'TContractCollector', 'active', now())
+            ",
+        )
+        .bind(COLLECTOR_ID)
+        .bind(ASSET_ID)
+        .bind([8_u8; 21].as_slice())
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO price_snapshots (
+                id, asset_id, fiat_currency, rate_numerator, rate_denominator,
+                sources, observed_at
+            ) VALUES ($1, $2, 'USD', 1, 10, $3, now())
+            ",
+        )
+        .bind(PRICE_SNAPSHOT_ID)
+        .bind(ASSET_ID)
+        .bind(json!([
+            {"provider_group":"pricing-a","observed_at":"current"},
+            {"provider_group":"pricing-b","observed_at":"current"}
+        ]))
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO quote_policies (
+                id, asset_id, fiat_currency, version, status,
+                quote_ttl_seconds, late_payment_window_seconds,
+                amount_slot_count, max_price_age_seconds,
+                max_policy_age_seconds, max_rail_health_age_seconds, observed_at
+            ) VALUES ($1, $2, 'USD', 'policy-v1', 'active', 900, 2592000,
+                      10000, 300, 300, 300, now())
+            ",
+        )
+        .bind(QUOTE_POLICY_ID)
+        .bind(ASSET_ID)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO rail_health_snapshots (id, asset_id, health, observed_at)
+            VALUES ($1, $2, 'healthy', now())
+            ",
+        )
+        .bind(RAIL_HEALTH_SNAPSHOT_ID)
+        .bind(ASSET_ID)
+        .execute(pool)
+        .await?;
         Ok(())
     }
 

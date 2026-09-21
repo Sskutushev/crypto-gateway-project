@@ -146,6 +146,55 @@ impl RawAmount {
     pub const fn as_u256(self) -> U256 {
         self.0
     }
+
+    /// Adds two raw token quantities without wrapping.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MoneyError::RawAmountOverflow`] when the sum exceeds 256 bits.
+    pub fn checked_add(self, other: Self) -> Result<Self, MoneyError> {
+        self.0
+            .checked_add(other.0)
+            .map(Self)
+            .ok_or(MoneyError::RawAmountOverflow)
+    }
+
+    /// Adds a small allocation-slot offset without wrapping.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MoneyError::RawAmountOverflow`] when the sum exceeds 256 bits.
+    pub fn checked_add_u32(self, other: u32) -> Result<Self, MoneyError> {
+        self.0
+            .checked_add(U256::from(other))
+            .map(Self)
+            .ok_or(MoneyError::RawAmountOverflow)
+    }
+
+    /// Multiplies and divides raw integers, rounding any remainder upward.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for zero denominators, overflow, or a zero result.
+    pub fn mul_div_ceil(
+        multiplier: u64,
+        numerator: Self,
+        denominator: Self,
+    ) -> Result<Self, MoneyError> {
+        let product = U256::from(multiplier)
+            .checked_mul(numerator.0)
+            .ok_or(MoneyError::RawAmountOverflow)?;
+        let quotient = product / denominator.0;
+        let remainder = product % denominator.0;
+        let rounded = if remainder.is_zero() {
+            quotient
+        } else {
+            quotient
+                .checked_add(U256::from(1_u8))
+                .ok_or(MoneyError::RawAmountOverflow)?
+        };
+        Self::positive(rounded)
+    }
 }
 
 impl fmt::Display for RawAmount {
@@ -195,6 +244,8 @@ pub enum MoneyError {
     InvalidFiatAmount,
     #[error("raw amount must be a base-10 unsigned 256-bit integer string")]
     InvalidRawAmount,
+    #[error("raw amount arithmetic overflowed 256 bits")]
+    RawAmountOverflow,
 }
 
 #[cfg(test)]
@@ -256,6 +307,22 @@ mod tests {
                 "accepted {value}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn rational_conversion_rounds_up_without_floating_point() -> Result<(), MoneyError> {
+        let numerator = RawAmount::from_str("5")?;
+        let denominator = RawAmount::from_str("2")?;
+
+        assert_eq!(
+            RawAmount::mul_div_ceil(3, numerator, denominator)?.to_string(),
+            "8"
+        );
+        assert_eq!(
+            RawAmount::mul_div_ceil(4, numerator, denominator)?.to_string(),
+            "10"
+        );
         Ok(())
     }
 }

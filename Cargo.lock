@@ -1169,6 +1169,7 @@ dependencies = [
  "anyhow",
  "axum",
  "gateway-http",
+ "gateway-scheduler",
  "gateway-storage",
  "tokio",
  "tracing",
@@ -1224,15 +1225,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "gateway-scheduler"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "gateway-application",
+ "thiserror",
+ "time",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "gateway-storage"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "gateway-application",
  "gateway-domain",
+ "gateway-scheduler",
  "serde_json",
  "sqlx",
  "time",
+ "tokio",
  "uuid",
 ]
 

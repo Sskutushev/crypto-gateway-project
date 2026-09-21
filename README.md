@@ -34,9 +34,44 @@ Prerequisites:
 - Docker with Compose
 - PostgreSQL 16+
 
-The first executable vertical slice exposes authenticated create/read payment
-intent endpoints with merchant-scoped idempotency. It is still a development
+The executable foundation exposes authenticated create/read payment intents
+and quote issuance with merchant-scoped idempotency. Quote requests choose an
+allowlisted asset; pricing, policy, rail health, and collector details always
+come from server-owned PostgreSQL snapshots. It is still a development
 foundation: no blockchain rail is production-ready.
+
+`POST /v1/payment-intents/{intent_id}/quotes` requires an `Idempotency-Key`
+header and accepts only:
+
+```json
+{"asset_id":"00000000-0000-0000-0000-000000000000"}
+```
+
+Amounts in the response are decimal strings. The endpoint returns `503
+quote_unavailable` instead of inventing a price when any required snapshot is
+missing, stale, future-dated, or unhealthy. A replay of an already issued quote
+remains available during a later pricing or rail outage.
+
+The API process also runs the quote-expiry scheduler. Every interval it asks
+the application layer for one bounded transaction that expires due quotes and
+archives leases whose late-payment window ended, repeating until nothing is due
+or the per-tick ceiling is reached. Two sweeps never run at once, transient
+storage errors are retried with capped backoff, and an invariant violation
+stops the sweep instead of being retried. `SIGTERM` and `Ctrl-C` stop the loop
+between batches, so an in-flight expiry transaction is never abandoned.
+
+Its settings are read once at startup and an unreadable value fails startup
+rather than silently using a default:
+
+```text
+GATEWAY_EXPIRY_ENABLED=true
+GATEWAY_EXPIRY_INTERVAL_SECONDS=30
+GATEWAY_EXPIRY_BATCH_LIMIT=200
+GATEWAY_EXPIRY_MAX_BATCHES_PER_TICK=10
+GATEWAY_EXPIRY_RETRY_ATTEMPTS=3
+GATEWAY_EXPIRY_RETRY_INITIAL_BACKOFF_SECONDS=1
+GATEWAY_EXPIRY_RETRY_MAX_BACKOFF_SECONDS=10
+```
 
 Start the local stack with `docker compose up --build`. Compose binds the API
 and PostgreSQL only to the host loopback interface. The API serves plain HTTP
@@ -53,10 +88,11 @@ cargo test --workspace --locked
 cargo deny check
 ```
 
-The PostgreSQL-backed API scenario is intentionally ignored by the default
-test command. After starting the Compose PostgreSQL service, run it explicitly
+The PostgreSQL-backed scenarios are intentionally ignored by the default test
+command. After starting the Compose PostgreSQL service, run them explicitly
 with `GATEWAY_TEST_DATABASE_URL` set to the disposable database and pass
-`-- --ignored` to `cargo test -p gateway-http`.
+`-- --ignored` to `cargo test --workspace`. They share one schema and
+serialize themselves, so no special thread count is required.
 
 ## License
 
