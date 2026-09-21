@@ -8,6 +8,7 @@ mod chain;
 mod money;
 mod payment_intent;
 mod quote;
+mod settlement;
 mod verification;
 
 pub use chain::{
@@ -19,6 +20,11 @@ pub use payment_intent::{PaymentIntent, PaymentIntentError, PaymentIntentStatus}
 pub use quote::{
     IssuedQuote, PriceSnapshot, QuoteError, QuotePlan, QuotePolicySnapshot, RailHealth,
     RailHealthSnapshot,
+};
+pub use settlement::{
+    AttemptCandidate, AttemptStatus, HoldReason, ManualReason, MatchOutcome, MatchStrategy,
+    RiskDecision, SettlementError, SettlementEvidence, SettlementOutcome, SettlementPolicy,
+    SettlementTier, TransferFacts, decide_settlement, match_transfer,
 };
 pub use verification::{
     AttestationRole, CanonicalTransfer, ConflictField, DiscardReason, DiscardedReading,

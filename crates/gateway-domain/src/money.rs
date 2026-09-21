@@ -130,6 +130,17 @@ mod decimal_i64 {
 pub struct RawAmount(U256);
 
 impl RawAmount {
+    /// The empty quantity.
+    ///
+    /// Running totals such as "allocated so far" start here. A payable amount
+    /// never does, which is why every parsing constructor rejects zero.
+    pub const ZERO: Self = Self(U256::ZERO);
+
+    #[must_use]
+    pub fn is_zero(self) -> bool {
+        self.0.is_zero()
+    }
+
     /// Creates a strictly positive raw token amount.
     ///
     /// # Errors

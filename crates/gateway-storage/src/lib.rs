@@ -1,5 +1,6 @@
 mod observations;
 mod postgres;
+mod settlement;
 #[cfg(test)]
 mod test_support;
 mod verification;

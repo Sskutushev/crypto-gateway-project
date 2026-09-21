@@ -2,6 +2,7 @@ mod observations;
 mod payment_intents;
 mod ports;
 mod quotes;
+mod settlement;
 mod verification;
 
 pub use observations::{
@@ -17,6 +18,10 @@ pub use ports::{
     QuoteContext, QuoteRepository, RepositoryError, SystemClock,
 };
 pub use quotes::{ExpirySweeper, IssueQuote, IssueQuoteResult, QuoteService, QuoteServiceError};
+pub use settlement::{
+    AttemptSnapshot, PendingTransfer, SettlementCommand, SettlementRecord, SettlementReport,
+    SettlementRepository, SettlementService, SettlementServiceError, UnresolvedTransfer,
+};
 pub use verification::{
     ChainEventKey, ChainReader, ChainReaderError, VerdictOutcome, VerificationReport,
     VerificationRepository, VerificationService, VerificationServiceError,
