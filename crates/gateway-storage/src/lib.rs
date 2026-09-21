@@ -1,4 +1,8 @@
+mod observations;
 mod postgres;
+#[cfg(test)]
+mod test_support;
+mod verification;
 
 pub use postgres::PostgresRepository;
 

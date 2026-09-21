@@ -122,6 +122,8 @@ pub enum RepositoryError {
     AmountSlotsExhausted,
     #[error("stored data violated a domain invariant: {0}")]
     CorruptData(String),
+    #[error("this component no longer holds its lease")]
+    LeaseLost,
     #[error("storage is unavailable: {0}")]
     Unavailable(String),
 }

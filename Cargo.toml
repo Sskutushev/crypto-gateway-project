@@ -40,7 +40,7 @@ sqlx = { version = "0.8", default-features = false, features = [
   "uuid",
 ] }
 thiserror = "2.0"
-time = { version = "0.3", features = ["serde", "formatting"] }
+time = { version = "0.3", features = ["formatting", "macros", "parsing", "serde"] }
 tokio = { version = "1.47", features = [
   "macros",
   "net",

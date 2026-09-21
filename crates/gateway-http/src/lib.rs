@@ -440,6 +440,7 @@ mod tests {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn reset_database(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         migrate(pool).await?;
         sqlx::query("TRUNCATE chain_assets, merchants CASCADE")
@@ -473,8 +474,11 @@ mod tests {
             r"
             INSERT INTO chain_assets (
                 id, chain, network, chain_environment, contract_address_key,
-                display_symbol, decimals, status
-            ) VALUES ($1, 'tron', 'nile', 'testnet', $2, 'USDT', 6, 'active')
+                display_symbol, decimals, status, pinned_sha256, approved_by
+            ) VALUES (
+                $1, 'tron', 'nile', 'testnet', $2, 'USDT', 6, 'active',
+                encode(sha256($2), 'hex'), 'test-fixture'
+            )
             ",
         )
         .bind(ASSET_ID)
@@ -484,8 +488,12 @@ mod tests {
         sqlx::query(
             r"
             INSERT INTO collector_addresses (
-                id, asset_id, address_key, address_text, state, valid_from
-            ) VALUES ($1, $2, $3, 'TContractCollector', 'active', now())
+                id, asset_id, address_key, address_text, state, valid_from,
+                pinned_sha256, approved_by
+            ) VALUES (
+                $1, $2, $3, 'TContractCollector', 'active', now(),
+                encode(sha256($3), 'hex'), 'test-fixture'
+            )
             ",
         )
         .bind(COLLECTOR_ID)

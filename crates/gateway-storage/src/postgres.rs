@@ -21,6 +21,11 @@ pub struct PostgresRepository {
 
 impl PostgresRepository {
     #[must_use]
+    pub(crate) const fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }
@@ -1168,7 +1173,7 @@ async fn find_intent(
 // `Result::map_err` passes the owned SQLx error, so this adapter intentionally
 // accepts it by value even though formatting borrows it.
 #[allow(clippy::needless_pass_by_value)]
-fn unavailable(error: sqlx::Error) -> RepositoryError {
+pub(crate) fn unavailable(error: sqlx::Error) -> RepositoryError {
     RepositoryError::Unavailable(error.to_string())
 }
 
@@ -1177,7 +1182,7 @@ fn corrupt_money(error: MoneyError) -> RepositoryError {
     RepositoryError::CorruptData(error.to_string())
 }
 
-fn corrupt(message: impl Into<String>) -> RepositoryError {
+pub(crate) fn corrupt(message: impl Into<String>) -> RepositoryError {
     RepositoryError::CorruptData(message.into())
 }
 
@@ -1236,11 +1241,10 @@ mod tests {
     use serde_json::json;
     use sqlx::{PgPool, postgres::PgPoolOptions};
     use time::{Duration, OffsetDateTime};
-    use tokio::sync::Mutex;
     use uuid::Uuid;
 
     use super::PostgresRepository;
-    use crate::migrate;
+    use crate::{migrate, test_support::DATABASE};
 
     const MERCHANT_ONE: Uuid = Uuid::from_u128(101);
     const MERCHANT_TWO: Uuid = Uuid::from_u128(102);
@@ -1252,10 +1256,6 @@ mod tests {
     const RAIL_HEALTH_SNAPSHOT_ID: Uuid = Uuid::from_u128(603);
     const INTENT_ONE: Uuid = Uuid::from_u128(501);
     const INTENT_TWO: Uuid = Uuid::from_u128(502);
-
-    /// Both database scenarios truncate and reseed the same schema, so they
-    /// must not interleave even when the harness runs them in parallel.
-    static DATABASE: Mutex<()> = Mutex::const_new(());
 
     #[derive(Debug, Clone, Copy)]
     struct FixedClock(OffsetDateTime);
@@ -1531,8 +1531,11 @@ mod tests {
             r"
             INSERT INTO chain_assets (
                 id, chain, network, chain_environment, contract_address_key,
-                display_symbol, decimals, status
-            ) VALUES ($1, 'tron', 'nile', 'testnet', $2, 'USDT', 6, 'active')
+                display_symbol, decimals, status, pinned_sha256, approved_by
+            ) VALUES (
+                $1, 'tron', 'nile', 'testnet', $2, 'USDT', 6, 'active',
+                encode(sha256($2), 'hex'), 'test-fixture'
+            )
             ",
         )
         .bind(ASSET_ID)
@@ -1542,8 +1545,12 @@ mod tests {
         sqlx::query(
             r"
             INSERT INTO collector_addresses (
-                id, asset_id, address_key, address_text, state, valid_from
-            ) VALUES ($1, $2, $3, 'TTestCollector', 'active', $4)
+                id, asset_id, address_key, address_text, state, valid_from,
+                pinned_sha256, approved_by
+            ) VALUES (
+                $1, $2, $3, 'TTestCollector', 'active', $4,
+                encode(sha256($3), 'hex'), 'test-fixture'
+            )
             ",
         )
         .bind(COLLECTOR_ID)
