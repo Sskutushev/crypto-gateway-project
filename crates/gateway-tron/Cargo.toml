@@ -1,5 +1,5 @@
 [package]
-name = "gateway-domain"
+name = "gateway-tron"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,14 +7,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-alloy-primitives.workspace = true
-hmac.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+bs58.workspace = true
+gateway-domain.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-time.workspace = true
-uuid.workspace = true
 
 [lints]
 workspace = true

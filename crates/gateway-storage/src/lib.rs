@@ -1,4 +1,5 @@
 mod observations;
+mod outbox;
 mod postgres;
 mod settlement;
 #[cfg(test)]

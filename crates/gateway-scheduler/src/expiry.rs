@@ -10,8 +10,8 @@ use tokio::{
 use tracing::{error, info, warn};
 
 use crate::{
-    config::{ExpiryConfig, SchedulerConfigError},
-    metrics::ExpiryMetrics,
+    config::{BatchConfig, SchedulerConfigError},
+    metrics::RunMetrics,
 };
 
 /// Drives bounded quote-expiry and amount-lease archival batches.
@@ -23,8 +23,8 @@ use crate::{
 #[derive(Debug)]
 pub struct ExpiryScheduler<S> {
     sweeper: Arc<S>,
-    config: ExpiryConfig,
-    metrics: Arc<ExpiryMetrics>,
+    config: BatchConfig,
+    metrics: Arc<RunMetrics>,
     running: Mutex<()>,
 }
 
@@ -38,17 +38,17 @@ where
     ///
     /// Returns [`SchedulerConfigError`] when the configuration would allow an
     /// unbounded or non-progressing sweep.
-    pub fn new(sweeper: Arc<S>, config: ExpiryConfig) -> Result<Self, SchedulerConfigError> {
+    pub fn new(sweeper: Arc<S>, config: BatchConfig) -> Result<Self, SchedulerConfigError> {
         Ok(Self {
             sweeper,
             config: config.validated()?,
-            metrics: Arc::new(ExpiryMetrics::default()),
+            metrics: Arc::new(RunMetrics::default()),
             running: Mutex::new(()),
         })
     }
 
     #[must_use]
-    pub fn metrics(&self) -> Arc<ExpiryMetrics> {
+    pub fn metrics(&self) -> Arc<RunMetrics> {
         Arc::clone(&self.metrics)
     }
 
@@ -129,7 +129,7 @@ where
             self.metrics.record_overlap_skipped();
             return Err(SweepError::Overlapping);
         };
-        self.metrics.record_sweep_started();
+        self.metrics.record_run_started();
 
         let mut report = SweepReport::default();
         let mut interrupted = false;
@@ -137,11 +137,12 @@ where
             let result = match self.run_batch(&mut report).await {
                 Ok(result) => result,
                 Err(sweep_error) => {
-                    self.metrics.record_sweep_failed();
+                    self.metrics.record_run_failed();
                     return Err(SweepError::Sweep(sweep_error));
                 }
             };
-            self.metrics.record_batch(result);
+            self.metrics
+                .record_batch(result.quotes_expired.saturating_add(result.leases_archived));
             report.batches = report.batches.saturating_add(1);
             report.quotes_expired = report.quotes_expired.saturating_add(result.quotes_expired);
             report.leases_archived = report
@@ -169,7 +170,7 @@ where
             );
         }
         self.metrics
-            .record_sweep_succeeded(OffsetDateTime::now_utc().unix_timestamp());
+            .record_run_succeeded(OffsetDateTime::now_utc().unix_timestamp());
         Ok(report)
     }
 

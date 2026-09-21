@@ -16,7 +16,7 @@ use tokio::{
 };
 
 use super::{ExpiryScheduler, SweepError};
-use crate::config::{ExpiryConfig, RetryPolicy};
+use crate::config::{BatchConfig, RetryPolicy};
 
 #[derive(Debug, Clone, Copy)]
 enum Outcome {
@@ -147,11 +147,12 @@ impl ExpirySweeper for SlowSweeper {
     }
 }
 
-fn config(batch_limit: u32, max_batches_per_tick: u32) -> ExpiryConfig {
-    ExpiryConfig {
+fn config(batch_limit: u32, max_batches_per_tick: u32) -> BatchConfig {
+    BatchConfig {
         interval: Duration::from_secs(1),
         batch_limit,
         max_batches_per_tick,
+        lease_seconds: 30,
         retry: RetryPolicy {
             max_attempts: 3,
             initial_backoff: Duration::from_secs(1),
@@ -187,7 +188,7 @@ async fn drains_batches_until_one_is_not_full() -> Result<(), Box<dyn Error>> {
     assert_eq!(sweeper.calls(), 3);
     let metrics = scheduler.metrics().snapshot();
     assert_eq!(metrics.batches_executed, 3);
-    assert_eq!(metrics.sweeps_succeeded, 1);
+    assert_eq!(metrics.runs_succeeded, 1);
     assert_eq!(metrics.backlog_left, 0);
     assert!(metrics.last_success_unix.is_some());
     Ok(())
@@ -234,8 +235,8 @@ async fn retries_transient_storage_failures_and_counts_them() -> Result<(), Box<
     assert_eq!(sweeper.calls(), 3);
     let metrics = scheduler.metrics().snapshot();
     assert_eq!(metrics.transient_retries, 2);
-    assert_eq!(metrics.sweeps_succeeded, 1);
-    assert_eq!(metrics.sweeps_failed, 0);
+    assert_eq!(metrics.runs_succeeded, 1);
+    assert_eq!(metrics.runs_failed, 0);
     Ok(())
 }
 
@@ -250,7 +251,7 @@ async fn gives_up_after_the_retry_ceiling() -> Result<(), Box<dyn Error>> {
     assert_eq!(sweeper.calls(), 3);
     let metrics = scheduler.metrics().snapshot();
     assert_eq!(metrics.transient_retries, 2);
-    assert_eq!(metrics.sweeps_failed, 1);
+    assert_eq!(metrics.runs_failed, 1);
     assert_eq!(metrics.consecutive_failures, 1);
     assert_eq!(metrics.last_success_unix, None);
     Ok(())
@@ -267,7 +268,7 @@ async fn never_retries_an_invariant_violation() -> Result<(), Box<dyn Error>> {
     assert_eq!(sweeper.calls(), 1);
     let metrics = scheduler.metrics().snapshot();
     assert_eq!(metrics.transient_retries, 0);
-    assert_eq!(metrics.sweeps_failed, 1);
+    assert_eq!(metrics.runs_failed, 1);
     Ok(())
 }
 
@@ -287,9 +288,9 @@ async fn refuses_to_run_two_sweeps_at_once() -> Result<(), Box<dyn Error>> {
     assert_eq!(first.await??, 1);
     assert_eq!(sweeper.max_in_flight(), 1);
     let metrics = scheduler.metrics().snapshot();
-    assert_eq!(metrics.sweeps_skipped_overlapping, 1);
-    assert_eq!(metrics.sweeps_started, 1);
-    assert_eq!(metrics.sweeps_succeeded, 1);
+    assert_eq!(metrics.runs_skipped_overlapping, 1);
+    assert_eq!(metrics.runs_started, 1);
+    assert_eq!(metrics.runs_succeeded, 1);
     Ok(())
 }
 
@@ -304,15 +305,15 @@ async fn sweeps_on_every_interval_until_shutdown() -> Result<(), Box<dyn Error>>
     });
 
     sleep(Duration::from_millis(2_500)).await;
-    let sweeps_before_shutdown = sweeper.calls();
+    let runs_before_shutdown = sweeper.calls();
     shutdown.send(true)?;
     timeout(Duration::from_secs(1), loop_task).await??;
 
-    assert_eq!(sweeps_before_shutdown, 3);
-    assert_eq!(sweeper.calls(), sweeps_before_shutdown);
+    assert_eq!(runs_before_shutdown, 3);
+    assert_eq!(sweeper.calls(), runs_before_shutdown);
     assert_eq!(
-        scheduler.metrics().snapshot().sweeps_succeeded,
-        u64::try_from(sweeps_before_shutdown)?
+        scheduler.metrics().snapshot().runs_succeeded,
+        u64::try_from(runs_before_shutdown)?
     );
     Ok(())
 }

@@ -8,30 +8,33 @@ const MAX_BATCHES_PER_TICK: u32 = 1_000;
 const MAX_RETRY_ATTEMPTS: u32 = 10;
 const MAX_BACKOFF_DOUBLINGS: u32 = 16;
 
-/// Bounds for the quote-expiry and amount-lease archival sweep.
+/// Bounds for one bounded background worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExpiryConfig {
+pub struct BatchConfig {
     /// Delay between the end of one sweep and the start of the next.
     pub interval: Duration,
     /// Rows a single database transaction may expire or archive.
     pub batch_limit: u32,
-    /// Transactions one sweep may run before yielding until the next tick.
+    /// Transactions one run may execute before yielding until the next tick.
     pub max_batches_per_tick: u32,
+    /// How long the component lease is taken for. It must outlast a run.
+    pub lease_seconds: i64,
     pub retry: RetryPolicy,
 }
 
-impl Default for ExpiryConfig {
+impl Default for BatchConfig {
     fn default() -> Self {
         Self {
             interval: Duration::from_secs(30),
             batch_limit: 200,
             max_batches_per_tick: 10,
+            lease_seconds: 120,
             retry: RetryPolicy::default(),
         }
     }
 }
 
-impl ExpiryConfig {
+impl BatchConfig {
     /// Returns the configuration only when every bound is safe to run.
     ///
     /// # Errors
@@ -47,6 +50,11 @@ impl ExpiryConfig {
         }
         if self.max_batches_per_tick == 0 || self.max_batches_per_tick > MAX_BATCHES_PER_TICK {
             return Err(SchedulerConfigError::BatchesPerTick);
+        }
+        // A lease that expires mid-run would let a neighbour take over while
+        // this process is still writing.
+        if self.lease_seconds < 5 || self.lease_seconds > 3_600 {
+            return Err(SchedulerConfigError::LeaseDuration);
         }
         self.retry.validate()?;
         Ok(self)
@@ -105,71 +113,73 @@ pub enum SchedulerConfigError {
     RetryAttempts,
     #[error("initial backoff must be non-zero and at most the maximum backoff")]
     Backoff,
+    #[error("a component lease must last between 5 seconds and one hour")]
+    LeaseDuration,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Duration, ExpiryConfig, RetryPolicy, SchedulerConfigError};
+    use super::{BatchConfig, Duration, RetryPolicy, SchedulerConfigError};
 
     #[test]
     fn rejects_unbounded_or_hot_configuration() {
-        let too_fast = ExpiryConfig {
+        let too_fast = BatchConfig {
             interval: Duration::from_millis(100),
-            ..ExpiryConfig::default()
+            ..BatchConfig::default()
         };
         assert_eq!(too_fast.validated(), Err(SchedulerConfigError::Interval));
 
-        let no_progress = ExpiryConfig {
+        let no_progress = BatchConfig {
             batch_limit: 0,
-            ..ExpiryConfig::default()
+            ..BatchConfig::default()
         };
         assert_eq!(
             no_progress.validated(),
             Err(SchedulerConfigError::BatchLimit)
         );
 
-        let unbounded_batch = ExpiryConfig {
+        let unbounded_batch = BatchConfig {
             batch_limit: 10_001,
-            ..ExpiryConfig::default()
+            ..BatchConfig::default()
         };
         assert_eq!(
             unbounded_batch.validated(),
             Err(SchedulerConfigError::BatchLimit)
         );
 
-        let unbounded_tick = ExpiryConfig {
+        let unbounded_tick = BatchConfig {
             max_batches_per_tick: 0,
-            ..ExpiryConfig::default()
+            ..BatchConfig::default()
         };
         assert_eq!(
             unbounded_tick.validated(),
             Err(SchedulerConfigError::BatchesPerTick)
         );
 
-        let busy_retry = ExpiryConfig {
+        let busy_retry = BatchConfig {
             retry: RetryPolicy {
                 max_attempts: 3,
                 initial_backoff: Duration::ZERO,
                 max_backoff: Duration::from_secs(1),
             },
-            ..ExpiryConfig::default()
+            ..BatchConfig::default()
         };
         assert_eq!(busy_retry.validated(), Err(SchedulerConfigError::Backoff));
 
-        let inverted_backoff = ExpiryConfig {
+        let inverted_backoff = BatchConfig {
             retry: RetryPolicy {
                 max_attempts: 3,
                 initial_backoff: Duration::from_secs(10),
                 max_backoff: Duration::from_secs(1),
             },
-            ..ExpiryConfig::default()
+            ..BatchConfig::default()
         };
         assert_eq!(
             inverted_backoff.validated(),
             Err(SchedulerConfigError::Backoff)
         );
 
-        assert!(ExpiryConfig::default().validated().is_ok());
+        assert!(BatchConfig::default().validated().is_ok());
     }
 
     #[test]

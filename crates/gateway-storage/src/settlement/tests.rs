@@ -7,7 +7,7 @@ use std::{
 use async_trait::async_trait;
 use gateway_application::{
     ChainEventKey, ChainReader, ChainReaderError, ChainSource, Clock, ComponentLease,
-    CreatePaymentIntent, IssueQuote, ObservationRepository, PaymentIntentService,
+    CreatePaymentIntent, IssueQuote, LeaseRepository, ObservationRepository, PaymentIntentService,
     ResolvedObservation, SettlementRepository, SettlementService, VerificationService,
 };
 use gateway_domain::{

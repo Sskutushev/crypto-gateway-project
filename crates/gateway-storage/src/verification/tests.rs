@@ -6,8 +6,8 @@ use std::{
 
 use async_trait::async_trait;
 use gateway_application::{
-    ChainEventKey, ChainReader, ChainReaderError, ChainSource, Clock, ObservationRepository,
-    ResolvedObservation, VerificationService,
+    ChainEventKey, ChainReader, ChainReaderError, ChainSource, Clock, LeaseRepository,
+    ObservationRepository, ResolvedObservation, VerificationService,
 };
 use gateway_domain::{
     AddressKey, ChainEnvironment, ExecutionStatus, ObservationKind, ObservedTransfer, RawAmount,

@@ -520,6 +520,7 @@ impl SettlementRepository for PostgresRepository {
         enqueue_outbox(
             &mut transaction,
             None,
+            "operator",
             event_type,
             "chain_transfer",
             transfer.facts.transfer_id,
@@ -746,6 +747,7 @@ async fn record_remainder(
     enqueue_outbox(
         transaction,
         Some(command.merchant_id),
+        "webhook",
         "OVERPAID",
         "payment_intent",
         command.payment_intent_id,
@@ -897,6 +899,7 @@ async fn advance_to_paid(
         enqueue_outbox(
             transaction,
             Some(command.merchant_id),
+            "webhook",
             "payment_intent.paid",
             "payment_intent",
             command.payment_intent_id,
@@ -945,6 +948,7 @@ async fn advance_to_partially_paid(
     enqueue_outbox(
         transaction,
         Some(command.merchant_id),
+        "webhook",
         "payment_intent.partially_paid",
         "payment_intent",
         command.payment_intent_id,
@@ -1050,9 +1054,11 @@ async fn insert_payment_event(
 
 /// Writes an outgoing effect inside the money transaction. Delivery happens
 /// afterwards; nothing leaves this system from inside a transaction.
+#[allow(clippy::too_many_arguments)]
 async fn enqueue_outbox(
     transaction: &mut Transaction<'_, Postgres>,
     merchant_id: Option<Uuid>,
+    channel: &str,
     event_type: &str,
     aggregate_type: &str,
     aggregate_id: Uuid,
@@ -1062,13 +1068,14 @@ async fn enqueue_outbox(
     sqlx::query(
         r"
         INSERT INTO domain_events (
-            id, merchant_id, event_type, aggregate_type, aggregate_id, payload,
+            id, merchant_id, channel, event_type, aggregate_type, aggregate_id, payload,
             available_at, created_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
         ",
     )
     .bind(Uuid::now_v7())
     .bind(merchant_id)
+    .bind(channel)
     .bind(event_type)
     .bind(aggregate_type)
     .bind(aggregate_id)

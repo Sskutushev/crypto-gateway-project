@@ -1,21 +1,21 @@
 use std::{env, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use gateway_scheduler::{ExpiryConfig, RetryPolicy};
+use gateway_scheduler::{BatchConfig, RetryPolicy};
 
 /// Reads the expiry scheduler settings, or `None` when it is switched off.
 ///
 /// An unreadable value is a startup failure. Falling back to a default would
 /// silently run a different schedule than the operator configured.
-pub fn expiry_config() -> Result<Option<ExpiryConfig>> {
+pub fn expiry_config() -> Result<Option<BatchConfig>> {
     if !toggle(
         "GATEWAY_EXPIRY_ENABLED",
         read("GATEWAY_EXPIRY_ENABLED").as_deref(),
     )? {
         return Ok(None);
     }
-    let defaults = ExpiryConfig::default();
-    let config = ExpiryConfig {
+    let defaults = BatchConfig::default();
+    let config = BatchConfig {
         interval: seconds(
             "GATEWAY_EXPIRY_INTERVAL_SECONDS",
             defaults.interval.as_secs(),
@@ -25,6 +25,10 @@ pub fn expiry_config() -> Result<Option<ExpiryConfig>> {
             "GATEWAY_EXPIRY_MAX_BATCHES_PER_TICK",
             defaults.max_batches_per_tick,
         )?,
+        lease_seconds: i64::from(count(
+            "GATEWAY_EXPIRY_LEASE_SECONDS",
+            u32::try_from(defaults.lease_seconds).unwrap_or(120),
+        )?),
         retry: RetryPolicy {
             max_attempts: count("GATEWAY_EXPIRY_RETRY_ATTEMPTS", defaults.retry.max_attempts)?,
             initial_backoff: seconds(

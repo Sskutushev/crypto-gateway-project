@@ -1,5 +1,5 @@
 [package]
-name = "gateway-domain"
+name = "gateway-webhook"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,14 +7,15 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-alloy-primitives.workspace = true
-hmac.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-sha2.workspace = true
+async-trait.workspace = true
+gateway-application.workspace = true
+reqwest.workspace = true
 thiserror.workspace = true
-time.workspace = true
+tracing.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
 
 [lints]
 workspace = true

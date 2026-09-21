@@ -95,6 +95,22 @@ pub trait QuoteRepository: Send + Sync {
     ) -> Result<ExpiryResult, RepositoryError>;
 }
 
+/// Leadership for singleton components.
+///
+/// A lease answers "am I the one running this right now", and its fence token
+/// answers "and is my answer still current", which is what a frozen process
+/// cannot tell on its own.
+#[async_trait]
+pub trait LeaseRepository: Send + Sync {
+    async fn acquire_component_lease(
+        &self,
+        component: &str,
+        holder: &str,
+        ttl_seconds: i64,
+        now: OffsetDateTime,
+    ) -> Result<Option<crate::ComponentLease>, RepositoryError>;
+}
+
 pub trait Clock: Send + Sync {
     fn now(&self) -> OffsetDateTime;
 }

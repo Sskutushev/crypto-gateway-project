@@ -10,6 +10,7 @@ mod payment_intent;
 mod quote;
 mod settlement;
 mod verification;
+mod webhook;
 
 pub use chain::{
     AddressKey, ChainEnvironment, ChainError, ExecutionStatus, Memo, ObservationKind,
@@ -31,3 +32,4 @@ pub use verification::{
     EvidenceReading, FieldConflict, FinalityPolicy, InsufficientReason, RejectionReason, Verdict,
     VerificationError, VerifiedTransfer, verify,
 };
+pub use webhook::{SigningSecret, WebhookError, sign_event};

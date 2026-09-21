@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use gateway_application::{
     ChainSource, CollectorState, CollectorWatch, ComponentLease, CursorKind, CursorPosition,
-    IntakeReport, ObservationRepository, RepositoryError, ResolvedObservation, SourceKind,
-    SourceState,
+    IntakeReport, LeaseRepository, ObservationRepository, RepositoryError, ResolvedObservation,
+    SourceKind, SourceState,
 };
 use gateway_domain::{AddressKey, ChainEnvironment};
 use sqlx::{FromRow, Postgres, Transaction};
@@ -107,6 +107,61 @@ impl TryFrom<CursorRow> for CursorPosition {
 }
 
 #[async_trait]
+impl LeaseRepository for PostgresRepository {
+    async fn acquire_component_lease(
+        &self,
+        component: &str,
+        holder: &str,
+        ttl_seconds: i64,
+        now: OffsetDateTime,
+    ) -> Result<Option<ComponentLease>, RepositoryError> {
+        if ttl_seconds <= 0 {
+            return Err(corrupt("a component lease needs a positive duration"));
+        }
+        let lease_until = now
+            .checked_add(Duration::seconds(ttl_seconds))
+            .ok_or_else(|| corrupt("component lease duration overflowed"))?;
+
+        // Renewal keeps the token; a takeover increments it, so a frozen
+        // predecessor's writes carry a token the database can refuse.
+        let row = sqlx::query_as::<_, (String, String, i64, OffsetDateTime)>(
+            r"
+            INSERT INTO component_leases (component, holder, fence_token, lease_until, updated_at)
+            VALUES ($1, $2, 1, $3, $4)
+            ON CONFLICT (component) DO UPDATE
+               SET holder = excluded.holder,
+                   lease_until = excluded.lease_until,
+                   updated_at = excluded.updated_at,
+                   fence_token = CASE
+                       WHEN component_leases.holder = excluded.holder
+                       THEN component_leases.fence_token
+                       ELSE component_leases.fence_token + 1
+                   END
+             WHERE component_leases.holder = excluded.holder
+                OR component_leases.lease_until < excluded.updated_at
+            RETURNING component, holder, fence_token, lease_until
+            ",
+        )
+        .bind(component)
+        .bind(holder)
+        .bind(lease_until)
+        .bind(now)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(unavailable)?;
+
+        Ok(row.map(
+            |(component, holder, fence_token, lease_until)| ComponentLease {
+                component,
+                holder,
+                fence_token,
+                lease_until,
+            },
+        ))
+    }
+}
+
+#[async_trait]
 impl ObservationRepository for PostgresRepository {
     async fn find_source(&self, source_key: &str) -> Result<Option<ChainSource>, RepositoryError> {
         let rows = sqlx::query_as::<_, ChainSourceRow>(
@@ -168,58 +223,6 @@ impl ObservationRepository for PostgresRepository {
         .map_err(unavailable)?;
 
         rows.into_iter().map(TryInto::try_into).collect()
-    }
-
-    async fn acquire_component_lease(
-        &self,
-        component: &str,
-        holder: &str,
-        ttl_seconds: i64,
-        now: OffsetDateTime,
-    ) -> Result<Option<ComponentLease>, RepositoryError> {
-        if ttl_seconds <= 0 {
-            return Err(corrupt("a component lease needs a positive duration"));
-        }
-        let lease_until = now
-            .checked_add(Duration::seconds(ttl_seconds))
-            .ok_or_else(|| corrupt("component lease duration overflowed"))?;
-
-        // Renewal keeps the token; a takeover increments it, so a frozen
-        // predecessor's writes carry a token the database can refuse.
-        let row = sqlx::query_as::<_, (String, String, i64, OffsetDateTime)>(
-            r"
-            INSERT INTO component_leases (component, holder, fence_token, lease_until, updated_at)
-            VALUES ($1, $2, 1, $3, $4)
-            ON CONFLICT (component) DO UPDATE
-               SET holder = excluded.holder,
-                   lease_until = excluded.lease_until,
-                   updated_at = excluded.updated_at,
-                   fence_token = CASE
-                       WHEN component_leases.holder = excluded.holder
-                       THEN component_leases.fence_token
-                       ELSE component_leases.fence_token + 1
-                   END
-             WHERE component_leases.holder = excluded.holder
-                OR component_leases.lease_until < excluded.updated_at
-            RETURNING component, holder, fence_token, lease_until
-            ",
-        )
-        .bind(component)
-        .bind(holder)
-        .bind(lease_until)
-        .bind(now)
-        .fetch_optional(self.pool())
-        .await
-        .map_err(unavailable)?;
-
-        Ok(row.map(
-            |(component, holder, fence_token, lease_until)| ComponentLease {
-                component,
-                holder,
-                fence_token,
-                lease_until,
-            },
-        ))
     }
 
     async fn find_cursor(

@@ -7,7 +7,13 @@
 mod config;
 mod expiry;
 mod metrics;
+mod observer;
+mod pipeline;
+mod worker;
 
-pub use config::{ExpiryConfig, RetryPolicy, SchedulerConfigError};
+pub use config::{BatchConfig, RetryPolicy, SchedulerConfigError};
 pub use expiry::{ExpiryScheduler, SweepError, SweepReport};
-pub use metrics::{ExpiryMetrics, ExpiryMetricsSnapshot};
+pub use metrics::{RunMetrics, RunMetricsSnapshot};
+pub use observer::ObservationWorker;
+pub use pipeline::{OutboxWorker, SettlementWorker, VerificationWorker};
+pub use worker::{BatchOutcome, LeasedWorker, RunError, RunReport, WorkerError, WorkerLoop};

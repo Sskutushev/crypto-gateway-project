@@ -6,8 +6,8 @@ Last updated: 2026-09-21
 
 - Branch: `feat/standalone-gateway-foundation`
 - Remote: `https://github.com/Sskutushev/crypto-gateway-project.git`
-- Working tree: quote/amount-lease slice plus the bounded expiry scheduler are
-  implemented and verified locally; changes are not committed or pushed.
+- Working tree: clean; the payment pipeline through settlement and signed
+  webhook delivery is committed and pushed.
 - This tree is the repository's initial history; there is no earlier product
   implementation to preserve or migrate.
 
@@ -26,70 +26,52 @@ Last updated: 2026-09-21
 
 ## Completed
 
-- Independent product and trust boundaries documented.
-- Persistent instructions and continuation guide added for future agents.
-- Initial architecture decisions recorded.
-- Canonical Apache-2.0 license text added from `apache.org`.
-- Rust workspace, executable API, PostgreSQL migration, and local Compose
-  environment created.
-- Merchant API-key authentication and merchant-isolated create/read payment
-  intent endpoints implemented.
-- Merchant/route/key-scoped idempotency is transactional, detects request
-  conflicts, survives concurrent same-key requests, and emits one audit event
-  for the one created resource.
-- Public fiat and token quantities use base-10 JSON strings; JSON numbers,
-  signs, decimals, whitespace, zero, and overflow are rejected rather than
-  coerced.
-- Duplicate merchant references and idempotency conflicts return explicit
-  `409` errors; malformed JSON returns an explicit `400` envelope.
-- Local PostgreSQL and API ports bind only to loopback. The API has a 128
-  request concurrency ceiling and a 15-second request timeout. Non-local
-  deployment requires external TLS, edge rate limiting, and least-privileged
-  database credentials.
-- PostgreSQL-backed API coverage proves authentication, response key sets,
-  string money, replay, conflicting reuse, duplicate references, tenant
-  isolation, concurrent creation, and audit cardinality.
-- The release Docker image builds and runs as UID 10001; `.dockerignore` keeps
-  build context limited to required sources.
-- Quote planning fails closed for missing, stale, future-dated, or unhealthy
-  price, policy, and rail-health evidence.
-- Fiat-to-token conversion uses checked 256-bit rational arithmetic and always
-  rounds upward; exact-amount slot capacity is bounded to 10,000 per collector.
-- Immutable quotes, payment attempts, active amount leases, and lease history
-  are persisted with tenant/asset/collector consistency enforced by composite
-  foreign keys.
-- PostgreSQL serializes allocations per collector and enforces one active
-  collector/raw-amount lease plus one lease per payment attempt.
-- Quote expiry and late-payment retention are separate: attempts expire at the
-  quote deadline, while their amount remains reserved until the late-payment
-  deadline. Expired leases are archived and removed in the same transaction.
-- Quote, attempt, payment-intent, allocation, expiry, and lease-archive
-  transitions emit audit events.
-- Immutable price, quote-policy, and rail-health snapshots are persisted and
-  selected by the backend; issued quotes retain foreign keys to their exact
-  evidence rows.
-- `POST /v1/payment-intents/{intent_id}/quotes` accepts only an asset ID,
-  rejects injected pricing facts and cross-merchant access, uses the existing
-  API-key and idempotency boundaries, and pins its response key set in a real
-  HTTP/PostgreSQL test.
-- An issued quote replays during a later rail outage. Reusing its idempotency
-  key for another asset returns a conflict before checking that asset's current
-  availability.
-- A dedicated `gateway-scheduler` crate drives quote expiry and lease archival.
-  One sweep runs bounded batches until nothing is due or the per-tick ceiling is
-  reached, and reports a remaining backlog instead of hiding it.
-- Two sweeps cannot overlap: a single-flight guard rejects a concurrent sweep
-  inside one process, the tick is delayed rather than doubled, and concurrent
-  database sweeps archive each lease exactly once.
-- Only storage outages are retried, with capped exponential backoff and an
-  attempt ceiling; an invariant violation ends the sweep and is never retried.
-- Scheduler counters cover started, succeeded, failed, skipped-overlapping and
-  backlogged sweeps, executed batches, expired quotes, archived leases,
-  transient retries, the consecutive failure streak, and the last successful
-  sweep, which is absent rather than zero until one succeeds.
-- `gateway-api` runs the scheduler, stops it on `SIGTERM` or `Ctrl-C` between
-  batches, and joins it before exit. `GATEWAY_EXPIRY_*` settings are read at
-  startup; an unreadable value fails startup instead of defaulting silently.
+- Independent product and trust boundaries documented, with ADRs.
+- Rust workspace: domain, application, storage, HTTP, scheduler, webhook
+  delivery and the TRON address layer, plus the executable API.
+- Merchant API-key authentication, merchant-isolated payment intents and
+  transactional idempotency scoped by merchant, route and key.
+- Exact integer money everywhere; public JSON carries decimal strings, and
+  JSON numbers, signs, decimals, whitespace, zero and overflow are rejected.
+- Quotes are issued from server-owned price, policy and rail-health snapshots
+  and fail closed when any of them is missing, stale, future-dated or
+  unhealthy. Fiat-to-token conversion is checked 256-bit rational arithmetic
+  that always rounds up.
+- One exact-amount lease per collector and amount, one lease per attempt, with
+  PostgreSQL arbitrating allocation. Quote expiry and the late-payment window
+  are separate deadlines, and an expired lease is archived and released in one
+  transaction.
+- A bounded expiry scheduler with a single-flight guard, capped retries for
+  storage outages only, counters, and shutdown between batches.
+- Chain evidence intake: immutable sources, append-only observations
+  deduplicated by the identity of the claim, durable per-source cursors, and
+  component leases with fence tokens. The database fills the writing principal,
+  and row level security proves a compromised observer cannot speak for another
+  source.
+- The verifier creates a canonical fact only when independent provider groups
+  agree, its own re-read of the chain agrees with them, and the evidence is
+  fresh. Disagreement becomes a recorded conflict; an impostor token, a failed
+  transaction or a foreign recipient is refused; confirmation depth decides
+  finality; state advances by compare-and-swap, so a late confirmation cannot
+  pull a finalized transfer backwards.
+- Matching ties a transfer to at most one obligation: memo first, then a live
+  exact-amount reservation, then the reservation that held the slot when the
+  block was produced. Two candidates stop the machine instead of being guessed
+  between, and money nobody can explain is recorded and queued.
+- Settlement bands decide how much independent evidence an amount of a given
+  size needs. Claim, allocation, statuses, the fulfilment claim, the decision,
+  payment events and the outbox commit in one transaction, and the database
+  refuses an allocation that would exceed its transfer.
+- Signed webhook delivery: secrets are derived from a deployment master key and
+  never stored, a fingerprint mismatch refuses to sign rather than send an
+  unverifiable signature, deliveries retry with capped backoff and are
+  dead-lettered instead of retried forever, and an event nobody listens to is
+  never called delivered.
+- A generic leased worker runtime: observation intake, verification, settlement
+  and outbox delivery all run as bounded batches under a fenced lease, with
+  retries only for transient failures and a counted "not the leader" state.
+- Canonical TRON addresses: base58check, both hex forms and the 20-byte log
+  form reduce to the same bytes, and a mistyped address is refused.
 
 ## In progress
 
@@ -98,21 +80,35 @@ Last updated: 2026-09-21
 - CI workflow and production deployment manifests have not been added.
 - Production adapters that ingest price and rail-health snapshots are not yet
   implemented; current snapshot rows are test/development fixtures only.
-- The scheduler lives inside the API process. It must move to its own worker
-  deployment once the payment workers exist.
-- Scheduler counters are in-process only; no metrics endpoint or scrape target
+- The verification, settlement, outbox and observation workers exist but are
+  not yet started by the API binary; only the expiry scheduler is wired in.
+- The TRON crate carries the address layer only. The HTTP source that turns
+  provider answers into observations is the next slice, and it must parse
+  transaction logs rather than the address-indexed summary, because only the
+  log carries the event identity a canonical fact needs.
+- Worker counters are in-process only; no metrics endpoint or scrape target
   exposes them yet.
+- No reconciliation run, no component health ladder, and no operator API for
+  conflicts, unmatched money or risk decisions.
+- Risk screening is a stored decision with no provider behind it: every
+  transfer reads as skipped, which the settlement bands treat as not
+  screened, never as clean.
 
 ## Next slices
 
-1. Add authenticated internal adapters for immutable price and rail-health
-   snapshot ingestion, with independent-source and freshness monitoring.
-2. Expose scheduler and API health counters on an operator-only endpoint, and
-   alert on the consecutive failure streak and on a stale last successful sweep.
-3. Append-only chain observation ingestion.
-4. Independent verifier and canonical transfer lifecycle.
-5. Matching, allocation, ledger, and transactional webhook outbox.
-6. TRON adapter with two independent sources and reconciliation.
+1. The TRON HTTP source: list candidates from the address-indexed endpoint,
+   then read each transaction's logs for the event identity, with fixture
+   tests for hostile and malformed answers.
+2. Start every worker from the API binary, with per-worker configuration and
+   one shutdown path.
+3. Operator surface: metrics, payment health, and read APIs for conflicts,
+   unmatched money, held payments and dead-lettered events.
+4. Reconciliation: hourly incremental and daily full runs, with a money
+   discrepancy automatically closing new quotes on the affected rail.
+5. The component degradation ladder, where every transition is an event, a
+   metric and an alert.
+6. Authenticated internal ingestion of price and rail-health snapshots.
+7. A second independent TRON provider group, then the ERC20 adapter.
 
 ## Verification
 

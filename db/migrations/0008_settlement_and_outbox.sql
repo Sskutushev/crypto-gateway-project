@@ -155,6 +155,10 @@ CREATE TABLE domain_events (
     id UUID PRIMARY KEY,
     merchant_id UUID REFERENCES merchants(id),
     event_type TEXT NOT NULL,
+    -- A webhook event is owed to a merchant; an operator event is owed to a
+    -- person. They are never delivered the same way, so they never share a
+    -- queue silently.
+    channel TEXT NOT NULL DEFAULT 'webhook' CHECK (channel IN ('webhook', 'operator')),
     aggregate_type TEXT NOT NULL,
     aggregate_id UUID NOT NULL,
     payload JSONB NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
@@ -171,19 +175,21 @@ CREATE TABLE domain_events (
 );
 
 CREATE INDEX domain_events_queue_idx
-    ON domain_events (available_at)
+    ON domain_events (channel, available_at)
     WHERE delivered_at IS NULL AND dead_lettered_at IS NULL;
 
 CREATE INDEX domain_events_aggregate_idx ON domain_events (aggregate_type, aggregate_id);
 
--- Where a merchant wants to be told, and with which secret the signature is
--- computed. The secret is stored hashed; the plaintext exists only at the
--- moment it is issued.
+-- Where a merchant wants to be told. The signing secret is derived from the
+-- deployment master key, so the database holds only a fingerprint: a stolen
+-- backup cannot forge events, and a wrong master key is detected instead of
+-- producing signatures no merchant can verify.
 CREATE TABLE webhook_endpoints (
     id UUID PRIMARY KEY,
     merchant_id UUID NOT NULL REFERENCES merchants(id),
     url TEXT NOT NULL CHECK (url LIKE 'https://%'),
-    secret_hash BYTEA NOT NULL CHECK (octet_length(secret_hash) = 32),
+    secret_version INTEGER NOT NULL DEFAULT 1 CHECK (secret_version > 0),
+    secret_fingerprint BYTEA NOT NULL CHECK (octet_length(secret_fingerprint) = 32),
     description TEXT,
     status TEXT NOT NULL CHECK (status IN ('active', 'disabled')),
     created_at TIMESTAMPTZ NOT NULL,

@@ -6,6 +6,8 @@ members = [
   "crates/gateway-http",
   "crates/gateway-scheduler",
   "crates/gateway-storage",
+  "crates/gateway-tron",
+  "crates/gateway-webhook",
 ]
 resolver = "2"
 
@@ -21,12 +23,21 @@ alloy-primitives = { version = "1.3", features = ["serde"] }
 anyhow = "1.0"
 async-trait = "0.1"
 axum = "0.8"
+bs58 = "0.5"
 gateway-application = { version = "0.1.0", path = "crates/gateway-application" }
+hmac = "0.12"
 gateway-domain = { version = "0.1.0", path = "crates/gateway-domain" }
 gateway-http = { version = "0.1.0", path = "crates/gateway-http" }
 gateway-scheduler = { version = "0.1.0", path = "crates/gateway-scheduler" }
 gateway-storage = { version = "0.1.0", path = "crates/gateway-storage" }
+gateway-tron = { version = "0.1.0", path = "crates/gateway-tron" }
+gateway-webhook = { version = "0.1.0", path = "crates/gateway-webhook" }
 http = "1.3"
+reqwest = { version = "0.12", default-features = false, features = [
+  "charset",
+  "http2",
+  "rustls-tls",
+] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"

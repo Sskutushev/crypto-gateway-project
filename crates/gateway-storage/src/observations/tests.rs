@@ -1,8 +1,8 @@
 use std::{error::Error, str::FromStr};
 
 use gateway_application::{
-    ChainSource, ComponentLease, CursorKind, CursorPosition, ObservationRepository,
-    RepositoryError, ResolvedObservation,
+    ChainSource, ComponentLease, CursorKind, CursorPosition, LeaseRepository,
+    ObservationRepository, RepositoryError, ResolvedObservation,
 };
 use gateway_domain::{
     AddressKey, ExecutionStatus, ObservationKind, ObservedTransfer, RawAmount, SourceFinality,

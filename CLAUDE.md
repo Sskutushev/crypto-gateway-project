@@ -25,40 +25,39 @@ pass.
 
 ## Current handoff: 2026-09-21
 
-Two slices are complete and verified, and neither is committed:
+The payment pipeline is implemented and pushed, from a merchant's payment
+intent to a signed webhook, with 107 unit tests and 11 PostgreSQL scenarios.
 
-1. Quote and exact-amount lease lifecycle: immutable quotes, payment attempts,
-   one active lease per collector/raw-amount pair, separate quote and
-   late-payment deadlines, fail-closed evidence, and audited transitions.
-2. Bounded expiry scheduler (`crates/gateway-scheduler`): batched sweeps,
-   single-flight guard, capped retries for storage outages only, counters, and
-   shutdown between batches. `gateway-api` runs it and joins it before exit.
+What exists: quotes and exact-amount leases; chain evidence intake with fenced
+cursors and database-enforced source identity; the verifier that turns
+independent readings plus its own re-read into canonical facts; matching;
+settlement in one transaction; the outbox and signed delivery; a generic
+leased worker runtime; canonical TRON addresses.
 
-The next production slice is authenticated internal ingestion of immutable
-price and rail-health snapshots. Today's snapshot rows are development
-fixtures, so issuance still rests on hand-seeded evidence. That slice needs:
+What does not exist yet, in order:
 
-- an operator-authenticated internal write path, never the public merchant API;
-- two genuinely independent sources per asset, recorded per snapshot;
-- append-only snapshots: no update, no delete, no backdating;
-- freshness and disagreement monitoring that fails closed for new quotes;
-- proof that an ingestion outage leaves issued quotes replayable.
+1. The TRON HTTP source. Parse transaction logs, never the address-indexed
+   summary alone: only the log carries the event index that makes a canonical
+   fact identifiable. Test it with captured fixtures, including hostile ones.
+2. Starting the workers from the API binary; today only the expiry scheduler
+   runs there.
+3. The operator surface: metrics, payment health, and read APIs for conflicts,
+   unmatched money, held payments and dead-lettered events.
+4. Reconciliation and the degradation ladder.
 
 Do not copy private Refty entities or the root workspace crypto specification
 into this public standalone product. Use it only as historical threat-model
-input; this repository's `AGENTS.md`, architecture, and ADRs are authoritative.
+input; this repository's AGENTS.md, architecture and ADRs are authoritative.
 
 Important local state at handoff:
 
-- branch: `feat/standalone-gateway-foundation`;
-- remote: `https://github.com/Sskutushev/crypto-gateway-project.git`;
+- branch: feat/standalone-gateway-foundation, pushed;
 - Rust is not installed on the host. The pinned toolchain runs in the
-  `crypto-gateway-dev` container (`rust:1.90.0-bookworm`, `/workspace` bound to
-  this repository), and PostgreSQL runs in the Compose service on
-  `127.0.0.1:54329`. From the container that database is
-  `postgres://gateway:gateway@host.docker.internal:54329/gateway`, which the
-  ignored tests read from `GATEWAY_TEST_DATABASE_URL`;
-- the complete verification record and unavailable checks are in
-  `docs/implementation-status.md`;
-- do not start TRON integration before an independent verifier and
-  reconciliation path exist.
+  crypto-gateway-dev container (rust:1.90.0-bookworm, /workspace bound to this
+  repository), and PostgreSQL runs in Compose on 127.0.0.1:54329. From the
+  container that database is
+  postgres://gateway:gateway@host.docker.internal:54329/gateway, which the
+  ignored tests read from GATEWAY_TEST_DATABASE_URL;
+- the migrations are not released, so they are still edited in place; the dev
+  schema is reset with DROP SCHEMA public CASCADE when one changes;
+- the complete verification record is in docs/implementation-status.md.

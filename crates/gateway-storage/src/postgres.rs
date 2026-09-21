@@ -1237,7 +1237,7 @@ mod tests {
         CurrencyCode, FiatAmount, PriceSnapshot, QuotePlan, QuotePolicySnapshot, RailHealth,
         RailHealthSnapshot, RawAmount,
     };
-    use gateway_scheduler::{ExpiryConfig, ExpiryScheduler, RetryPolicy};
+    use gateway_scheduler::{BatchConfig, ExpiryScheduler, RetryPolicy};
     use serde_json::json;
     use sqlx::{PgPool, postgres::PgPoolOptions};
     use time::{Duration, OffsetDateTime};
@@ -1430,10 +1430,11 @@ mod tests {
                 Arc::clone(&repository),
                 FixedClock(after_late_window),
             )),
-            ExpiryConfig {
+            BatchConfig {
                 interval: std::time::Duration::from_secs(1),
                 batch_limit: 100,
                 max_batches_per_tick: 4,
+                lease_seconds: 30,
                 retry: RetryPolicy::default(),
             },
         )?;
@@ -1453,8 +1454,8 @@ mod tests {
                 .await?;
         assert_eq!(intent_status, "expired");
         let metrics = scheduler.metrics().snapshot();
-        assert_eq!(metrics.sweeps_succeeded, 1);
-        assert_eq!(metrics.sweeps_failed, 0);
+        assert_eq!(metrics.runs_succeeded, 1);
+        assert_eq!(metrics.runs_failed, 0);
         assert_eq!(metrics.batches_executed, 1);
         assert_eq!(metrics.backlog_left, 0);
 

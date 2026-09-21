@@ -154,16 +154,6 @@ impl ObservationRepository for FakeRepository {
             .map_err(|_| RepositoryError::CorruptData("test fixture".to_owned()))
     }
 
-    async fn acquire_component_lease(
-        &self,
-        _component: &str,
-        _holder: &str,
-        _ttl_seconds: i64,
-        _now: OffsetDateTime,
-    ) -> Result<Option<ComponentLease>, RepositoryError> {
-        Ok(None)
-    }
-
     async fn find_cursor(
         &self,
         _source_id: Uuid,

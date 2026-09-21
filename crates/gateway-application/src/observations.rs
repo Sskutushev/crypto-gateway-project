@@ -272,6 +272,53 @@ pub struct ResolvedObservation {
     pub observed_at: OffsetDateTime,
 }
 
+/// One page of a chain scan: what was read, where to resume, and how far the
+/// source says the chain has advanced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanPage {
+    pub transfers: Vec<ObservedTransfer>,
+    /// Where the next scan resumes. `None` means the source could not tell,
+    /// so the cursor is left where it was rather than guessed forward.
+    pub next_cursor: Option<CursorPosition>,
+    pub head: Option<i64>,
+}
+
+/// A source's window onto one collector address.
+///
+/// The scanner reports what a provider claimed. It never decides that a
+/// payment happened, and it never advances a cursor by itself.
+#[async_trait]
+pub trait ChainScanner: Send + Sync {
+    /// Reads transfers to one collector address from the given position.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the provider could not be reached or answered
+    /// with something this gateway cannot parse.
+    async fn scan(
+        &self,
+        watch: &CollectorWatch,
+        cursor: Option<&CursorPosition>,
+        limit: u32,
+    ) -> Result<ScanPage, ScanError>;
+}
+
+#[derive(Debug, Error)]
+pub enum ScanError {
+    #[error("the chain source is unreachable: {0}")]
+    Unreachable(String),
+    #[error("the chain source answered with something unparseable: {0}")]
+    Unparseable(String),
+}
+
+impl ScanError {
+    /// Reports whether a retry can plausibly succeed without operator action.
+    #[must_use]
+    pub const fn is_transient(&self) -> bool {
+        matches!(self, Self::Unreachable(_))
+    }
+}
+
 #[async_trait]
 pub trait ObservationRepository: Send + Sync {
     async fn find_source(&self, source_key: &str) -> Result<Option<ChainSource>, RepositoryError>;
@@ -282,14 +329,6 @@ pub trait ObservationRepository: Send + Sync {
         network: &str,
         environment: ChainEnvironment,
     ) -> Result<Vec<CollectorWatch>, RepositoryError>;
-
-    async fn acquire_component_lease(
-        &self,
-        component: &str,
-        holder: &str,
-        ttl_seconds: i64,
-        now: OffsetDateTime,
-    ) -> Result<Option<ComponentLease>, RepositoryError>;
 
     async fn find_cursor(
         &self,

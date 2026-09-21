@@ -7,7 +7,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 gateway-application.workspace = true
+gateway-domain.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tokio.workspace = true
