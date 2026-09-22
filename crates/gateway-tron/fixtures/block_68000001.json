@@ -1,0 +1,12 @@
+{
+  "blockID": "0000000005",
+  "block_header": {
+    "raw_data": {
+      "number": 68000001,
+      "timestamp": 1758000003000,
+      "parentHash": "0000000004",
+      "witness_address": "41928c9af0651632157ef27a2cf17ca72c575a4d21"
+    },
+    "witness_signature": "0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}
