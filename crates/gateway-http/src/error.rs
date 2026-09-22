@@ -1,5 +1,5 @@
 use axum::{Json, http::StatusCode, response::IntoResponse};
-use gateway_application::{QuoteServiceError, RepositoryError, ServiceError};
+use gateway_application::{OperationsError, QuoteServiceError, RepositoryError, ServiceError};
 use serde::Serialize;
 
 #[derive(Debug, thiserror::Error)]
@@ -14,6 +14,8 @@ pub enum ApiError {
     Quote(#[from] QuoteServiceError),
     #[error(transparent)]
     Repository(#[from] RepositoryError),
+    #[error(transparent)]
+    Operations(#[from] OperationsError),
     #[error("database readiness check failed")]
     NotReady,
 }
@@ -90,6 +92,15 @@ impl IntoResponse for ApiError {
                 "quote_unavailable",
                 "a safe quote cannot be issued right now".to_owned(),
             ),
+            Self::Quote(QuoteServiceError::RailStopped(_)) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "rail_stopped",
+                error_message.clone(),
+            ),
+            Self::Operations(ref operations) => {
+                let (status, code) = crate::handlers::status_for(operations);
+                (status, code, error_message.clone())
+            }
             Self::NotReady => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "not_ready",

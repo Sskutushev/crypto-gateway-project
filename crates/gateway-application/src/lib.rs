@@ -1,4 +1,5 @@
 mod observations;
+mod operations;
 mod outbox;
 mod payment_intents;
 mod ports;
@@ -11,6 +12,10 @@ pub use observations::{
     CursorPosition, IntakeReport, ObservationError, ObservationRepository, ObservationService,
     RefusalReason, ResolvedObservation, ScanError, ScanPage, SourceKind, SourceState,
     parse_raw_amount, parse_tx_hash,
+};
+pub use operations::{
+    OperationsError, OperationsRepository, OperationsService, OperatorCredential, OperatorScope,
+    PriceIngestion, PriceOutcome, RailStop, RecordedPrice, RiskSubmission, discard_code,
 };
 pub use outbox::{
     DeliveryAttempt, DeliveryResult, OutboxError, OutboxEvent, OutboxReport, OutboxRepository,

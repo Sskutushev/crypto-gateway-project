@@ -7,6 +7,7 @@
 mod chain;
 mod money;
 mod payment_intent;
+mod price;
 mod quote;
 mod settlement;
 mod verification;
@@ -18,6 +19,10 @@ pub use chain::{
 };
 pub use money::{CurrencyCode, FiatAmount, MoneyError, RawAmount};
 pub use payment_intent::{PaymentIntent, PaymentIntentError, PaymentIntentStatus};
+pub use price::{
+    AggregatedPrice, PriceAggregationError, PriceAggregationPolicy, PriceDiscardReason,
+    PriceReading, aggregate,
+};
 pub use quote::{
     IssuedQuote, PriceSnapshot, QuoteError, QuotePlan, QuotePolicySnapshot, RailHealth,
     RailHealthSnapshot,

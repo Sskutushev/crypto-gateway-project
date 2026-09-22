@@ -132,6 +132,7 @@ struct QuoteContextRow {
     rail_health_snapshot_id: Option<Uuid>,
     rail_health: Option<String>,
     rail_health_observed_at: Option<OffsetDateTime>,
+    rail_stop_reason: Option<String>,
 }
 
 impl TryFrom<QuoteContextRow> for QuoteContext {
@@ -213,6 +214,7 @@ impl TryFrom<QuoteContextRow> for QuoteContext {
             price,
             policy,
             rail_health,
+            rail_stop_reason: row.rail_stop_reason,
         })
     }
 }
@@ -440,7 +442,8 @@ impl QuoteRepository for PostgresRepository {
                    policy.observed_at AS policy_observed_at,
                    rail.id AS rail_health_snapshot_id,
                    rail.health AS rail_health,
-                   rail.observed_at AS rail_health_observed_at
+                   rail.observed_at AS rail_health_observed_at,
+                   stop.reason_code AS rail_stop_reason
               FROM collector_addresses AS collector
               JOIN chain_assets AS asset ON asset.id = collector.asset_id
               LEFT JOIN LATERAL (
@@ -475,6 +478,13 @@ impl QuoteRepository for PostgresRepository {
                      ORDER BY snapshot.observed_at DESC, snapshot.id DESC
                      LIMIT 1
               ) AS rail ON true
+              LEFT JOIN LATERAL (
+                    SELECT open_stop.reason_code
+                      FROM rail_stops AS open_stop
+                     WHERE open_stop.asset_id = collector.asset_id
+                       AND open_stop.cleared_at IS NULL
+                     LIMIT 1
+              ) AS stop ON true
              WHERE collector.asset_id = $1
                AND collector.state = 'active'
                AND collector.valid_from <= now()

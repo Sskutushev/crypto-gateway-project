@@ -38,6 +38,10 @@ pub struct QuoteContext {
     pub price: Option<PriceSnapshot>,
     pub policy: Option<QuotePolicySnapshot>,
     pub rail_health: Option<RailHealthSnapshot>,
+    /// The reason this rail is closed, when it is. A stop closes new quotes
+    /// and leaves issued ones payable: it is a decision about obligations not
+    /// yet made, never a way to forget the ones already made.
+    pub rail_stop_reason: Option<String>,
 }
 
 #[async_trait]

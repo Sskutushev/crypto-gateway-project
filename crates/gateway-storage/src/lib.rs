@@ -1,4 +1,5 @@
 mod observations;
+mod operations;
 mod outbox;
 mod postgres;
 mod settlement;

@@ -5,18 +5,22 @@ mod handlers;
 use std::{sync::Arc, time::Duration};
 
 use axum::{Router, http::StatusCode, middleware, routing::get};
-use gateway_application::{PaymentIntentService, QuoteService, SystemClock};
+use gateway_application::{OperationsService, PaymentIntentService, QuoteService, SystemClock};
 use gateway_storage::{PgPool, PostgresRepository};
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::{catch_panic::CatchPanicLayer, timeout::TimeoutLayer, trace::TraceLayer};
 
-use crate::{auth::authenticate, handlers::health};
+use crate::{
+    auth::{authenticate, authenticate_operator},
+    handlers::health,
+};
 
 #[derive(Debug, Clone)]
 pub struct AppState {
     pub repository: Arc<PostgresRepository>,
     pub payment_intents: Arc<PaymentIntentService<PostgresRepository, SystemClock>>,
     pub quotes: Arc<QuoteService<PostgresRepository, SystemClock>>,
+    pub operations: Arc<OperationsService<PostgresRepository, SystemClock>>,
     pub pool: PgPool,
 }
 
@@ -29,10 +33,12 @@ impl AppState {
             SystemClock,
         ));
         let quotes = Arc::new(QuoteService::new(Arc::clone(&repository), SystemClock));
+        let operations = Arc::new(OperationsService::new(Arc::clone(&repository), SystemClock));
         Self {
             repository,
             payment_intents,
             quotes,
+            operations,
             pool,
         }
     }
@@ -41,11 +47,16 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     let protected = handlers::payment_intent_routes()
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
+    let operator = handlers::operator_routes().route_layer(middleware::from_fn_with_state(
+        state.clone(),
+        authenticate_operator,
+    ));
 
     Router::new()
         .route("/health/live", get(health::live))
         .route("/health/ready", get(health::ready))
         .merge(protected)
+        .merge(operator)
         .with_state(state)
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,

@@ -76,6 +76,9 @@ where
             .repository
             .load_quote_context(input.asset_id, &intent.amount.currency)
             .await?;
+        if let Some(reason) = context.rail_stop_reason {
+            return Err(QuoteServiceError::RailStopped(reason));
+        }
         let plan = QuotePlan::build(
             merchant_id,
             intent.id,
@@ -154,6 +157,8 @@ pub enum QuoteServiceError {
     PaymentIntentNotFound,
     #[error("expiry batch limit must be between 1 and 10000")]
     InvalidExpiryBatchLimit,
+    #[error("this rail is closed: {0}")]
+    RailStopped(String),
     #[error(transparent)]
     Quote(#[from] QuoteError),
     #[error(transparent)]
