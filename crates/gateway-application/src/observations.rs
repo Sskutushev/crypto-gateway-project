@@ -99,6 +99,9 @@ pub struct CollectorWatch {
     pub asset_id: Uuid,
     pub token_key: AddressKey,
     pub decimals: i16,
+    /// The allowlisted asset's display name. It travels with the watch so a
+    /// reading never has to name a token from anywhere but the allowlist.
+    pub token_display: String,
     pub chain: String,
     pub network: String,
     pub chain_environment: ChainEnvironment,

@@ -111,6 +111,7 @@ fn collector(state: CollectorState) -> Result<CollectorWatch, Box<dyn Error>> {
         asset_id: ASSET_ID,
         token_key: AddressKey::new([7_u8; 20])?,
         decimals: 6,
+        token_display: "USDT".to_owned(),
         chain: "tron".to_owned(),
         network: "nile".to_owned(),
         chain_environment: ChainEnvironment::Testnet,

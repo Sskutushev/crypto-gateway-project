@@ -1,0 +1,23 @@
+[package]
+name = "gateway-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+gateway-application.workspace = true
+gateway-domain.workspace = true
+gateway-scheduler.workspace = true
+gateway-storage.workspace = true
+gateway-tron.workspace = true
+gateway-webhook.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

@@ -148,6 +148,7 @@ fn watch() -> Result<CollectorWatch, Box<dyn Error>> {
         asset_id: Uuid::from_u128(8),
         token_key: from_hex(USDT_LOG_FORM)?,
         decimals: 6,
+        token_display: "USDT".to_owned(),
         chain: "tron".to_owned(),
         network: "mainnet".to_owned(),
         chain_environment: ChainEnvironment::Mainnet,

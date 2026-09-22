@@ -13,6 +13,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 RUN useradd --create-home --uid 10001 gateway
 COPY --from=builder /tmp/gateway-api /usr/local/bin/gateway-api
+# One image, two entry points: a deployment that runs background roles
+# overrides the command with `gateway-worker`.
+COPY --from=builder /tmp/gateway-worker /usr/local/bin/gateway-worker
 USER gateway
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/gateway-api"]

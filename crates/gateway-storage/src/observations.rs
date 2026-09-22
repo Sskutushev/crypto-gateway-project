@@ -53,6 +53,7 @@ struct CollectorWatchRow {
     asset_id: Uuid,
     token_key: Vec<u8>,
     decimals: i16,
+    token_display: String,
     chain: String,
     network: String,
     chain_environment: String,
@@ -72,6 +73,7 @@ impl TryFrom<CollectorWatchRow> for CollectorWatch {
             token_key: AddressKey::new(row.token_key)
                 .map_err(|error| corrupt(error.to_string()))?,
             decimals: row.decimals,
+            token_display: row.token_display,
             chain: row.chain,
             network: row.network,
             chain_environment: row
@@ -201,6 +203,7 @@ impl ObservationRepository for PostgresRepository {
                    asset.id AS asset_id,
                    asset.contract_address_key AS token_key,
                    asset.decimals,
+                   asset.display_symbol AS token_display,
                    asset.chain,
                    asset.network,
                    asset.chain_environment,

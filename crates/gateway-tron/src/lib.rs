@@ -18,4 +18,6 @@ pub use event::{
     BlockRef, ChainContext, HeadState, ParsedTransfer, TokenView, TransactionInfo, TronParseError,
     parse_transfers, to_observation,
 };
-pub use source::{ScanLane, TronHttpSource, TronSourceConfig, TronSourceError};
+pub use source::{
+    ReqwestTransport, ScanLane, TronHttpSource, TronSourceConfig, TronSourceError, TronTransport,
+};

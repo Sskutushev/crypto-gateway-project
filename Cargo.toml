@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "apps/gateway-api",
+  "apps/gateway-worker",
   "crates/gateway-application",
   "crates/gateway-domain",
   "crates/gateway-http",
