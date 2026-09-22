@@ -1,12 +1,15 @@
+mod health;
 mod observations;
 mod operations;
 mod outbox;
 mod payment_intents;
 mod ports;
 mod quotes;
+mod reconciliation;
 mod settlement;
 mod verification;
 
+pub use health::{ComponentState, ComponentStatus, HealthError, HealthRepository, HealthService};
 pub use observations::{
     ChainScanner, ChainSource, CollectorState, CollectorWatch, ComponentLease, CursorKind,
     CursorPosition, IntakeReport, ObservationError, ObservationRepository, ObservationService,
@@ -29,6 +32,11 @@ pub use ports::{
     PaymentIntentRepository, QuoteContext, QuoteRepository, RepositoryError, SystemClock,
 };
 pub use quotes::{ExpirySweeper, IssueQuote, IssueQuoteResult, QuoteService, QuoteServiceError};
+pub use reconciliation::{
+    Discrepancy, DiscrepancyKind, ReconciliationError, ReconciliationKind, ReconciliationReport,
+    ReconciliationRepository, ReconciliationService, ReconciliationWindow, RunRecord, RunStatus,
+    ScanFindings,
+};
 pub use settlement::{
     AttemptSnapshot, PendingTransfer, SettlementCommand, SettlementRecord, SettlementReport,
     SettlementRepository, SettlementService, SettlementServiceError, UnresolvedTransfer,

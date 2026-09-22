@@ -22,15 +22,17 @@ pub enum Role {
     Verifier,
     Settlement,
     Outbox,
+    Reconciler,
 }
 
 impl Role {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Expiry,
         Self::Observer,
         Self::Verifier,
         Self::Settlement,
         Self::Outbox,
+        Self::Reconciler,
     ];
 
     #[must_use]
@@ -41,6 +43,7 @@ impl Role {
             Self::Verifier => "verifier",
             Self::Settlement => "settlement",
             Self::Outbox => "outbox",
+            Self::Reconciler => "reconciler",
         }
     }
 
@@ -52,6 +55,7 @@ impl Role {
             Self::Verifier => "GATEWAY_VERIFIER",
             Self::Settlement => "GATEWAY_SETTLEMENT",
             Self::Outbox => "GATEWAY_OUTBOX",
+            Self::Reconciler => "GATEWAY_RECONCILER",
         }
     }
 

@@ -2,9 +2,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use gateway_application::{
-    ChainReader, Clock, ComponentLease, ObservationRepository, OutboxError, OutboxRepository,
-    OutboxService, SettlementRepository, SettlementService, SettlementServiceError,
-    VerificationRepository, VerificationService, VerificationServiceError, WebhookSender,
+    ChainReader, Clock, ComponentLease, HealthRepository, ObservationRepository,
+    OperationsRepository, OutboxError, OutboxRepository, OutboxService, ReconciliationError,
+    ReconciliationKind, ReconciliationRepository, ReconciliationService, SettlementRepository,
+    SettlementService, SettlementServiceError, VerificationRepository, VerificationService,
+    VerificationServiceError, WebhookSender,
 };
 
 use crate::worker::{BatchOutcome, LeasedWorker, WorkerError};
@@ -188,6 +190,67 @@ where
 
 #[allow(clippy::needless_pass_by_value)]
 fn classify_outbox(error: OutboxError) -> WorkerError {
+    if error.is_transient() {
+        return WorkerError::Transient(error.to_string());
+    }
+    WorkerError::Permanent(error.to_string())
+}
+
+/// Checks that the money still adds up, one bounded pass at a time.
+///
+/// The pass is the whole batch: reconciliation asks its questions of the whole
+/// window or of none of it, so a "drained" report simply means this tick is
+/// done rather than that a queue is empty.
+#[derive(Debug)]
+pub struct ReconciliationWorker<R, C> {
+    service: Arc<ReconciliationService<R, C>>,
+    component: String,
+    kind: ReconciliationKind,
+}
+
+impl<R, C> ReconciliationWorker<R, C> {
+    pub fn new(
+        service: Arc<ReconciliationService<R, C>>,
+        component: impl Into<String>,
+        kind: ReconciliationKind,
+    ) -> Self {
+        Self {
+            service,
+            component: component.into(),
+            kind,
+        }
+    }
+}
+
+#[async_trait]
+impl<R, C> LeasedWorker for ReconciliationWorker<R, C>
+where
+    R: ReconciliationRepository + OperationsRepository + HealthRepository,
+    C: Clock,
+{
+    fn component(&self) -> &str {
+        &self.component
+    }
+
+    fn name(&self) -> &'static str {
+        "reconciler"
+    }
+
+    async fn run_batch(&self, _lease: &ComponentLease) -> Result<BatchOutcome, WorkerError> {
+        let report = self
+            .service
+            .run_once(self.kind)
+            .await
+            .map_err(classify_reconciliation)?;
+        Ok(BatchOutcome {
+            processed: u32::try_from(report.discrepancies.len()).unwrap_or(u32::MAX),
+            drained: true,
+        })
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn classify_reconciliation(error: ReconciliationError) -> WorkerError {
     if error.is_transient() {
         return WorkerError::Transient(error.to_string());
     }

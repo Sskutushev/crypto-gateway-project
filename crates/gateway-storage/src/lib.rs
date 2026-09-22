@@ -1,6 +1,7 @@
 mod observations;
 mod operations;
 mod outbox;
+mod oversight;
 mod postgres;
 mod settlement;
 #[cfg(test)]

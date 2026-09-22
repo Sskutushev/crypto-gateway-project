@@ -1,13 +1,14 @@
 # Implementation Status
 
-Last updated: 2026-09-21
+Last updated: 2026-09-22
 
 ## Repository state
 
 - Branch: `feat/standalone-gateway-foundation`
 - Remote: `https://github.com/Sskutushev/crypto-gateway-project.git`
 - Working tree: clean; the payment pipeline through settlement and signed
-  webhook delivery is committed and pushed.
+  webhook delivery, the TRON HTTP source, the worker runtime, the operator
+  surface and reconciliation are committed and pushed.
 - This tree is the repository's initial history; there is no earlier product
   implementation to preserve or migrate.
 
@@ -72,42 +73,68 @@ Last updated: 2026-09-21
   retries only for transient failures and a counted "not the leader" state.
 - Canonical TRON addresses: base58check, both hex forms and the 20-byte log
   form reduce to the same bytes, and a mistyped address is refused.
+- The TRON HTTP source. One type serves the observer's scanner and the
+  verifier's re-read, and both end at a transaction's event log, because only
+  the log carries the event index a canonical fact is identified by. Two lanes:
+  the block lane walks solidified blocks under a durable cursor and never
+  advances past what the chain can still replace; the address lane asks a
+  provider which transactions touched a collector and then reads those
+  transactions' logs. Nothing retries inside the client, an undecodable answer
+  is a permanent refusal, an absent execution result is a refusal rather than a
+  success, and an unknown token keeps its own address and no scale.
+- The worker runtime. `gateway-worker` runs the roles named by
+  `GATEWAY_WORKER_ROLES` (expiry, observer, verifier, settlement, outbox,
+  reconciler) with one shutdown path, per-role bounds, and a refusal to start
+  under a source row that describes another chain or environment. The chain
+  environment has no default.
+- The operator surface. Operator keys are their own credential with `ingest`,
+  `read` and `admin` scopes. Prices are submitted as readings and aggregated by
+  policy: independence counted by provider group, the exact rational mean of
+  the two middle readings, a deviation ceiling, and a refusal that still stores
+  every reading with the reason it did not count. A snapshot is only as fresh
+  as its stalest input. Rail health and screening decisions have the same
+  attributable write path.
+- Rail stops. A closed rail stops new quotes and leaves issued ones payable.
+  Reopening requires a person and a recorded reason.
+- Component health and reconciliation. Every component publishes its state and
+  every transition is an event; reconciliation runs eight checks over a window
+  and separates findings about counters from findings about money. Money that
+  does not add up closes the rail by itself.
 
 ## In progress
 
 - Dependency advisory scanning needs a reliable RustSec index connection; the
   local full `cargo deny check` stalled while fetching the advisory database.
 - CI workflow and production deployment manifests have not been added.
-- Production adapters that ingest price and rail-health snapshots are not yet
-  implemented; current snapshot rows are test/development fixtures only.
-- The verification, settlement, outbox and observation workers exist but are
-  not yet started by the API binary; only the expiry scheduler is wired in.
-- The TRON crate carries the address layer only. The HTTP source that turns
-  provider answers into observations is the next slice, and it must parse
-  transaction logs rather than the address-indexed summary, because only the
-  log carries the event identity a canonical fact needs.
-- Worker counters are in-process only; no metrics endpoint or scrape target
-  exposes them yet.
-- No reconciliation run, no component health ladder, and no operator API for
-  conflicts, unmatched money or risk decisions.
-- Risk screening is a stored decision with no provider behind it: every
-  transfer reads as skipped, which the settlement bands treat as not
-  screened, never as clean.
+- The reconciliation SQL has unit coverage of its decisions but no PostgreSQL
+  scenario of its own yet: the checks run against the migrated schema in the
+  existing scenarios, not against seeded discrepancies.
+- No metrics endpoint. Worker counters and component health are stored, and
+  nothing scrapes them yet.
+- No operator read API for conflicts, unmatched money, held payments or
+  dead-lettered events; the write paths exist, the views do not.
+- No start-up self-check: pinned collector and token hashes are stored and are
+  not yet verified against the process configuration before readiness.
+- Least-privileged database roles are described but not shipped as SQL.
+- Risk screening has an attributable push path and no provider behind it: a
+  transfer nobody screened reads as skipped, which the settlement bands treat
+  as not screened, never as clean.
 
 ## Next slices
 
-1. The TRON HTTP source: list candidates from the address-indexed endpoint,
-   then read each transaction's logs for the event identity, with fixture
-   tests for hostile and malformed answers.
-2. Start every worker from the API binary, with per-worker configuration and
-   one shutdown path.
-3. Operator surface: metrics, payment health, and read APIs for conflicts,
-   unmatched money, held payments and dead-lettered events.
-4. Reconciliation: hourly incremental and daily full runs, with a money
-   discrepancy automatically closing new quotes on the affected rail.
-5. The component degradation ladder, where every transition is an event, a
-   metric and an alert.
-6. Authenticated internal ingestion of price and rail-health snapshots.
+1. Operator read API and a Prometheus endpoint: component health, payment
+   health, conflicts, unmatched money, held payments, dead-lettered events.
+2. A PostgreSQL scenario per reconciliation check, seeded with the discrepancy
+   each one exists to find.
+3. Start-up self-check: pinned collector and token hashes against the process
+   configuration, environment agreement, chain head, clock skew. Failure means
+   not ready.
+4. Least-privileged database roles as applied SQL, with a scenario proving an
+   observer cannot write a canonical transfer.
+5. Deployment: production compose, Kubernetes manifests per role, probes and
+   limits.
+6. CI: format, clippy, deny, audit, unit, PostgreSQL scenarios, fuzz smoke,
+   image build, SBOM, scan, publish.
 7. A second independent TRON provider group, then the ERC20 adapter.
 
 ## Verification

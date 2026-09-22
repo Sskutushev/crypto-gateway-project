@@ -16,11 +16,12 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use gateway_application::{
     ChainSource, CollectorWatch, ObservationRepository, ObservationService, OutboxService,
-    QuoteService, SettlementService, SystemClock, VerificationService,
+    QuoteService, ReconciliationKind, ReconciliationService, ReconciliationWindow,
+    SettlementService, SystemClock, VerificationService,
 };
 use gateway_scheduler::{
-    BatchConfig, ExpiryScheduler, LeasedWorker, ObservationWorker, OutboxWorker, SettlementWorker,
-    VerificationWorker, WorkerLoop,
+    BatchConfig, ExpiryScheduler, LeasedWorker, ObservationWorker, OutboxWorker,
+    ReconciliationWorker, SettlementWorker, VerificationWorker, WorkerLoop,
 };
 use gateway_storage::{PgPoolOptions, PostgresRepository};
 use gateway_tron::{ReqwestTransport, ScanLane, TokenView, TronHttpSource, TronSourceConfig};
@@ -60,6 +61,7 @@ async fn main() -> Result<()> {
             Role::Verifier => spawn_verifier(&settings, &repository, config, stop).await?,
             Role::Settlement => spawn_settlement(&settings, &repository, config, stop)?,
             Role::Outbox => spawn_outbox(&settings, &repository, config, stop)?,
+            Role::Reconciler => spawn_reconciler(&settings, &repository, config, stop)?,
         };
         handles.push(handle);
         info!(role = role.as_str(), "role started");
@@ -221,6 +223,25 @@ fn spawn_outbox(
         .context("configure signed webhook delivery")?,
     );
     let worker = Arc::new(OutboxWorker::new(service, "outbox", config.batch_limit));
+    spawn_loop(worker, repository, settings, config, stop)
+}
+
+fn spawn_reconciler(
+    settings: &WorkerSettings,
+    repository: &Arc<PostgresRepository>,
+    config: BatchConfig,
+    stop: watch::Receiver<bool>,
+) -> Result<JoinHandle<()>> {
+    let service = Arc::new(ReconciliationService::new(
+        Arc::clone(repository),
+        SystemClock,
+        ReconciliationWindow::default(),
+    ));
+    let worker = Arc::new(ReconciliationWorker::new(
+        service,
+        "reconciler",
+        ReconciliationKind::Incremental,
+    ));
     spawn_loop(worker, repository, settings, config, stop)
 }
 
