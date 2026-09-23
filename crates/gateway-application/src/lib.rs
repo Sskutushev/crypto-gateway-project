@@ -1,6 +1,7 @@
 mod health;
 mod observations;
 mod operations;
+mod operator_reads;
 mod outbox;
 mod payment_intents;
 mod ports;
@@ -19,6 +20,14 @@ pub use observations::{
 pub use operations::{
     OperationsError, OperationsRepository, OperationsService, OperatorCredential, OperatorScope,
     PriceIngestion, PriceOutcome, RailStop, RecordedPrice, RiskSubmission, discard_code,
+};
+pub use operator_reads::{
+    ConflictItem, DeadLetter, DiscrepancyAggregate, EvidenceAllocation, EvidenceAttempt,
+    EvidenceFulfillment, EvidenceIntent, EvidencePaymentEvent, EvidenceQuote,
+    EvidenceSettlementDecision, EvidenceTransfer, HeldPayment, MinorUnits, ObservationConflict,
+    OperatorReadRepository, OperatorReadService, Overview, Page, PageRequest,
+    PaymentIntentEvidence, ReconciliationDiscrepancy, ReconciliationRun, ReconciliationRunSummary,
+    SettlementDecisionSummary, StateCount, UnmatchedTransfer, WebhookDeliverySummary,
 };
 pub use outbox::{
     DeliveryAttempt, DeliveryResult, OutboxError, OutboxEvent, OutboxReport, OutboxRepository,

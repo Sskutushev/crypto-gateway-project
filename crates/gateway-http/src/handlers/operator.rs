@@ -236,9 +236,9 @@ fn parse_rate(value: &str) -> Result<RawAmount, ApiError> {
 pub fn status_for(error: &OperationsError) -> (StatusCode, &'static str) {
     match error {
         OperationsError::MissingScope(_) => (StatusCode::FORBIDDEN, "missing_scope"),
-        OperationsError::NoReadings | OperationsError::ReasonRequired => {
-            (StatusCode::BAD_REQUEST, "invalid_request")
-        }
+        OperationsError::NoReadings
+        | OperationsError::ReasonRequired
+        | OperationsError::InvalidPageLimit => (StatusCode::BAD_REQUEST, "invalid_request"),
         OperationsError::NoPricePolicy => (StatusCode::CONFLICT, "no_price_policy"),
         OperationsError::NoOpenRailStop => (StatusCode::CONFLICT, "no_open_rail_stop"),
         OperationsError::Price(_) => (StatusCode::UNPROCESSABLE_ENTITY, "price_not_agreed"),

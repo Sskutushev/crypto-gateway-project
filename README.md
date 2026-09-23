@@ -28,6 +28,22 @@ rail.
 
 ## Development
 
+Operator keys carrying the `read` scope can inspect the gateway through:
+
+- `GET /v1/operator/overview`
+- `GET /v1/operator/conflicts`
+- `GET /v1/operator/unmatched-transfers`
+- `GET /v1/operator/held-payments`
+- `GET /v1/operator/dead-letters`
+- `GET /v1/operator/reconciliation/runs`
+- `GET /v1/operator/reconciliation/discrepancies`
+- `GET /v1/operator/payment-intents/{intent_id}`
+- `GET /metrics`
+
+The list routes use UUID keyset pagination through `limit` and `before`.
+Prometheus must send an operator key carrying `read` as its `bearer_token`;
+`/metrics` is intended for in-cluster scraping only and must not be public.
+
 Prerequisites:
 
 - Rust stable (pinned in `rust-toolchain.toml`)

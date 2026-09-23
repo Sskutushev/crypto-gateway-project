@@ -1,5 +1,6 @@
 mod observations;
 mod operations;
+mod operator_reads;
 mod outbox;
 mod oversight;
 mod postgres;

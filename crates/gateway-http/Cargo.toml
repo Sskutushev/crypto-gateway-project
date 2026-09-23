@@ -10,6 +10,7 @@ repository.workspace = true
 axum.workspace = true
 gateway-application.workspace = true
 gateway-domain.workspace = true
+gateway-scheduler.workspace = true
 gateway-storage.workspace = true
 http.workspace = true
 serde.workspace = true

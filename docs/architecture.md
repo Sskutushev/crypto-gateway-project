@@ -104,6 +104,17 @@ one order claim. Ledger entries have unique business references. Webhook
 events have stable IDs and are delivered at least once; merchants must dedupe
 by event ID.
 
+## Operator surface
+
+Operator reads are a separate authenticated surface spanning all merchants so
+an incident can be reconstructed without weakening merchant isolation. A
+dedicated `read` scope exposes bounded, keyset-paginated evidence for health,
+conflicts, unmatched transfers, held payments, dead letters and reconciliation;
+the same scope protects the Prometheus scrape. Metrics are rendered from one
+complete database snapshot request and fail the scrape on storage error, since
+silently missing a family would turn an observability outage into a false
+healthy signal.
+
 ## Degradation
 
 The system fails closed for new quotes when evidence, pricing, policy, or

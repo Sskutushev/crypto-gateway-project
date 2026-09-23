@@ -1,5 +1,6 @@
 pub mod health;
 mod operator;
+mod operator_reads;
 mod payment_intents;
 mod quotes;
 
@@ -42,4 +43,25 @@ pub fn operator_routes() -> Router<AppState> {
             "/v1/operator/transfers/{transfer_id}/risk-evaluations",
             post(operator::submit_risk_evaluation),
         )
+        .route("/v1/operator/overview", get(operator_reads::overview))
+        .route("/v1/operator/conflicts", get(operator_reads::conflicts))
+        .route(
+            "/v1/operator/unmatched-transfers",
+            get(operator_reads::unmatched),
+        )
+        .route("/v1/operator/held-payments", get(operator_reads::held))
+        .route("/v1/operator/dead-letters", get(operator_reads::dead))
+        .route(
+            "/v1/operator/reconciliation/runs",
+            get(operator_reads::runs),
+        )
+        .route(
+            "/v1/operator/reconciliation/discrepancies",
+            get(operator_reads::discrepancies),
+        )
+        .route(
+            "/v1/operator/payment-intents/{intent_id}",
+            get(operator_reads::evidence),
+        )
+        .route("/metrics", get(crate::metrics::metrics))
 }

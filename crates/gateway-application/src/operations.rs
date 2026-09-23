@@ -401,6 +401,8 @@ pub const fn discard_code(reason: PriceDiscardReason) -> &'static str {
 pub enum OperationsError {
     #[error("this operator key does not carry the {} scope", .0.as_str())]
     MissingScope(OperatorScope),
+    #[error("page limit must be greater than zero")]
+    InvalidPageLimit,
     #[error("unknown operator scope: {0}")]
     UnknownScope(String),
     #[error("a price submission carries at least one reading")]

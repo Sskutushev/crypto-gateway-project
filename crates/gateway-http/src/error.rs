@@ -18,6 +18,8 @@ pub enum ApiError {
     Operations(#[from] OperationsError),
     #[error("database readiness check failed")]
     NotReady,
+    #[error("payment intent not found")]
+    PaymentIntentNotFound,
 }
 
 #[derive(Debug, Serialize)]
@@ -52,7 +54,8 @@ impl IntoResponse for ApiError {
                 error_message.clone(),
             ),
             Self::Service(ServiceError::NotFound)
-            | Self::Quote(QuoteServiceError::PaymentIntentNotFound) => (
+            | Self::Quote(QuoteServiceError::PaymentIntentNotFound)
+            | Self::PaymentIntentNotFound => (
                 StatusCode::NOT_FOUND,
                 "payment_intent_not_found",
                 error_message.clone(),

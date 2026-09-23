@@ -32,13 +32,14 @@ async fn main() -> Result<()> {
         migrate(&pool).await.context("run database migrations")?;
     }
 
-    let state = AppState::new(pool);
+    let mut state = AppState::new(pool);
     let (shutdown, expiry_shutdown) = watch::channel(false);
     let http_shutdown = shutdown.subscribe();
 
     let expiry = if let Some(config) = expiry_config {
         let scheduler = ExpiryScheduler::new(Arc::clone(&state.quotes), config)
             .context("configure the quote expiry scheduler")?;
+        state = state.with_expiry_metrics(scheduler.metrics());
         Some(tokio::spawn(async move {
             scheduler.run(expiry_shutdown).await;
         }))

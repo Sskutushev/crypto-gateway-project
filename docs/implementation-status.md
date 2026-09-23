@@ -1,14 +1,13 @@
 # Implementation Status
 
-Last updated: 2026-09-22
+Last updated: 2026-09-23
 
 ## Repository state
 
 - Branch: `feat/standalone-gateway-foundation`
 - Remote: `https://github.com/Sskutushev/crypto-gateway-project.git`
-- Working tree: clean; the payment pipeline through settlement and signed
-  webhook delivery, the TRON HTTP source, the worker runtime, the operator
-  surface and reconciliation are committed and pushed.
+- Working tree: contains the uncommitted operator-read and metrics slice for
+  owner review; no commit or push was made.
 - This tree is the repository's initial history; there is no earlier product
   implementation to preserve or migrate.
 
@@ -100,6 +99,12 @@ Last updated: 2026-09-22
   every transition is an event; reconciliation runs eight checks over a window
   and separates findings about counters from findings about money. Money that
   does not add up closes the rail by itself.
+- Operator reads and Prometheus exposition. A separately scoped operator key
+  can inspect cross-merchant health, conflicts, unmatched transfers, held
+  payments, dead letters, reconciliation and a complete payment evidence
+  bundle through bounded UUID keyset pages. The scrape exposes the same live
+  database state plus in-process expiry counters, and fails as a whole when
+  storage cannot answer so absent telemetry never resembles health.
 
 ## In progress
 
@@ -109,10 +114,6 @@ Last updated: 2026-09-22
 - The reconciliation SQL has unit coverage of its decisions but no PostgreSQL
   scenario of its own yet: the checks run against the migrated schema in the
   existing scenarios, not against seeded discrepancies.
-- No metrics endpoint. Worker counters and component health are stored, and
-  nothing scrapes them yet.
-- No operator read API for conflicts, unmatched money, held payments or
-  dead-lettered events; the write paths exist, the views do not.
 - No start-up self-check: pinned collector and token hashes are stored and are
   not yet verified against the process configuration before readiness.
 - Least-privileged database roles are described but not shipped as SQL.
@@ -122,22 +123,38 @@ Last updated: 2026-09-22
 
 ## Next slices
 
-1. Operator read API and a Prometheus endpoint: component health, payment
-   health, conflicts, unmatched money, held payments, dead-lettered events.
-2. A PostgreSQL scenario per reconciliation check, seeded with the discrepancy
+1. A PostgreSQL scenario per reconciliation check, seeded with the discrepancy
    each one exists to find.
-3. Start-up self-check: pinned collector and token hashes against the process
+2. Start-up self-check: pinned collector and token hashes against the process
    configuration, environment agreement, chain head, clock skew. Failure means
    not ready.
-4. Least-privileged database roles as applied SQL, with a scenario proving an
+3. Least-privileged database roles as applied SQL, with a scenario proving an
    observer cannot write a canonical transfer.
-5. Deployment: production compose, Kubernetes manifests per role, probes and
+4. Deployment: production compose, Kubernetes manifests per role, probes and
    limits.
-6. CI: format, clippy, deny, audit, unit, PostgreSQL scenarios, fuzz smoke,
+5. CI: format, clippy, deny, audit, unit, PostgreSQL scenarios, fuzz smoke,
    image build, SBOM, scan, publish.
-7. A second independent TRON provider group, then the ERC20 adapter.
+6. A second independent TRON provider group, then the ERC20 adapter.
 
 ## Verification
+
+- Operator read/metrics slice (2026-09-23):
+  owner-review fixes replaced row-to-JSON evidence with explicit bounded reads,
+  preserved all fiat and token quantities as decimal strings, made keyset
+  exhaustion exact, and expanded the PostgreSQL scenario with discrepancies,
+  unmatched money, a held intent, a dead letter and delivery history.
+  The four gates ran in `crypto-gateway-dev`:
+  `cargo fmt --all -- --check` exited 0 with no output;
+  `cargo clippy --workspace --all-targets --locked -- -D warnings` finished the
+  dev profile with no warnings in 33.80s;
+  `cargo test --workspace --locked` passed 156 tests with 14 ignored and no
+  failures (plus all doc-test targets passed with zero tests); and
+  `GATEWAY_TEST_DATABASE_URL=postgres://gateway:gateway@host.docker.internal:54329/gateway cargo test --workspace --locked -- --ignored`
+  passed all 14 PostgreSQL scenarios (2 HTTP and 12 storage) with no failures.
+  The focused operator scenario also passed `1 passed; 0 failed; 0 ignored; 3
+  filtered out` and now asserts exact item keys, discrepancy pagination through
+  a null final cursor, explicit evidence fields and string amounts beyond
+  JavaScript's safe integer, and the four reviewed metric samples.
 
 - Rust is not installed on the host; all Rust checks ran in the pinned
   `rust:1.90.0-bookworm` container.
