@@ -9,10 +9,13 @@
 use axum::{
     Extension, Json,
     extract::{Path, State, rejection::JsonRejection},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
 };
-use gateway_application::{OperationsError, RiskSubmission};
-use gateway_domain::{CurrencyCode, PriceReading, RailHealth, RawAmount, RiskDecision};
+use gateway_application::{ManualResolution, OperationsError, RiskSubmission};
+use gateway_domain::{
+    CurrencyCode, ManualResolutionAction, PriceReading, RailHealth, RawAmount,
+    RemainderDisposition, RiskDecision,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::OffsetDateTime;
@@ -225,6 +228,94 @@ pub async fn submit_risk_evaluation(
     Ok((StatusCode::CREATED, Json(AcceptedResponse { id })))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManualResolutionBody {
+    action: ManualResolutionAction,
+    transfer_id: Uuid,
+    #[serde(default)]
+    payment_intent_id: Option<Uuid>,
+    #[serde(default)]
+    attempt_id: Option<Uuid>,
+    #[serde(default)]
+    allocate_raw: Option<String>,
+    #[serde(default)]
+    remainder_raw: Option<String>,
+    #[serde(default)]
+    disposition: Option<RemainderDisposition>,
+    #[serde(default)]
+    external_reference: Option<String>,
+    reason: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ManualResolutionResponse {
+    id: Uuid,
+    action: ManualResolutionAction,
+    transfer_id: Uuid,
+    payment_intent_id: Option<Uuid>,
+    attempt_id: Option<Uuid>,
+    merchant_id: Option<Uuid>,
+    allocated_raw: Option<String>,
+    remainder_raw: Option<String>,
+    replayed: bool,
+}
+
+pub async fn resolve_manual(
+    State(state): State<AppState>,
+    Extension(auth): Extension<OperatorAuth>,
+    headers: HeaderMap,
+    payload: Result<Json<ManualResolutionBody>, JsonRejection>,
+) -> Result<(StatusCode, Json<ManualResolutionResponse>), ApiError> {
+    let key = headers
+        .get("idempotency-key")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(ApiError::InvalidJson)?;
+    let Json(body) = payload.map_err(|_| ApiError::InvalidJson)?;
+    let parse_optional = |value: Option<String>| -> Result<Option<RawAmount>, ApiError> {
+        value
+            .map(|v| v.parse::<RawAmount>().map_err(|_| ApiError::InvalidJson))
+            .transpose()
+    };
+    let result = state
+        .operations
+        .resolve_manual(
+            &auth.0,
+            key,
+            &ManualResolution {
+                action: body.action,
+                transfer_id: body.transfer_id,
+                payment_intent_id: body.payment_intent_id,
+                attempt_id: body.attempt_id,
+                allocate_raw: parse_optional(body.allocate_raw)?,
+                remainder_raw: parse_optional(body.remainder_raw)?,
+                disposition: body.disposition,
+                external_reference: body.external_reference,
+                reason: body.reason,
+            },
+        )
+        .await?;
+    let status = if result.replayed {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((
+        status,
+        Json(ManualResolutionResponse {
+            id: result.id,
+            action: result.action,
+            transfer_id: result.transfer_id,
+            payment_intent_id: result.payment_intent_id,
+            attempt_id: result.attempt_id,
+            merchant_id: result.merchant_id,
+            allocated_raw: result.allocated_raw.map(|v| v.to_string()),
+            remainder_raw: result.remainder_raw.map(|v| v.to_string()),
+            replayed: result.replayed,
+        }),
+    ))
+}
+
 fn parse_rate(value: &str) -> Result<RawAmount, ApiError> {
     value
         .parse::<RawAmount>()
@@ -236,14 +327,31 @@ fn parse_rate(value: &str) -> Result<RawAmount, ApiError> {
 pub fn status_for(error: &OperationsError) -> (StatusCode, &'static str) {
     match error {
         OperationsError::MissingScope(_) => (StatusCode::FORBIDDEN, "missing_scope"),
+        OperationsError::RiskProviderNotAllowed => {
+            (StatusCode::FORBIDDEN, "risk_provider_not_allowed")
+        }
         OperationsError::NoReadings
         | OperationsError::ReasonRequired
-        | OperationsError::InvalidPageLimit => (StatusCode::BAD_REQUEST, "invalid_request"),
+        | OperationsError::InvalidPageLimit
+        | OperationsError::InvalidIdempotencyKey
+        | OperationsError::InvalidManualResolution => (StatusCode::BAD_REQUEST, "invalid_request"),
+        OperationsError::ManualResolutionNotFound => {
+            (StatusCode::NOT_FOUND, "manual_resolution_not_found")
+        }
+        OperationsError::ManualResolutionConflict => {
+            (StatusCode::CONFLICT, "manual_resolution_conflict")
+        }
+        OperationsError::InvalidRiskEvaluation => {
+            (StatusCode::UNPROCESSABLE_ENTITY, "invalid_risk_evaluation")
+        }
         OperationsError::NoPricePolicy => (StatusCode::CONFLICT, "no_price_policy"),
         OperationsError::NoOpenRailStop => (StatusCode::CONFLICT, "no_open_rail_stop"),
         OperationsError::Price(_) => (StatusCode::UNPROCESSABLE_ENTITY, "price_not_agreed"),
         OperationsError::UnknownScope(_) | OperationsError::SnapshotNotRecorded => {
             (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+        }
+        OperationsError::Repository(gateway_application::RepositoryError::IdempotencyConflict) => {
+            (StatusCode::CONFLICT, "idempotency_conflict")
         }
         OperationsError::Repository(_) => (StatusCode::SERVICE_UNAVAILABLE, "storage_unavailable"),
     }

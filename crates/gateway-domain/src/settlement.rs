@@ -82,6 +82,9 @@ pub enum MatchStrategy {
     /// The exact amount was reserved for exactly one attempt at the time the
     /// block was produced, even though the slot has since been released.
     HistoricalSlot,
+    /// An administrator tied already-finalized money to an obligation after
+    /// reviewing the evidence. This never weakens chain finality.
+    Manual,
 }
 
 impl MatchStrategy {
@@ -91,6 +94,50 @@ impl MatchStrategy {
             Self::Memo => "memo",
             Self::ExactAmount => "exact_amount",
             Self::HistoricalSlot => "historical_slot",
+            Self::Manual => "manual",
+        }
+    }
+}
+
+/// The only decisions the manual-resolution boundary accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualResolutionAction {
+    Honor,
+    Reject,
+    RecordRemainderDisposition,
+}
+
+impl ManualResolutionAction {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Honor => "honor",
+            Self::Reject => "reject",
+            Self::RecordRemainderDisposition => "record_remainder_disposition",
+        }
+    }
+}
+
+/// A remainder was handled outside the gateway. Recording one of these is an
+/// audit fact only: it never claims that this service sent an on-chain refund.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemainderDisposition {
+    RefundedExternally,
+    CreditedExternally,
+    DonatedExternally,
+    RetainedByAgreement,
+}
+
+impl RemainderDisposition {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RefundedExternally => "refunded_externally",
+            Self::CreditedExternally => "credited_externally",
+            Self::DonatedExternally => "donated_externally",
+            Self::RetainedByAgreement => "retained_by_agreement",
         }
     }
 }

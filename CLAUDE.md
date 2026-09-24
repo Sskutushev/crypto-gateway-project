@@ -25,30 +25,36 @@ pass.
 
 ## Current handoff: 2026-09-24
 
-Every slice of the contour plan is implemented and verified: the payment
-pipeline, the TRON HTTP source, the worker runtime, the operator surface,
-component health and reconciliation with a scenario per check, the start-up
-self-check, least-privilege database roles as SQL, deployment for Compose and
-Kubernetes, CI with SBOM and scan, and the open-source packaging with an
-OpenAPI document the router is tested against.
+The current `main` baseline is commit
+`c19028965e93f4d3731d67fec5c219d4fbd0b5e2`. The repository implements the
+payment pipeline, TRON HTTP source, independent-evidence verifier, matching and
+settlement, signed webhook outbox and delivery, reconciliation, the worker
+runtime, the operator read surface, start-up self-check, least-privilege
+database roles, Compose and Kubernetes deployment definitions, CI with SBOM
+and scan, and an OpenAPI document tested against the router.
 
-What remains is the owner's, in `docs/owner-setup.md`: repository identity and
-a protected `main`, two independent providers, a collector address, the
-webhook master key, keys, policies, then a testnet run with real providers.
-After that: a second TRON provider group, the ERC20 adapter, a screening
-provider port, and the operator decision path for overpayment and late
-payment.
+Implemented does not mean ready for unsupervised mainnet money. The remaining
+owner and operational work is tracked in `docs/owner-setup.md`: verify branch
+protection, provision genuinely independent providers and a collector, create
+the webhook master key and scoped credentials, approve policies, and complete
+a sustained testnet run. KYT integration, disaster-recovery drills, production
+capacity evidence, and operator decision paths for held, unmatched, late and
+overpaid transfers remain incomplete. Do not describe them as available.
 
 Local state:
 
-- branch: feat/standalone-gateway-foundation, pushed; `main` does not exist
-  yet (the owner creates and protects it);
+- baseline reviewed: `main` at
+  `c19028965e93f4d3731d67fec5c219d4fbd0b5e2`;
+- active hardening work is on `feat/production-readiness-p0`; do not commit
+  directly to `main`;
 - Rust is not installed on the host. The pinned toolchain runs in the
   crypto-gateway-dev container (rust:1.90.0-bookworm, /workspace bound to this
   repository), and PostgreSQL runs in Compose on 127.0.0.1:54329. From the
   container that database is
   postgres://gateway:gateway@host.docker.internal:54329/gateway, which the
   ignored tests read from GATEWAY_TEST_DATABASE_URL;
-- the migrations are not released, so they are still edited in place; the dev
-  schema is reset with DROP SCHEMA public CASCADE when one changes;
-- the complete verification record is in docs/implementation-status.md.
+- do not infer the state of external providers, production secrets, backups,
+  branch protection or a deployed environment from repository tests;
+- historical repository verification records are in
+  `docs/implementation-status.md`; rerun the relevant gates for every new
+  change rather than treating an earlier result as proof for the current tree.

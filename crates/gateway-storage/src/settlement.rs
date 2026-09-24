@@ -342,6 +342,8 @@ impl SettlementRepository for PostgresRepository {
             SELECT id, decision
               FROM payment_risk_evaluations
              WHERE transfer_id = $1
+               AND evaluated_at >= now() - interval '1 hour'
+               AND evaluated_at <= now() + interval '30 seconds'
              ORDER BY evaluated_at DESC
              LIMIT 1
             ",
@@ -351,7 +353,8 @@ impl SettlementRepository for PostgresRepository {
         .await
         .map_err(unavailable)?;
 
-        // An absent screening is recorded as skipped. It is never an allow.
+        // An absent or expired screening is skipped. It is never an allow:
+        // provider evidence is current evidence, not a permanent reputation.
         let Some((id, decision)) = row else {
             return Ok((RiskDecision::Skipped, None));
         };
@@ -722,6 +725,56 @@ async fn allocate_and_finish(
     }
 
     Ok(record)
+}
+
+/// Reuses the automatic money transaction for an operator-approved match.
+/// The caller owns the surrounding transaction and has already locked and
+/// checked the exceptional case.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn manual_allocate_and_finish(
+    transaction: &mut Transaction<'_, Postgres>,
+    command: &SettlementCommand,
+    allocate_raw: RawAmount,
+    remainder_raw: RawAmount,
+    outcome: &str,
+    actor: &str,
+    reason: &str,
+    now: OffsetDateTime,
+) -> Result<SettlementRecord, RepositoryError> {
+    let result = allocate_and_finish(
+        transaction,
+        command,
+        allocate_raw,
+        remainder_raw,
+        outcome,
+        now,
+    )
+    .await?;
+    if !matches!(
+        result,
+        SettlementRecord::ForeignClaim | SettlementRecord::AlreadyProcessed
+    ) {
+        sqlx::query(
+            "UPDATE payment_allocations SET allocated_by=$3, reason='manual' WHERE attempt_id=$1 AND transfer_id=$2",
+        )
+        .bind(command.attempt_id)
+        .bind(command.transfer_id)
+        .bind(actor)
+        .execute(&mut **transaction)
+        .await
+        .map_err(unavailable)?;
+        sqlx::query(
+            "UPDATE payment_settlement_decisions SET decided_by=$3, decided_reason=$4 WHERE payment_intent_id=$1 AND transfer_id=$2",
+        )
+        .bind(command.payment_intent_id)
+        .bind(command.transfer_id)
+        .bind(actor)
+        .bind(reason)
+        .execute(&mut **transaction)
+        .await
+        .map_err(unavailable)?;
+    }
+    Ok(result)
 }
 
 /// Records an overpayment remainder. It is never absorbed into a product, and

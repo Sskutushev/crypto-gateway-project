@@ -80,10 +80,9 @@ jobs:
         env:
           GATEWAY_FUZZ_ITERATIONS: "200000"
 
-  # Dependency policy: licences, bans and sources must pass. Advisories are
-  # reported but do not fail the build until the RustSec index fetch is
-  # reliable from this runner; a failure is still visible in the job log and
-  # the step annotation, never silently skipped.
+  # Dependency policy is release-blocking. A payment service must not publish
+  # an image when its direct/runtime dependency graph has a known advisory or
+  # when the advisory database cannot be checked.
   supply-chain:
     name: cargo deny, cargo audit
     runs-on: ubuntu-24.04
@@ -93,14 +92,12 @@ jobs:
         with:
           command: check bans licenses sources
       - uses: EmbarkStudios/cargo-deny-action@v2
-        continue-on-error: true
         with:
           command: check advisories
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.90.0
       - name: cargo audit
-        continue-on-error: true
         run: |
           cargo install cargo-audit --locked
           cargo audit --deny warnings
