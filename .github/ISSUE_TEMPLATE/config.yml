@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Sskutushev/crypto-gateway-project/security/advisories/new
+    about: Money counted wrong, a fact from too little evidence, a forgeable signature, a role that can write outside its grants. Private, never a public issue.

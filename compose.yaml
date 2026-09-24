@@ -1,3 +1,13 @@
+# The development stack: a disposable PostgreSQL and the API, on loopback.
+#
+# The API refuses to start until the database describes the rail it is
+# configured for (see the self-check settings below), so the first run is
+# three commands, in this order:
+#
+#   docker compose up -d postgres
+#   docker compose run --rm -e GATEWAY_MIGRATE_ONLY=true gateway-api
+#   psql postgres://gateway:gateway@127.0.0.1:54329/gateway -f scripts/seed-dev-rail.sql
+#   docker compose up -d gateway-api
 services:
   postgres:
     image: postgres:16.4-bookworm
@@ -22,7 +32,12 @@ services:
       GATEWAY_DATABASE_URL: postgres://gateway:gateway@postgres:5432/gateway
       GATEWAY_BIND_ADDRESS: 0.0.0.0:8080
       GATEWAY_RUN_MIGRATIONS: "true"
-      RUST_LOG: gateway_api=info,gateway_scheduler=info,tower_http=info
+      # What scripts/seed-dev-rail.sql inserts. A process whose database
+      # disagrees with these does not start.
+      GATEWAY_CHAIN_ENVIRONMENT: testnet
+      GATEWAY_EXPECTED_COLLECTORS: TAF8dttxK5iPKbvYC626aDBytrWANpLRXp
+      GATEWAY_EXPECTED_ASSETS: tron:nile:TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj
+      RUST_LOG: gateway_api=info,gateway_http=info,gateway_scheduler=info,tower_http=info
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:

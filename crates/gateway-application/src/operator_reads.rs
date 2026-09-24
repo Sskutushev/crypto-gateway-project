@@ -260,7 +260,9 @@ pub struct EvidenceIntent {
     pub reference: String,
     pub description: Option<String>,
     pub metadata: Value,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
@@ -273,9 +275,13 @@ pub struct EvidenceAttempt {
     pub collector_address_id: Uuid,
     pub expected_amount_raw: RawAmount,
     pub status: String,
+    #[serde(with = "time::serde::rfc3339")]
     pub quote_expires_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
     pub late_payment_until: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
     pub quotes: Vec<EvidenceQuote>,
 }
@@ -294,11 +300,16 @@ pub struct EvidenceQuote {
     pub rate_numerator: RawAmount,
     pub rate_denominator: RawAmount,
     pub price_sources: Value,
+    #[serde(with = "time::serde::rfc3339")]
     pub price_observed_at: OffsetDateTime,
     pub policy_version: String,
+    #[serde(with = "time::serde::rfc3339")]
     pub rail_health_observed_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
     pub expires_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
     pub late_payment_until: OffsetDateTime,
 }
 
@@ -312,6 +323,7 @@ pub struct EvidenceAllocation {
     pub allocated_raw: RawAmount,
     pub allocated_by: String,
     pub reason: String,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
 
@@ -336,6 +348,7 @@ pub struct EvidenceSettlementDecision {
     pub outcome: String,
     pub decided_by: String,
     pub decided_reason: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
     pub decided_at: OffsetDateTime,
 }
 
@@ -344,7 +357,9 @@ pub struct EvidenceFulfillment {
     pub payment_intent_id: Uuid,
     pub merchant_id: Uuid,
     pub status: String,
+    #[serde(with = "time::serde::rfc3339")]
     pub claimed_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
     pub fulfilled_at: Option<OffsetDateTime>,
     pub attempts: i32,
     pub last_error: Option<String>,
@@ -364,6 +379,7 @@ pub struct EvidencePaymentEvent {
     pub source: String,
     pub actor: Option<String>,
     pub payload: Value,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
 
@@ -379,6 +395,7 @@ pub struct EvidenceTransfer {
     pub event_index: i32,
     pub block_number: i64,
     pub block_hash: String,
+    #[serde(with = "time::serde::rfc3339")]
     pub block_time: OffsetDateTime,
     pub from_address: String,
     pub to_address: String,
@@ -387,6 +404,7 @@ pub struct EvidenceTransfer {
     pub memo: Option<String>,
     pub canonicalization_policy: String,
     pub verifier_version: String,
+    #[serde(with = "time::serde::rfc3339")]
     pub canonicalized_at: OffsetDateTime,
     pub current_state: String,
     pub attestation_count: u64,

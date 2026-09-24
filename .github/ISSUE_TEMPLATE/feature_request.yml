@@ -1,0 +1,22 @@
+name: Feature request
+description: A capability the gateway should have.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What a merchant, operator or payer cannot do today, and what it costs them.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: The proposal
+      description: What the gateway would do. Say which invariant it touches (money, chain facts, settlement, webhooks, roles) and how the design keeps it.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

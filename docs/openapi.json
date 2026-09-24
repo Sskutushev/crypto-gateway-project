@@ -1,0 +1,281 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Crypto Gateway API",
+    "version": "0.1.0",
+    "summary": "Non-custodial inbound stablecoin payments: merchant payment intents and quotes, operator evidence and oversight.",
+    "description": "Every amount is a decimal string of integer units; no money ever passes through a JSON number. Merchant writes require an Idempotency-Key header scoped to the authenticated merchant, route and key. Errors share one envelope. Timestamps are RFC 3339.",
+    "license": { "name": "Apache-2.0", "identifier": "Apache-2.0" }
+  },
+  "servers": [{ "url": "https://gateway.example.com", "description": "TLS terminates in front of the API" }],
+  "tags": [
+    { "name": "health", "description": "Process liveness and the start-up self-check, re-evaluated as readiness." },
+    { "name": "merchant", "description": "Authenticated by a merchant API key. Isolated per merchant." },
+    { "name": "operator", "description": "Authenticated by an operator API key carrying ingest, read or admin scopes." }
+  ],
+  "components": {
+    "securitySchemes": {
+      "merchantKey": { "type": "http", "scheme": "bearer", "description": "A merchant API key of 32 to 256 characters. Stored hashed; never recoverable from the database." },
+      "operatorKey": { "type": "http", "scheme": "bearer", "description": "An operator API key of 32 to 256 characters with a subset of the scopes ingest, read and admin. Never a merchant key." }
+    },
+    "parameters": {
+      "IdempotencyKey": { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 255 }, "description": "Scoped to the merchant, the route and the key. A replay returns the first result with Idempotent-Replayed: true; the same key with a different body is a 409." },
+      "Limit": { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200 }, "description": "Page size. Omitted means the service default." },
+      "Before": { "name": "before", "in": "query", "schema": { "type": "string", "format": "uuid" }, "description": "Keyset cursor: items with an id below this one. Take it from next_before." },
+      "IntentId": { "name": "intent_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+      "AssetId": { "name": "asset_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+      "TransferId": { "name": "transfer_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+    },
+    "headers": {
+      "IdempotentReplayed": { "schema": { "type": "string", "enum": ["true", "false"] }, "description": "true when this response is the stored result of an earlier identical request." }
+    },
+    "schemas": {
+      "IntegerString": { "type": "string", "pattern": "^[0-9]+$", "description": "An integer as a decimal string. Never a JSON number." },
+      "Timestamp": { "type": "string", "format": "date-time", "description": "RFC 3339, UTC." },
+      "Error": {
+        "type": "object", "required": ["error"],
+        "properties": { "error": { "type": "object", "required": ["code", "message"], "properties": {
+          "code": { "type": "string", "enum": ["authentication_failed", "invalid_request", "invalid_idempotency_key", "payment_intent_not_found", "idempotency_conflict", "payment_intent_reference_conflict", "payment_intent_not_quotable", "quote_unavailable", "rail_stopped", "missing_scope", "no_price_policy", "no_open_rail_stop", "price_not_agreed", "storage_unavailable", "internal_error"] },
+          "message": { "type": "string" } } } }
+      },
+      "FiatAmount": { "type": "object", "required": ["currency", "minor_units"], "properties": { "currency": { "type": "string", "pattern": "^[A-Z]{3}$" }, "minor_units": { "$ref": "#/components/schemas/IntegerString" } } },
+      "PaymentIntentStatus": { "type": "string", "enum": ["requires_quote", "awaiting_payment", "partially_paid", "risk_hold", "paid", "expired", "cancelled"] },
+      "CreatePaymentIntent": {
+        "type": "object", "required": ["amount_minor", "currency", "reference"],
+        "properties": {
+          "amount_minor": { "$ref": "#/components/schemas/IntegerString", "description": "Strictly positive minor units of the currency." },
+          "currency": { "type": "string", "pattern": "^[A-Za-z]{3}$", "description": "ISO 4217 code; normalised to upper case." },
+          "reference": { "type": "string", "description": "The merchant's own order reference; unique per merchant." },
+          "description": { "type": ["string", "null"] },
+          "metadata": { "type": "object", "description": "Any JSON object. Defaults to {}." }
+        }
+      },
+      "PaymentIntent": {
+        "type": "object", "required": ["id", "merchant_id", "amount", "status", "reference", "description", "metadata", "created_at", "updated_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" }, "merchant_id": { "type": "string", "format": "uuid" },
+          "amount": { "$ref": "#/components/schemas/FiatAmount" }, "status": { "$ref": "#/components/schemas/PaymentIntentStatus" },
+          "reference": { "type": "string" }, "description": { "type": ["string", "null"] }, "metadata": { "type": "object" },
+          "created_at": { "$ref": "#/components/schemas/Timestamp" }, "updated_at": { "$ref": "#/components/schemas/Timestamp" }
+        }
+      },
+      "IssueQuote": { "type": "object", "required": ["asset_id"], "additionalProperties": false, "properties": { "asset_id": { "type": "string", "format": "uuid", "description": "An allowlisted asset; the contract is never named by symbol." } } },
+      "IssuedQuote": {
+        "type": "object",
+        "required": ["id", "attempt_id", "payment_intent_id", "asset_id", "collector_address_id", "collector_address", "price_snapshot_id", "quote_policy_id", "rail_health_snapshot_id", "fiat_amount", "amount_raw", "rate_numerator", "rate_denominator", "price_sources", "price_observed_at", "policy_version", "rail_health_observed_at", "created_at", "expires_at", "late_payment_until"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" }, "attempt_id": { "type": "string", "format": "uuid" }, "payment_intent_id": { "type": "string", "format": "uuid" },
+          "asset_id": { "type": "string", "format": "uuid" }, "collector_address_id": { "type": "string", "format": "uuid" },
+          "collector_address": { "type": "string", "description": "The address to pay, in the chain's display form. The exact amount_raw must arrive here." },
+          "price_snapshot_id": { "type": "string", "format": "uuid" }, "quote_policy_id": { "type": "string", "format": "uuid" }, "rail_health_snapshot_id": { "type": "string", "format": "uuid" },
+          "fiat_amount": { "$ref": "#/components/schemas/FiatAmount" },
+          "amount_raw": { "$ref": "#/components/schemas/IntegerString", "description": "Token units in the asset's smallest denomination. Exact: this amount and no other is this obligation." },
+          "rate_numerator": { "$ref": "#/components/schemas/IntegerString" }, "rate_denominator": { "$ref": "#/components/schemas/IntegerString" },
+          "price_sources": { "description": "The readings behind the rate, as recorded." },
+          "price_observed_at": { "$ref": "#/components/schemas/Timestamp" }, "policy_version": { "type": "string" }, "rail_health_observed_at": { "$ref": "#/components/schemas/Timestamp" },
+          "created_at": { "$ref": "#/components/schemas/Timestamp" },
+          "expires_at": { "$ref": "#/components/schemas/Timestamp", "description": "After this the quote is no longer offered." },
+          "late_payment_until": { "$ref": "#/components/schemas/Timestamp", "description": "Until this a payment of the exact amount is still honoured against the reservation it held." }
+        }
+      },
+      "Health": { "type": "object", "required": ["status"], "properties": { "status": { "type": "string", "enum": ["ok"] } } },
+      "Readiness": {
+        "type": "object", "required": ["ready", "evaluated_at", "checks"],
+        "properties": {
+          "ready": { "type": "boolean" }, "evaluated_at": { "$ref": "#/components/schemas/Timestamp", "description": "When the report was produced; a report is cached for at most ten seconds." },
+          "checks": { "type": "array", "items": { "type": "object", "required": ["name", "passed", "detail"], "properties": {
+            "name": { "type": "string", "enum": ["pinned_collectors", "pinned_assets", "environment_agreement", "finality_policy_present", "cursor_sanity", "clock_skew", "storage", "configuration"] },
+            "passed": { "type": "boolean" }, "detail": { "type": "string", "description": "What disagreed, when passed is false." } } } }
+        }
+      },
+      "PriceReading": {
+        "type": "object", "required": ["source_key", "provider_group", "rate_numerator", "rate_denominator", "observed_at"], "additionalProperties": false,
+        "properties": {
+          "source_key": { "type": "string" }, "provider_group": { "type": "string", "description": "Independence is counted by group: two keys of one vendor are one opinion." },
+          "rate_numerator": { "$ref": "#/components/schemas/IntegerString" }, "rate_denominator": { "$ref": "#/components/schemas/IntegerString" },
+          "observed_at": { "$ref": "#/components/schemas/Timestamp" }
+        }
+      },
+      "PriceSubmission": {
+        "type": "object", "required": ["asset_id", "fiat_currency", "readings"], "additionalProperties": false,
+        "properties": { "asset_id": { "type": "string", "format": "uuid" }, "fiat_currency": { "type": "string", "pattern": "^[A-Za-z]{3}$" }, "readings": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/PriceReading" } } }
+      },
+      "PriceSnapshot": {
+        "type": "object", "required": ["snapshot_id", "rate_numerator", "rate_denominator", "source_group_count", "deviation_bps", "observed_at"],
+        "properties": {
+          "snapshot_id": { "type": "string", "format": "uuid" }, "rate_numerator": { "$ref": "#/components/schemas/IntegerString" }, "rate_denominator": { "$ref": "#/components/schemas/IntegerString" },
+          "source_group_count": { "type": "integer", "minimum": 0 }, "deviation_bps": { "type": "integer", "minimum": 0 },
+          "observed_at": { "$ref": "#/components/schemas/Timestamp", "description": "As old as the oldest reading that counted." }
+        }
+      },
+      "RailHealthSubmission": { "type": "object", "required": ["asset_id", "health"], "additionalProperties": false, "properties": { "asset_id": { "type": "string", "format": "uuid" }, "health": { "type": "string", "enum": ["healthy", "degraded", "unavailable"] }, "detail": { "type": ["string", "null"] } } },
+      "Accepted": { "type": "object", "required": ["id"], "properties": { "id": { "type": "string", "format": "uuid" } } },
+      "OpenRailStop": { "type": "object", "required": ["asset_id", "reason_code"], "additionalProperties": false, "properties": { "asset_id": { "type": "string", "format": "uuid" }, "reason_code": { "type": "string", "minLength": 1, "maxLength": 100 }, "detail": { "type": ["string", "null"] } } },
+      "RailStop": {
+        "type": "object", "required": ["id", "asset_id", "reason_code", "detail", "opened_by", "opened_at"],
+        "properties": { "id": { "type": "string", "format": "uuid" }, "asset_id": { "type": "string", "format": "uuid" }, "reason_code": { "type": "string" }, "detail": { "type": ["string", "null"] }, "opened_by": { "type": "string" }, "opened_at": { "$ref": "#/components/schemas/Timestamp" } }
+      },
+      "ClearRailStop": { "type": "object", "required": ["reason"], "additionalProperties": false, "properties": { "reason": { "type": "string", "minLength": 1, "description": "Why the discrepancy was explained. Recorded with the clearing operator's identity." } } },
+      "RiskEvaluation": {
+        "type": "object", "required": ["provider", "decision", "evaluated_at"], "additionalProperties": false,
+        "properties": { "provider": { "type": "string" }, "decision": { "type": "string", "enum": ["allow", "review", "deny"] }, "score": { "type": ["integer", "null"] }, "reasons": { "type": ["object", "null"], "description": "A document, never a list or a bare string." }, "evaluated_at": { "$ref": "#/components/schemas/Timestamp" } }
+      },
+      "ComponentState": { "type": "string", "enum": ["ok", "degraded", "unavailable", "diverged", "stopped"] },
+      "Overview": {
+        "type": "object",
+        "required": ["components", "open_rail_stops", "latest_reconciliation", "open_discrepancies", "transfers_by_processing_state", "payment_intents_by_status", "outbox_pending", "outbox_dead_lettered", "observation_conflicts_open"],
+        "properties": {
+          "components": { "type": "array", "items": { "type": "object", "required": ["component", "state", "detail", "since", "updated_at"], "properties": { "component": { "type": "string" }, "state": { "$ref": "#/components/schemas/ComponentState" }, "detail": { "type": ["string", "null"] }, "since": { "$ref": "#/components/schemas/Timestamp" }, "updated_at": { "$ref": "#/components/schemas/Timestamp" } } } },
+          "open_rail_stops": { "type": "array", "items": { "$ref": "#/components/schemas/RailStop" } },
+          "latest_reconciliation": { "type": "array", "items": { "type": "object", "required": ["id", "kind", "status", "started_at", "finished_at"], "properties": { "id": { "type": "string", "format": "uuid" }, "kind": { "type": "string", "enum": ["incremental", "daily"] }, "status": { "type": "string", "enum": ["ok", "drift", "hard_stop"] }, "started_at": { "$ref": "#/components/schemas/Timestamp" }, "finished_at": { "oneOf": [{ "$ref": "#/components/schemas/Timestamp" }, { "type": "null" }] } } } },
+          "open_discrepancies": { "type": "array", "items": { "type": "object", "required": ["kind", "money_affected", "count"], "properties": { "kind": { "$ref": "#/components/schemas/DiscrepancyKind" }, "money_affected": { "type": "boolean" }, "count": { "type": "integer", "minimum": 0 } } } },
+          "transfers_by_processing_state": { "type": "array", "items": { "$ref": "#/components/schemas/StateCount" } },
+          "payment_intents_by_status": { "type": "array", "items": { "$ref": "#/components/schemas/StateCount" } },
+          "outbox_pending": { "type": "integer", "minimum": 0 }, "outbox_dead_lettered": { "type": "integer", "minimum": 0 }, "observation_conflicts_open": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "StateCount": { "type": "object", "required": ["state", "count"], "properties": { "state": { "type": "string" }, "count": { "type": "integer", "minimum": 0 } } },
+      "DiscrepancyKind": { "type": "string", "enum": ["observed_not_canonical", "allocation_exceeds_transfer", "settled_not_fulfilled", "fulfilled_not_settled", "unmatched_inbound_aging", "allocated_on_invalidated_transfer", "observer_behind", "held_payment_aging"] },
+      "Conflict": {
+        "type": "object", "required": ["id", "chain", "network", "environment", "tx_hash", "event_index", "field", "created_at", "items"],
+        "properties": { "id": { "type": "string", "format": "uuid" }, "chain": { "type": "string" }, "network": { "type": "string" }, "environment": { "type": "string", "enum": ["testnet", "mainnet"] }, "tx_hash": { "type": "string" }, "event_index": { "type": "integer" }, "field": { "type": "string" }, "created_at": { "$ref": "#/components/schemas/Timestamp" },
+          "items": { "type": "array", "items": { "type": "object", "required": ["observation_id", "field_value"], "properties": { "observation_id": { "type": "string", "format": "uuid" }, "field_value": {} } } } }
+      },
+      "UnmatchedTransfer": {
+        "type": "object", "required": ["id", "chain", "network", "environment", "tx_hash", "event_index", "collector_address", "asset_id", "amount_raw", "block_time", "finality_state", "unmatched_at"],
+        "properties": { "id": { "type": "string", "format": "uuid" }, "chain": { "type": "string" }, "network": { "type": "string" }, "environment": { "type": "string" }, "tx_hash": { "type": "string" }, "event_index": { "type": "integer" }, "collector_address": { "type": "string" }, "asset_id": { "type": "string", "format": "uuid" }, "amount_raw": { "$ref": "#/components/schemas/IntegerString" }, "block_time": { "$ref": "#/components/schemas/Timestamp" }, "finality_state": { "type": "string", "enum": ["observed", "canonical", "confirmed", "finalized", "invalidated"] }, "unmatched_at": { "$ref": "#/components/schemas/Timestamp" } }
+      },
+      "HeldPayment": {
+        "type": "object", "required": ["id", "merchant_id", "transfer_ids", "latest_decision", "created_at"],
+        "properties": { "id": { "type": "string", "format": "uuid" }, "merchant_id": { "type": "string", "format": "uuid" }, "transfer_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } },
+          "latest_decision": { "oneOf": [{ "type": "null" }, { "type": "object", "required": ["outcome", "risk_decision", "decided_reason", "decided_at"], "properties": { "outcome": { "type": "string" }, "risk_decision": { "type": "string" }, "decided_reason": { "type": ["string", "null"] }, "decided_at": { "$ref": "#/components/schemas/Timestamp" } } }] },
+          "created_at": { "$ref": "#/components/schemas/Timestamp" } }
+      },
+      "DeadLetter": {
+        "type": "object", "required": ["id", "merchant_id", "event_type", "channel", "aggregate_type", "aggregate_id", "attempts", "last_error", "dead_lettered_at", "deliveries"],
+        "properties": { "id": { "type": "string", "format": "uuid" }, "merchant_id": { "type": ["string", "null"], "format": "uuid" }, "event_type": { "type": "string" }, "channel": { "type": "string", "enum": ["webhook", "operator"] }, "aggregate_type": { "type": "string" }, "aggregate_id": { "type": "string", "format": "uuid" }, "attempts": { "type": "integer" }, "last_error": { "type": ["string", "null"] }, "dead_lettered_at": { "$ref": "#/components/schemas/Timestamp" },
+          "deliveries": { "type": "array", "items": { "type": "object", "required": ["attempt", "response_status", "error", "delivered_at"], "properties": { "attempt": { "type": "integer" }, "response_status": { "type": ["integer", "null"] }, "error": { "type": ["string", "null"] }, "delivered_at": { "$ref": "#/components/schemas/Timestamp" } } } } }
+      },
+      "ReconciliationRun": {
+        "type": "object", "required": ["id", "kind", "window_start", "window_end", "transfers_examined", "intents_examined", "discrepancy_count", "money_discrepancy_count", "status", "started_at", "finished_at"],
+        "properties": { "id": { "type": "string", "format": "uuid" }, "kind": { "type": "string", "enum": ["incremental", "daily"] }, "window_start": { "$ref": "#/components/schemas/Timestamp" }, "window_end": { "$ref": "#/components/schemas/Timestamp" }, "transfers_examined": { "type": "integer" }, "intents_examined": { "type": "integer" }, "discrepancy_count": { "type": "integer" }, "money_discrepancy_count": { "type": "integer" }, "status": { "type": "string", "enum": ["ok", "drift", "hard_stop"] }, "started_at": { "$ref": "#/components/schemas/Timestamp" }, "finished_at": { "oneOf": [{ "$ref": "#/components/schemas/Timestamp" }, { "type": "null" }] } }
+      },
+      "Discrepancy": {
+        "type": "object", "required": ["id", "run_id", "kind", "money_affected", "transfer_id", "payment_intent_id", "asset_id", "detail", "created_at", "resolved_at", "resolved_by", "resolution"],
+        "properties": { "id": { "type": "string", "format": "uuid" }, "run_id": { "type": "string", "format": "uuid" }, "kind": { "$ref": "#/components/schemas/DiscrepancyKind" }, "money_affected": { "type": "boolean" }, "transfer_id": { "type": ["string", "null"], "format": "uuid" }, "payment_intent_id": { "type": ["string", "null"], "format": "uuid" }, "asset_id": { "type": ["string", "null"], "format": "uuid" }, "detail": { "type": "object" }, "created_at": { "$ref": "#/components/schemas/Timestamp" }, "resolved_at": { "oneOf": [{ "$ref": "#/components/schemas/Timestamp" }, { "type": "null" }] }, "resolved_by": { "type": ["string", "null"] }, "resolution": { "type": ["string", "null"] } }
+      },
+      "Evidence": {
+        "type": "object", "required": ["intent", "attempts", "allocations", "settlement_decisions", "fulfillment", "payment_events", "transfers"],
+        "description": "Everything the gateway holds about one payment: the obligation, every quote and reservation, what was allocated, why it settled, whether the merchant was told, and the chain facts behind it. Every amount is a decimal string.",
+        "properties": {
+          "intent": { "type": "object", "required": ["id", "merchant_id", "amount_minor", "currency", "status", "reference", "description", "metadata", "created_at", "updated_at"], "properties": { "id": { "type": "string", "format": "uuid" }, "merchant_id": { "type": "string", "format": "uuid" }, "amount_minor": { "$ref": "#/components/schemas/IntegerString" }, "currency": { "type": "string" }, "status": { "$ref": "#/components/schemas/PaymentIntentStatus" }, "reference": { "type": "string" }, "description": { "type": ["string", "null"] }, "metadata": { "type": "object" }, "created_at": { "$ref": "#/components/schemas/Timestamp" }, "updated_at": { "$ref": "#/components/schemas/Timestamp" } } },
+          "attempts": { "type": "array", "items": { "type": "object", "required": ["id", "merchant_id", "payment_intent_id", "quote_id", "collector_address_id", "expected_amount_raw", "status", "quote_expires_at", "late_payment_until", "created_at", "updated_at", "quotes"], "properties": { "id": { "type": "string", "format": "uuid" }, "merchant_id": { "type": "string", "format": "uuid" }, "payment_intent_id": { "type": "string", "format": "uuid" }, "quote_id": { "type": "string", "format": "uuid" }, "collector_address_id": { "type": "string", "format": "uuid" }, "expected_amount_raw": { "$ref": "#/components/schemas/IntegerString" }, "status": { "type": "string" }, "quote_expires_at": { "$ref": "#/components/schemas/Timestamp" }, "late_payment_until": { "$ref": "#/components/schemas/Timestamp" }, "created_at": { "$ref": "#/components/schemas/Timestamp" }, "updated_at": { "$ref": "#/components/schemas/Timestamp" }, "quotes": { "type": "array", "items": { "type": "object", "required": ["id", "merchant_id", "payment_intent_id", "asset_id", "collector_address_id", "fiat_currency", "fiat_amount_minor", "base_amount_raw", "amount_raw", "rate_numerator", "rate_denominator", "price_sources", "price_observed_at", "policy_version", "rail_health_observed_at", "created_at", "expires_at", "late_payment_until"], "properties": { "id": { "type": "string", "format": "uuid" }, "merchant_id": { "type": "string", "format": "uuid" }, "payment_intent_id": { "type": "string", "format": "uuid" }, "asset_id": { "type": "string", "format": "uuid" }, "collector_address_id": { "type": "string", "format": "uuid" }, "fiat_currency": { "type": "string" }, "fiat_amount_minor": { "$ref": "#/components/schemas/IntegerString" }, "base_amount_raw": { "$ref": "#/components/schemas/IntegerString" }, "amount_raw": { "$ref": "#/components/schemas/IntegerString" }, "rate_numerator": { "$ref": "#/components/schemas/IntegerString" }, "rate_denominator": { "$ref": "#/components/schemas/IntegerString" }, "price_sources": {}, "price_observed_at": { "$ref": "#/components/schemas/Timestamp" }, "policy_version": { "type": "string" }, "rail_health_observed_at": { "$ref": "#/components/schemas/Timestamp" }, "created_at": { "$ref": "#/components/schemas/Timestamp" }, "expires_at": { "$ref": "#/components/schemas/Timestamp" }, "late_payment_until": { "$ref": "#/components/schemas/Timestamp" } } } } } } },
+          "allocations": { "type": "array", "items": { "type": "object", "required": ["id", "attempt_id", "payment_intent_id", "merchant_id", "transfer_id", "allocated_raw", "allocated_by", "reason", "created_at"], "properties": { "id": { "type": "string", "format": "uuid" }, "attempt_id": { "type": "string", "format": "uuid" }, "payment_intent_id": { "type": "string", "format": "uuid" }, "merchant_id": { "type": "string", "format": "uuid" }, "transfer_id": { "type": "string", "format": "uuid" }, "allocated_raw": { "$ref": "#/components/schemas/IntegerString" }, "allocated_by": { "type": "string" }, "reason": { "type": "string", "enum": ["exact", "partial", "overpay_remainder", "late_honored", "manual"] }, "created_at": { "$ref": "#/components/schemas/Timestamp" } } } },
+          "settlement_decisions": { "type": "array", "items": { "type": "object", "required": ["id", "payment_intent_id", "attempt_id", "transfer_id", "merchant_id", "fiat_amount_minor", "required_policy", "distinct_groups", "had_own_node", "finality_state", "risk_decision", "risk_evaluation_id", "attestation_ids", "match_strategy", "allocated_raw", "remainder_raw", "outcome", "decided_by", "decided_reason", "decided_at"], "properties": { "id": { "type": "string", "format": "uuid" }, "payment_intent_id": { "type": "string", "format": "uuid" }, "attempt_id": { "type": "string", "format": "uuid" }, "transfer_id": { "type": "string", "format": "uuid" }, "merchant_id": { "type": "string", "format": "uuid" }, "fiat_amount_minor": { "$ref": "#/components/schemas/IntegerString" }, "required_policy": { "type": "string" }, "distinct_groups": { "type": "integer" }, "had_own_node": { "type": "boolean" }, "finality_state": { "type": "string" }, "risk_decision": { "type": "string", "enum": ["allow", "review", "deny", "skipped"] }, "risk_evaluation_id": { "type": ["string", "null"], "format": "uuid" }, "attestation_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } }, "match_strategy": { "type": "string", "enum": ["memo", "exact_amount", "historical_slot", "manual"] }, "allocated_raw": { "$ref": "#/components/schemas/IntegerString" }, "remainder_raw": { "$ref": "#/components/schemas/IntegerString" }, "outcome": { "type": "string", "enum": ["settled", "partial", "overpaid", "held", "manual_required", "rejected", "ambiguous", "unmatched"] }, "decided_by": { "type": "string" }, "decided_reason": { "type": ["string", "null"] }, "decided_at": { "$ref": "#/components/schemas/Timestamp" } } } },
+          "fulfillment": { "oneOf": [{ "type": "null" }, { "type": "object", "required": ["payment_intent_id", "merchant_id", "status", "claimed_at", "fulfilled_at", "attempts", "last_error"], "properties": { "payment_intent_id": { "type": "string", "format": "uuid" }, "merchant_id": { "type": "string", "format": "uuid" }, "status": { "type": "string", "enum": ["claimed", "succeeded", "failed", "manual_review"] }, "claimed_at": { "$ref": "#/components/schemas/Timestamp" }, "fulfilled_at": { "oneOf": [{ "$ref": "#/components/schemas/Timestamp" }, { "type": "null" }] }, "attempts": { "type": "integer" }, "last_error": { "type": ["string", "null"] } } }] },
+          "payment_events": { "type": "array", "items": { "type": "object", "required": ["id", "merchant_id", "payment_intent_id", "attempt_id", "transfer_id", "event_type", "previous_status", "new_status", "reason_code", "source", "actor", "payload", "created_at"], "properties": { "id": { "type": "string", "format": "uuid" }, "merchant_id": { "type": ["string", "null"], "format": "uuid" }, "payment_intent_id": { "type": ["string", "null"], "format": "uuid" }, "attempt_id": { "type": ["string", "null"], "format": "uuid" }, "transfer_id": { "type": ["string", "null"], "format": "uuid" }, "event_type": { "type": "string" }, "previous_status": { "type": ["string", "null"] }, "new_status": { "type": ["string", "null"] }, "reason_code": { "type": ["string", "null"] }, "source": { "type": "string", "enum": ["system", "observer", "verifier", "admin"] }, "actor": { "type": ["string", "null"] }, "payload": { "type": "object" }, "created_at": { "$ref": "#/components/schemas/Timestamp" } } } },
+          "transfers": { "type": "array", "items": { "type": "object", "required": ["id", "asset_id", "collector_address_id", "chain", "network", "environment", "tx_hash", "event_index", "block_number", "block_hash", "block_time", "from_address", "to_address", "amount_raw", "decimals", "memo", "canonicalization_policy", "verifier_version", "canonicalized_at", "current_state", "attestation_count"], "properties": { "id": { "type": "string", "format": "uuid" }, "asset_id": { "type": "string", "format": "uuid" }, "collector_address_id": { "type": "string", "format": "uuid" }, "chain": { "type": "string" }, "network": { "type": "string" }, "environment": { "type": "string" }, "tx_hash": { "type": "string" }, "event_index": { "type": "integer" }, "block_number": { "type": "integer" }, "block_hash": { "type": "string" }, "block_time": { "$ref": "#/components/schemas/Timestamp" }, "from_address": { "type": "string" }, "to_address": { "type": "string" }, "amount_raw": { "$ref": "#/components/schemas/IntegerString" }, "decimals": { "type": "integer" }, "memo": { "type": ["string", "null"] }, "canonicalization_policy": { "type": "string" }, "verifier_version": { "type": "string" }, "canonicalized_at": { "$ref": "#/components/schemas/Timestamp" }, "current_state": { "type": "string", "enum": ["observed", "canonical", "confirmed", "finalized", "invalidated"] }, "attestation_count": { "type": "integer", "minimum": 0 } } } }
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": { "description": "No valid key.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Forbidden": { "description": "The operator key lacks the scope this route needs.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "BadRequest": { "description": "The body does not match the schema, the idempotency key is missing or malformed, or a required field is empty.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "NotFound": { "description": "No such payment intent for this merchant.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "StorageUnavailable": { "description": "The database could not answer. Nothing was decided.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+    }
+  },
+  "paths": {
+    "/health/live": { "get": { "tags": ["health"], "summary": "Process liveness", "responses": { "200": { "description": "The process is running.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Health" } } } } } } },
+    "/health/ready": { "get": { "tags": ["health"], "summary": "The start-up self-check, re-evaluated", "description": "Every invariant the process proved before it started serving, checked again: pinned collectors and assets, chain environment, finality policies, cursor sanity and clock skew. Cached for at most ten seconds.", "responses": { "200": { "description": "Every check passed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Readiness" } } } }, "503": { "description": "At least one check failed; the report names it.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Readiness" } } } } } } },
+    "/v1/payment-intents": {
+      "post": { "tags": ["merchant"], "summary": "Create a payment intent", "security": [{ "merchantKey": [] }], "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreatePaymentIntent" } } } },
+        "responses": {
+          "201": { "description": "Created.", "headers": { "Idempotent-Replayed": { "$ref": "#/components/headers/IdempotentReplayed" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentIntent" } } } },
+          "200": { "description": "Replayed: the stored result of an earlier identical request.", "headers": { "Idempotent-Replayed": { "$ref": "#/components/headers/IdempotentReplayed" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentIntent" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
+          "409": { "description": "idempotency_conflict: the same key with a different body; or payment_intent_reference_conflict: the reference is already used.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "422": { "description": "invalid_request: the amount is not a positive integer string or the currency is not a code.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        } }
+    },
+    "/v1/payment-intents/{intent_id}": {
+      "get": { "tags": ["merchant"], "summary": "Read a payment intent", "security": [{ "merchantKey": [] }], "parameters": [{ "$ref": "#/components/parameters/IntentId" }],
+        "responses": { "200": { "description": "The intent, as this merchant sees it.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentIntent" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "404": { "$ref": "#/components/responses/NotFound" } } }
+    },
+    "/v1/payment-intents/{intent_id}/quotes": {
+      "post": { "tags": ["merchant"], "summary": "Quote an intent in an asset", "description": "Reserves an exact token amount at one collector address for a bounded time. The rate comes from server-owned price evidence and always rounds up; the gateway never re-prices an issued quote.", "security": [{ "merchantKey": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IntentId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IssueQuote" } } } },
+        "responses": {
+          "201": { "description": "Issued.", "headers": { "Idempotent-Replayed": { "$ref": "#/components/headers/IdempotentReplayed" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IssuedQuote" } } } },
+          "200": { "description": "Replayed. A replay stays available during a later pricing or rail outage.", "headers": { "Idempotent-Replayed": { "$ref": "#/components/headers/IdempotentReplayed" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IssuedQuote" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "description": "payment_intent_not_quotable: the intent is not awaiting a quote; or idempotency_conflict.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "503": { "description": "quote_unavailable: no fresh, agreeing price, policy or rail-health evidence, or no free amount slot; rail_stopped: a person or the reconciler closed this rail. Nothing is invented.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        } }
+    },
+    "/v1/operator/price-snapshots": {
+      "post": { "tags": ["operator"], "summary": "Submit price readings", "description": "Requires the ingest scope. Readings from independent provider groups are aggregated by policy: the exact rational mean of the two middle readings, a deviation ceiling, and a refusal that still stores every reading with the reason it did not count.", "security": [{ "operatorKey": ["ingest"] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PriceSubmission" } } } },
+        "responses": { "201": { "description": "A snapshot was recorded.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PriceSnapshot" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "409": { "description": "no_price_policy: the asset has no active quote policy for this currency.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }, "422": { "description": "price_not_agreed: too few independent groups, or readings further apart than the policy allows. The readings were stored with the reason.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }, "503": { "$ref": "#/components/responses/StorageUnavailable" } } }
+    },
+    "/v1/operator/rail-health": {
+      "post": { "tags": ["operator"], "summary": "Submit a rail-health observation", "security": [{ "operatorKey": ["ingest"] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RailHealthSubmission" } } } },
+        "responses": { "201": { "description": "Recorded.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Accepted" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "503": { "$ref": "#/components/responses/StorageUnavailable" } } }
+    },
+    "/v1/operator/rail-stops": {
+      "post": { "tags": ["operator"], "summary": "Close a rail", "description": "Requires the admin scope. New quotes on the asset are refused with rail_stopped; issued quotes stay payable. A rail already closed stays closed under its first reason.", "security": [{ "operatorKey": ["admin"] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OpenRailStop" } } } },
+        "responses": { "201": { "description": "The open stop, new or pre-existing.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RailStop" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "503": { "$ref": "#/components/responses/StorageUnavailable" } } }
+    },
+    "/v1/operator/rail-stops/{asset_id}/clear": {
+      "post": { "tags": ["operator"], "summary": "Reopen a rail", "description": "Requires the admin scope and a reason. Only a person clears a stop; the reconciler that opened one never does.", "security": [{ "operatorKey": ["admin"] }], "parameters": [{ "$ref": "#/components/parameters/AssetId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ClearRailStop" } } } },
+        "responses": { "204": { "description": "Cleared." }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "409": { "description": "no_open_rail_stop.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }, "503": { "$ref": "#/components/responses/StorageUnavailable" } } }
+    },
+    "/v1/operator/transfers/{transfer_id}/risk-evaluations": {
+      "post": { "tags": ["operator"], "summary": "Record a screening decision for a transfer", "description": "Requires the ingest scope. A transfer nobody screened reads as skipped, which the settlement bands treat as not screened, never as clean.", "security": [{ "operatorKey": ["ingest"] }], "parameters": [{ "$ref": "#/components/parameters/TransferId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RiskEvaluation" } } } },
+        "responses": { "201": { "description": "Recorded.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Accepted" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "503": { "$ref": "#/components/responses/StorageUnavailable" } } }
+    },
+    "/v1/operator/overview": {
+      "get": { "tags": ["operator"], "summary": "One page of the gateway's state", "security": [{ "operatorKey": ["read"] }],
+        "responses": { "200": { "description": "Component states, open rail stops, the latest reconciliation runs, open discrepancies by kind, transfers and intents by state, and the outbox.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Overview" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "503": { "$ref": "#/components/responses/StorageUnavailable" } } }
+    },
+    "/v1/operator/conflicts": {
+      "get": { "tags": ["operator"], "summary": "Open observation conflicts", "description": "Sources that disagree about the same chain event. The fact was not created; the disagreement was recorded.", "security": [{ "operatorKey": ["read"] }], "parameters": [{ "$ref": "#/components/parameters/Limit" }, { "$ref": "#/components/parameters/Before" }],
+        "responses": { "200": { "description": "A keyset page.", "content": { "application/json": { "schema": { "type": "object", "required": ["items", "next_before"], "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/Conflict" } }, "next_before": { "type": ["string", "null"], "format": "uuid" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "503": { "$ref": "#/components/responses/StorageUnavailable" } } }
+    },
+    "/v1/operator/unmatched-transfers": {
+      "get": { "tags": ["operator"], "summary": "Money that matches no obligation", "security": [{ "operatorKey": ["read"] }], "parameters": [{ "$ref": "#/components/parameters/Limit" }, { "$ref": "#/components/parameters/Before" }],
+        "responses": { "200": { "description": "A keyset page.", "content": { "application/json": { "schema": { "type": "object", "required": ["items", "next_before"], "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/UnmatchedTransfer" } }, "next_before": { "type": ["string", "null"], "format": "uuid" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "503": { "$ref": "#/components/responses/StorageUnavailable" } } }
+    },
+    "/v1/operator/held-payments": {
+      "get": { "tags": ["operator"], "summary": "Payments waiting for a person", "security": [{ "operatorKey": ["read"] }], "parameters": [{ "$ref": "#/components/parameters/Limit" }, { "$ref": "#/components/parameters/Before" }],
+        "responses": { "200": { "description": "A keyset page.", "content": { "application/json": { "schema": { "type": "object", "required": ["items", "next_before"], "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/HeldPayment" } }, "next_before": { "type": ["string", "null"], "format": "uuid" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "503": { "$ref": "#/components/responses/StorageUnavailable" } } }
+    },
+    "/v1/operator/dead-letters": {
+      "get": { "tags": ["operator"], "summary": "Events no endpoint accepted", "security": [{ "operatorKey": ["read"] }], "parameters": [{ "$ref": "#/components/parameters/Limit" }, { "$ref": "#/components/parameters/Before" }],
+        "responses": { "200": { "description": "A keyset page, each with its delivery history.", "content": { "application/json": { "schema": { "type": "object", "required": ["items", "next_before"], "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/DeadLetter" } }, "next_before": { "type": ["string", "null"], "format": "uuid" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "503": { "$ref": "#/components/responses/StorageUnavailable" } } }
+    },
+    "/v1/operator/reconciliation/runs": {
+      "get": { "tags": ["operator"], "summary": "Reconciliation runs, newest first", "security": [{ "operatorKey": ["read"] }], "parameters": [{ "$ref": "#/components/parameters/Limit" }, { "$ref": "#/components/parameters/Before" }],
+        "responses": { "200": { "description": "A keyset page.", "content": { "application/json": { "schema": { "type": "object", "required": ["items", "next_before"], "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/ReconciliationRun" } }, "next_before": { "type": ["string", "null"], "format": "uuid" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "503": { "$ref": "#/components/responses/StorageUnavailable" } } }
+    },
+    "/v1/operator/reconciliation/discrepancies": {
+      "get": { "tags": ["operator"], "summary": "Open discrepancies", "security": [{ "operatorKey": ["read"] }], "parameters": [{ "$ref": "#/components/parameters/Limit" }, { "$ref": "#/components/parameters/Before" }],
+        "responses": { "200": { "description": "A keyset page of findings nobody has resolved.", "content": { "application/json": { "schema": { "type": "object", "required": ["items", "next_before"], "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/Discrepancy" } }, "next_before": { "type": ["string", "null"], "format": "uuid" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "503": { "$ref": "#/components/responses/StorageUnavailable" } } }
+    },
+    "/v1/operator/payment-intents/{intent_id}": {
+      "get": { "tags": ["operator"], "summary": "The evidence bundle of one payment", "description": "Cross-merchant, for an incident: the obligation, every quote and reservation, allocations, settlement decisions, the fulfilment claim, payment events and the canonical transfers behind them.", "security": [{ "operatorKey": ["read"] }], "parameters": [{ "$ref": "#/components/parameters/IntentId" }],
+        "responses": { "200": { "description": "The bundle.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Evidence" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "503": { "$ref": "#/components/responses/StorageUnavailable" } } }
+    },
+    "/metrics": {
+      "get": { "tags": ["operator"], "summary": "Prometheus exposition", "description": "Requires the read scope; Prometheus sends the operator key as its bearer_token. Rendered from one database snapshot plus in-process expiry counters, and the whole scrape fails when storage cannot answer, so absent telemetry never resembles health. Intended for in-cluster scraping only.", "security": [{ "operatorKey": ["read"] }],
+        "responses": { "200": { "description": "text/plain; version=0.0.4 exposition with the gateway_* families.", "content": { "text/plain": { "schema": { "type": "string" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "503": { "$ref": "#/components/responses/StorageUnavailable" } } }
+    }
+  }
+}

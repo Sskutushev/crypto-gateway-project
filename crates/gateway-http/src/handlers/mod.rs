@@ -13,6 +13,36 @@ use axum::{
 
 use crate::AppState;
 
+/// Every route the router serves, as method and path.
+///
+/// axum does not expose the routes it was built with, so this list is the
+/// contract: a test proves the router answers each entry and refuses anything
+/// else, and that `docs/openapi.json` documents exactly these.
+pub const ROUTES: &[(&str, &str)] = &[
+    ("GET", "/health/live"),
+    ("GET", "/health/ready"),
+    ("POST", "/v1/payment-intents"),
+    ("GET", "/v1/payment-intents/{intent_id}"),
+    ("POST", "/v1/payment-intents/{intent_id}/quotes"),
+    ("POST", "/v1/operator/price-snapshots"),
+    ("POST", "/v1/operator/rail-health"),
+    ("POST", "/v1/operator/rail-stops"),
+    ("POST", "/v1/operator/rail-stops/{asset_id}/clear"),
+    (
+        "POST",
+        "/v1/operator/transfers/{transfer_id}/risk-evaluations",
+    ),
+    ("GET", "/v1/operator/overview"),
+    ("GET", "/v1/operator/conflicts"),
+    ("GET", "/v1/operator/unmatched-transfers"),
+    ("GET", "/v1/operator/held-payments"),
+    ("GET", "/v1/operator/dead-letters"),
+    ("GET", "/v1/operator/reconciliation/runs"),
+    ("GET", "/v1/operator/reconciliation/discrepancies"),
+    ("GET", "/v1/operator/payment-intents/{intent_id}"),
+    ("GET", "/metrics"),
+];
+
 pub fn payment_intent_routes() -> Router<AppState> {
     Router::new()
         .route("/v1/payment-intents", post(payment_intents::create))

@@ -33,6 +33,13 @@ async fn main() -> Result<()> {
     if env::var("GATEWAY_RUN_MIGRATIONS").as_deref() == Ok("true") {
         migrate(&pool).await.context("run database migrations")?;
     }
+    // A release applies migrations as the migrator role before any process
+    // serves; that process has nothing to serve and no reference data to
+    // check yet, so it stops here.
+    if env::var("GATEWAY_MIGRATE_ONLY").as_deref() == Ok("true") {
+        info!("migrations applied; GATEWAY_MIGRATE_ONLY is set, exiting");
+        return Ok(());
+    }
 
     let self_check_config = self_check_config()?;
     let repository = Arc::new(PostgresRepository::new(pool.clone()));

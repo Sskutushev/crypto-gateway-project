@@ -6,7 +6,7 @@ Last updated: 2026-09-24
 
 - Branch: `feat/standalone-gateway-foundation`
 - Remote: `https://github.com/Sskutushev/crypto-gateway-project.git`
-- Working tree: clean after the roles, deployment and CI slice.
+- Working tree: clean after the open-source packaging slice.
 - This tree is the repository's initial history; there is no earlier product
   implementation to preserve or migrate.
 
@@ -148,6 +148,21 @@ Last updated: 2026-09-24
   compose and kustomize validation; the image with an SPDX SBOM and a Trivy
   scan; publication to GHCR from a version tag. Dependabot watches Cargo,
   Actions and the base images.
+- Open-source packaging. A README written for a merchant CTO and for search:
+  what the gateway is, the four properties, a ten-minute quickstart, the
+  security model, how it fails on purpose, and the documentation map.
+  `docs/openapi.json` describes every served route with the exact shapes the
+  handlers produce, and a unit test proves the route list, the router and
+  the document cannot drift. `docs/merchant-integration.md`,
+  `docs/operator-runbook.md`, `docs/threat-model.md` and
+  `docs/owner-setup.md` (every account, key and secret, in order, with what
+  is blocking). `SECURITY.md`, `CONTRIBUTING.md`, the Contributor Covenant
+  2.1, issue and pull request templates, `CODEOWNERS`, `CHANGELOG.md`. The
+  API binary gained `GATEWAY_MIGRATE_ONLY` for the release step and the
+  quickstart; `scripts/seed-dev-rail.sql` and
+  `scripts/create-dev-operator.sql` seed a Nile testnet rail and an operator
+  key; evidence-bundle timestamps now serialise as RFC 3339 like every other
+  response.
 
 ## In progress
 
@@ -159,12 +174,25 @@ Last updated: 2026-09-24
 
 ## Next slices
 
-1. Open-source packaging: README for people and search, SECURITY, CONTRIBUTING,
-   OpenAPI, quickstart, and the owner's key and account instructions.
-2. A testnet run with two real providers, then a second independent TRON
-   provider group, then the ERC20 adapter.
+1. The owner's steps in `docs/owner-setup.md`: repository identity, `main`
+   with branch protection, providers, collector, master key, then a testnet
+   run with two real providers.
+2. A second independent TRON provider group, then the ERC20 adapter.
+3. Risk screening provider port and the operator decision path for
+   overpayment and late payment.
 
 ## Verification
+
+- Open-source packaging (2026-09-24), in `crypto-gateway-dev`: fmt clean;
+  clippy with `-D warnings` clean; `cargo test --workspace --locked` passed
+  166 tests with 27 ignored, among them
+  `every_route_is_served_and_documented_and_nothing_else_is`, which builds
+  the router on a pool that never connects, answers every listed route with
+  something other than 404 or 405, refuses an unlisted path and a wrong
+  method, and matches the list against `docs/openapi.json` in both
+  directions; all 27 PostgreSQL scenarios passed. A link check over the
+  README and every document found every relative link resolving; external
+  links were listed, not fetched.
 
 - Roles, deployment and CI (2026-09-24), in `crypto-gateway-dev`: fmt clean;
   clippy with `-D warnings` clean; `cargo test --workspace --locked` passed

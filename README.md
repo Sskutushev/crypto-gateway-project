@@ -1,127 +1,174 @@
-# Crypto Gateway Project
+# Crypto Gateway — open-source, non-custodial stablecoin payment gateway in Rust
 
-An open-source, non-custodial gateway for accepting and verifying inbound
-stablecoin payments.
+[![ci](https://github.com/Sskutushev/crypto-gateway-project/actions/workflows/ci.yml/badge.svg)](https://github.com/Sskutushev/crypto-gateway-project/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-The project is being built around four properties:
+A self-hosted payment gateway that accepts and verifies inbound stablecoin
+payments (USDT on TRON first) for a merchant's orders, without ever holding a
+private key. A merchant creates a payment intent, quotes it in a token, shows
+the payer an exact amount and an address; the gateway watches the chain
+through independent providers, verifies the transfer, settles the obligation
+exactly once, and tells the merchant with a signed webhook. Rust, PostgreSQL,
+one container image.
 
-- exact integer accounting;
-- independent blockchain evidence;
-- idempotent merchant APIs and signed webhooks;
-- a permanent, reconcilable audit trail.
+**Four properties**
 
-The gateway never stores treasury private keys and does not implement
-withdrawals or customer crypto balances.
+- **Exact integer money.** Fiat minor units and 256-bit token units, decimal
+  strings on the wire, floating point forbidden by the linter.
+- **Independent blockchain evidence.** A provider's answer is an observation;
+  a payment becomes a fact only when independent providers and the gateway's
+  own re-read agree.
+- **Idempotent API, signed webhooks.** Every write carries an idempotency key;
+  every event is signed with a per-endpoint secret derived from a master key
+  the database never sees.
+- **A reconcilable audit trail.** Every state change is a row; a reconciler
+  re-adds the books and closes the rail by itself when money stops adding up.
 
-## Status
+Supported rail: **USDT TRC20** (TRON). ERC20 and TON follow through the same
+observer and verifier interface.
 
-Foundation work is in progress. No network rail is production-ready yet. See
-[`docs/implementation-status.md`](docs/implementation-status.md) for the live
-handoff and [`docs/architecture.md`](docs/architecture.md) for the target
-design.
+## Quickstart (about ten minutes)
 
-## Planned first release
+Prerequisites: Docker with Compose, `psql`, `curl` and `jq`. Rust is not
+needed to run the image.
 
-The first production rail is USDT on TRON. Ethereum USDT and TON USDT follow
-only after the generic observer/verifier interface is proven by the first
-rail.
+```sh
+# 1. PostgreSQL, then the schema, then the development rail
+docker compose up -d postgres
+docker compose run --rm -e GATEWAY_MIGRATE_ONLY=true gateway-api
+export DB=postgres://gateway:gateway@127.0.0.1:54329/gateway
+psql "$DB" -f scripts/seed-dev-rail.sql
+
+# 2. A merchant key and an operator key (hashes only reach the database)
+MERCHANT_KEY=$(openssl rand -hex 24); OPERATOR_KEY=$(openssl rand -hex 24)
+psql "$DB" -v merchant_id=00000000-0000-7000-8000-000000000001 \
+  -v key_id=00000000-0000-7000-8000-000000000002 -v api_key_prefix=cg_dev \
+  -v api_key_sha256_hex=$(printf '%s' "$MERCHANT_KEY" | sha256sum | cut -d' ' -f1) \
+  -f scripts/create-dev-merchant.sql
+psql "$DB" -v key_id=00000000-0000-7000-8000-000000000003 -v api_key_prefix=cgop_dev \
+  -v api_key_sha256_hex=$(printf '%s' "$OPERATOR_KEY" | sha256sum | cut -d' ' -f1) \
+  -f scripts/create-dev-operator.sql
+
+# 3. The API. It refuses to start until the database describes the rail it
+#    was configured for, so this step is a test of the self-check too.
+docker compose up -d gateway-api
+curl -s localhost:8080/health/ready
+
+# 4. Price evidence and rail health, from two independent groups
+NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ); ASSET=00000000-0000-7000-8000-000000000101
+curl -s -X POST localhost:8080/v1/operator/price-snapshots \
+  -H "Authorization: Bearer $OPERATOR_KEY" -H 'Content-Type: application/json' \
+  -d "{\"asset_id\":\"$ASSET\",\"fiat_currency\":\"USD\",\"readings\":[
+    {\"source_key\":\"a\",\"provider_group\":\"a\",\"rate_numerator\":\"1\",\"rate_denominator\":\"10000\",\"observed_at\":\"$NOW\"},
+    {\"source_key\":\"b\",\"provider_group\":\"b\",\"rate_numerator\":\"1\",\"rate_denominator\":\"10000\",\"observed_at\":\"$NOW\"}]}"
+curl -s -X POST localhost:8080/v1/operator/rail-health \
+  -H "Authorization: Bearer $OPERATOR_KEY" -H 'Content-Type: application/json' \
+  -d "{\"asset_id\":\"$ASSET\",\"health\":\"healthy\"}"
+
+# 5. An order, and a quote for it
+INTENT=$(curl -s -X POST localhost:8080/v1/payment-intents \
+  -H "Authorization: Bearer $MERCHANT_KEY" -H 'Idempotency-Key: order-1' \
+  -H 'Content-Type: application/json' \
+  -d '{"amount_minor":"4999","currency":"USD","reference":"order-1"}' | jq -r .id)
+curl -s -X POST localhost:8080/v1/payment-intents/$INTENT/quotes \
+  -H "Authorization: Bearer $MERCHANT_KEY" -H 'Idempotency-Key: quote-1' \
+  -H 'Content-Type: application/json' -d "{\"asset_id\":\"$ASSET\"}"
+
+# 6. What the operator sees
+curl -s localhost:8080/v1/operator/overview -H "Authorization: Bearer $OPERATOR_KEY"
+curl -s localhost:8080/metrics -H "Authorization: Bearer $OPERATOR_KEY" | head
+```
+
+The quote names a collector address and an exact `amount_raw`. On the Nile
+testnet, with the workers running against two providers
+([`docs/deployment.md`](docs/deployment.md)), paying that amount settles the
+intent and delivers `payment_intent.paid` to the merchant's endpoint.
+
+## How it works
+
+```
+merchant ──► API ──► payment intent ──► quote: exact amount at a collector
+                                             │
+chain provider A ──► observer A ──┐          ▼
+chain provider B ──► observer B ──┼──► verifier ──► canonical transfer
+                    (own re-read) ┘             │
+                                                ▼
+                               settlement (one transaction) ──► outbox ──► signed webhook
+                                                │
+                               reconciler: does it still add up? ──► rail stop
+```
+
+Seven processes from one image: the API and one worker per role. Each has
+its own PostgreSQL role with only the privileges its code uses, and row level
+security binds every observer to the chain source it speaks for. Full design:
+[`docs/architecture.md`](docs/architecture.md).
+
+## Security model
+
+- **Non-custodial.** No private keys, no signing, no withdrawals, no balances.
+  A stolen host can lie about receipts and nothing else.
+- **Two-layer chain facts.** Observations are append-only and never trusted
+  alone; the verifier alone writes canonical transfers, from independent
+  agreement plus its own re-read.
+- **Integer money end to end.** `NUMERIC(78,0)`, `U256`, decimal strings;
+  parsers refuse signs, decimals, zero and overflow; fuzzed.
+- **Signed webhooks.** HMAC-SHA256 over timestamp and body under a derived
+  per-endpoint secret; fingerprints only in the database; no redirects.
+- **Fail closed.** Missing or stale evidence refuses a quote; a process whose
+  database disagrees with its configuration refuses to start; money that does
+  not add up closes the rail until a person clears it.
+
+Details and the attacks each layer refuses: [`docs/threat-model.md`](docs/threat-model.md).
+
+## How it fails, on purpose
+
+| The gateway refuses when | Because |
+|---|---|
+| fewer than two independent price groups agree, or they disagree beyond policy | a rate nobody corroborated is a guess about someone's money |
+| price, policy or rail-health evidence is missing or stale | an issued quote must rest on evidence that existed when it was issued |
+| a rail is closed by an operator or by reconciliation | new obligations must not pile onto a rail under investigation |
+| a transfer matches two reservations, or none | ambiguity is a decision for a person; money nobody can explain is queued, not absorbed |
+| observers disagree about a chain event | the disagreement is the finding; no fact is made from it |
+| a process's database does not describe its configured collectors, assets or environment | a database-only address change must not redirect receipts |
+
+## Documentation
+
+- [Architecture](docs/architecture.md) and [decisions](docs/decisions/)
+- [Merchant integration](docs/merchant-integration.md): intents, quotes, statuses, webhook verification
+- [OpenAPI 3.1](docs/openapi.json): every route the router serves, checked by a test
+- [Operator runbook](docs/operator-runbook.md): feeding evidence, reading queues, clearing a hard stop, alerts
+- [Deployment](docs/deployment.md): roles, Compose, Kubernetes, the TLS and network boundary
+- [Threat model](docs/threat-model.md)
+- [Owner setup](docs/owner-setup.md): every account, key and secret, in order
+- [Implementation status](docs/implementation-status.md): what is verified, what is next
 
 ## Development
 
-Both `gateway-api` and `gateway-worker` require these start-up self-check
-settings. They deliberately have no production-friendly fallback:
+Rust 1.90 (pinned in `rust-toolchain.toml`), Docker with Compose, PostgreSQL 16.
 
-- `GATEWAY_EXPECTED_COLLECTORS`: comma-separated canonical TRON base58
-  collector addresses; prevents a database-only address change from redirecting receipts.
-- `GATEWAY_EXPECTED_ASSETS`: comma-separated `chain:network:contract_base58`
-  assets; prevents an unreviewed contract from becoming payable.
-- `GATEWAY_CHAIN_ENVIRONMENT`: exactly `testnet` or `mainnet`; prevents a
-  process and its active database rows from referring to different worlds.
-- `GATEWAY_MAX_CLOCK_SKEW_SECONDS`: positive whole-second PostgreSQL/process
-  clock-skew limit, default `5`; protects time-window and lease decisions.
-
-Operator keys carrying the `read` scope can inspect the gateway through:
-
-- `GET /v1/operator/overview`
-- `GET /v1/operator/conflicts`
-- `GET /v1/operator/unmatched-transfers`
-- `GET /v1/operator/held-payments`
-- `GET /v1/operator/dead-letters`
-- `GET /v1/operator/reconciliation/runs`
-- `GET /v1/operator/reconciliation/discrepancies`
-- `GET /v1/operator/payment-intents/{intent_id}`
-- `GET /metrics`
-
-The list routes use UUID keyset pagination through `limit` and `before`.
-Prometheus must send an operator key carrying `read` as its `bearer_token`;
-`/metrics` is intended for in-cluster scraping only and must not be public.
-
-Prerequisites:
-
-- Rust stable (pinned in `rust-toolchain.toml`)
-- Docker with Compose
-- PostgreSQL 16+
-
-The executable foundation exposes authenticated create/read payment intents
-and quote issuance with merchant-scoped idempotency. Quote requests choose an
-allowlisted asset; pricing, policy, rail health, and collector details always
-come from server-owned PostgreSQL snapshots. It is still a development
-foundation: no blockchain rail is production-ready.
-
-`POST /v1/payment-intents/{intent_id}/quotes` requires an `Idempotency-Key`
-header and accepts only:
-
-```json
-{"asset_id":"00000000-0000-0000-0000-000000000000"}
-```
-
-Amounts in the response are decimal strings. The endpoint returns `503
-quote_unavailable` instead of inventing a price when any required snapshot is
-missing, stale, future-dated, or unhealthy. A replay of an already issued quote
-remains available during a later pricing or rail outage.
-
-The API process also runs the quote-expiry scheduler. Every interval it asks
-the application layer for one bounded transaction that expires due quotes and
-archives leases whose late-payment window ended, repeating until nothing is due
-or the per-tick ceiling is reached. Two sweeps never run at once, transient
-storage errors are retried with capped backoff, and an invariant violation
-stops the sweep instead of being retried. `SIGTERM` and `Ctrl-C` stop the loop
-between batches, so an in-flight expiry transaction is never abandoned.
-
-Its settings are read once at startup and an unreadable value fails startup
-rather than silently using a default:
-
-```text
-GATEWAY_EXPIRY_ENABLED=true
-GATEWAY_EXPIRY_INTERVAL_SECONDS=30
-GATEWAY_EXPIRY_BATCH_LIMIT=200
-GATEWAY_EXPIRY_MAX_BATCHES_PER_TICK=10
-GATEWAY_EXPIRY_RETRY_ATTEMPTS=3
-GATEWAY_EXPIRY_RETRY_INITIAL_BACKOFF_SECONDS=1
-GATEWAY_EXPIRY_RETRY_MAX_BACKOFF_SECONDS=10
-```
-
-Start the local stack with `docker compose up --build`. Compose binds the API
-and PostgreSQL only to the host loopback interface. The API serves plain HTTP
-for local development; any non-local deployment must terminate TLS before the
-API and must not expose PostgreSQL publicly. Production database credentials
-must be unique, least-privileged, and supplied outside this repository.
-
-Core checks for a local Rust toolchain are:
-
-```text
+```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+GATEWAY_TEST_DATABASE_URL=postgres://gateway:gateway@127.0.0.1:54329/gateway \
+  cargo test --workspace --locked -- --ignored     # PostgreSQL scenarios
+GATEWAY_FUZZ_ITERATIONS=200000 cargo test --release -- fuzz_smoke
 cargo deny check
 ```
 
-The PostgreSQL-backed scenarios are intentionally ignored by the default test
-command. After starting the Compose PostgreSQL service, run them explicitly
-with `GATEWAY_TEST_DATABASE_URL` set to the disposable database and pass
-`-- --ignored` to `cargo test --workspace`. They share one schema and
-serialize themselves, so no special thread count is required.
+CI runs all of it on every push, plus compose and kustomize validation, an
+SBOM and an image scan; images publish to GHCR from a version tag. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the rules, [`SECURITY.md`](SECURITY.md)
+for reporting a vulnerability, and [`CHANGELOG.md`](CHANGELOG.md) for what
+exists today.
+
+## Status
+
+Every layer from payment intent to signed webhook exists and is verified by
+unit tests, PostgreSQL scenarios and seeded property tests. No rail is
+declared production-ready until it has run on a testnet with two real
+providers; the steps are in [`docs/owner-setup.md`](docs/owner-setup.md).
 
 ## License
 
-Licensed under the Apache License, Version 2.0.
+Apache License 2.0. See [`LICENSE`](LICENSE).

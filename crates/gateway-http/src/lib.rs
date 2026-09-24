@@ -21,6 +21,8 @@ use crate::{
     handlers::health,
 };
 
+pub use handlers::ROUTES;
+
 #[derive(Debug, Clone)]
 pub struct AppState {
     pub repository: Arc<PostgresRepository>,
@@ -100,6 +102,83 @@ pub fn router(state: AppState) -> Router {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn every_route_is_served_and_documented_and_nothing_else_is() -> Result<(), Box<dyn Error>>
+    {
+        // A pool that never connects: the router is proven without a database,
+        // because a route that exists answers 401, 200 or 503 before it needs
+        // one, and a route that does not exist answers 404.
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://nobody:nobody@127.0.0.1:1/nowhere")?;
+        let app = router(AppState::new(pool));
+        let spec: Value = serde_json::from_str(include_str!("../../../docs/openapi.json"))?;
+        let paths = spec["paths"]
+            .as_object()
+            .ok_or("openapi.json has no paths object")?;
+
+        for (method, path) in ROUTES {
+            let documented = paths
+                .get(*path)
+                .and_then(|item| item.get(method.to_lowercase()))
+                .is_some_and(Value::is_object);
+            assert!(
+                documented,
+                "{method} {path} is served but not in docs/openapi.json"
+            );
+
+            let concrete = path
+                .replace("{intent_id}", "00000000-0000-7000-8000-000000000001")
+                .replace("{asset_id}", "00000000-0000-7000-8000-000000000002")
+                .replace("{transfer_id}", "00000000-0000-7000-8000-000000000003");
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(*method)
+                        .uri(concrete)
+                        .body(Body::empty())?,
+                )
+                .await?;
+            assert!(
+                response.status() != StatusCode::NOT_FOUND
+                    && response.status() != StatusCode::METHOD_NOT_ALLOWED,
+                "{method} {path} is listed but the router answered {}",
+                response.status()
+            );
+        }
+
+        for (path, item) in paths {
+            for method in item
+                .as_object()
+                .map(|item| item.keys())
+                .into_iter()
+                .flatten()
+            {
+                let listed = ROUTES
+                    .iter()
+                    .any(|(m, p)| p == path && m.eq_ignore_ascii_case(method));
+                assert!(listed, "{method} {path} is documented but not served");
+            }
+        }
+
+        let missing = app
+            .clone()
+            .oneshot(Request::builder().uri("/v1/nothing").body(Body::empty())?)
+            .await?;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        let wrong_method = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/health/live")
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(wrong_method.status(), StatusCode::METHOD_NOT_ALLOWED);
+        Ok(())
+    }
+
     use std::{collections::BTreeSet, env, error::Error};
 
     use axum::{
@@ -114,7 +193,7 @@ mod tests {
     use tower::ServiceExt;
     use uuid::Uuid;
 
-    use super::{AppState, router};
+    use super::{AppState, ROUTES, router};
 
     const MERCHANT_ONE: Uuid = Uuid::from_u128(1);
     const MERCHANT_TWO: Uuid = Uuid::from_u128(2);
