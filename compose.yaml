@@ -29,7 +29,8 @@ x-rail: &rail
   # disagrees with these does not start. Override the collector in .env with
   # an address you control before paying anything.
   GATEWAY_EXPECTED_COLLECTORS: ${GATEWAY_EXPECTED_COLLECTORS:-TAF8dttxK5iPKbvYC626aDBytrWANpLRXp}
-  GATEWAY_EXPECTED_ASSETS: tron:nile:TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj
+  # The USDT the Nile faucet (nileex.io) hands out; overridable from .env.
+  GATEWAY_EXPECTED_ASSETS: ${GATEWAY_EXPECTED_ASSETS:-tron:nile:TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf}
 
 x-worker: &worker
   build:
