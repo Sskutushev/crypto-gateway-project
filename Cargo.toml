@@ -26,7 +26,7 @@ async-trait = "0.1"
 axum = "0.8"
 bs58 = "0.5"
 gateway-application = { version = "0.1.0", path = "crates/gateway-application" }
-hmac = "0.12"
+hmac = "0.13"
 gateway-domain = { version = "0.1.0", path = "crates/gateway-domain" }
 gateway-http = { version = "0.1.0", path = "crates/gateway-http" }
 gateway-scheduler = { version = "0.1.0", path = "crates/gateway-scheduler" }
