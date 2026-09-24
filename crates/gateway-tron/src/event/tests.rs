@@ -202,10 +202,9 @@ fn hostile_words_are_refused_instead_of_being_trimmed_into_shape() -> TestResult
         refusal("hostile_short_amount")?,
         TronParseError::WrongWordLength(3)
     );
-    assert_eq!(
-        refusal("hostile_topic_count")?,
-        TronParseError::WrongTopicCount(2)
-    );
+    // Two indexed fields is not a TRC-20 transfer; the log is another event,
+    // passed over without stopping the scan.
+    assert!(parse_transfers(&load("hostile_topic_count")?)?.is_empty());
     assert_eq!(refusal("hostile_zero_amount")?, TronParseError::ZeroAmount);
     Ok(())
 }
@@ -235,5 +234,45 @@ fn block_times_are_read_as_milliseconds() -> TestResult {
 
     assert_eq!(parsed.unix_timestamp(), 1_758_000_000);
     assert!(block_time(i64::MAX).is_err());
+    Ok(())
+}
+
+#[test]
+fn an_nft_transfer_beside_a_token_transfer_is_skipped_not_refused() -> TestResult {
+    let nft = super::LogEntry {
+        address: format!("41{}", "ab".repeat(20)),
+        topics: vec![
+            super::TRANSFER_TOPIC.to_owned(),
+            format!("{}{}", "0".repeat(24), "11".repeat(20)),
+            format!("{}{}", "0".repeat(24), "22".repeat(20)),
+            format!("{}7", "0".repeat(63)),
+        ],
+        data: String::new(),
+    };
+    let token = super::LogEntry {
+        address: format!("41{}", "cd".repeat(20)),
+        topics: vec![
+            super::TRANSFER_TOPIC.to_owned(),
+            format!("{}{}", "0".repeat(24), "33".repeat(20)),
+            format!("{}{}", "0".repeat(24), "44".repeat(20)),
+        ],
+        data: format!("{}f4240", "0".repeat(59)),
+    };
+    let info = TransactionInfo {
+        id: "a".repeat(64),
+        block_number: Some(1),
+        block_time_stamp: Some(1_700_000_000_000),
+        result: None,
+        receipt: Some(super::Receipt {
+            result: Some("SUCCESS".to_owned()),
+        }),
+        log: vec![nft, token],
+    };
+    let parsed = parse_transfers(&info)?;
+    assert_eq!(parsed.len(), 1);
+    // The index is the log's position in the transaction, the NFT included:
+    // it is what makes the fact identifiable, so skipping must not renumber.
+    assert_eq!(parsed[0].event_index, 1);
+    assert_eq!(parsed[0].amount.to_string(), "1000000");
     Ok(())
 }
