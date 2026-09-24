@@ -405,11 +405,14 @@ impl PostgresRepository {
     ) -> Result<Vec<Discrepancy>, RepositoryError> {
         let rows = sqlx::query(
             r"
-            SELECT fulfilment.payment_intent_id
+            SELECT fulfilment.payment_intent_id,
+                   quote.asset_id
               FROM payment_fulfillments AS fulfilment
               LEFT JOIN payment_settlement_decisions AS decision
                      ON decision.payment_intent_id = fulfilment.payment_intent_id
                     AND decision.outcome = 'settled'
+              LEFT JOIN payment_quotes AS quote
+                     ON quote.payment_intent_id = fulfilment.payment_intent_id
              WHERE fulfilment.claimed_at >= $1
                AND fulfilment.claimed_at < $2
                AND decision.id IS NULL
@@ -429,7 +432,7 @@ impl PostgresRepository {
                     kind: DiscrepancyKind::FulfilledNotSettled,
                     transfer_id: None,
                     payment_intent_id: Some(row.try_get("payment_intent_id").map_err(unavailable)?),
-                    asset_id: None,
+                    asset_id: row.try_get("asset_id").map_err(unavailable)?,
                     detail: json!({}),
                 })
             })

@@ -8,6 +8,22 @@ use super::{
     RiskDecision, SettlementEvidence, SettlementOutcome, SettlementPolicy, SettlementTier,
     TransferFacts, decide_settlement, match_transfer,
 };
+
+#[test]
+fn manual_resolution_names_are_stable_and_explicitly_external() {
+    use super::{ManualResolutionAction, RemainderDisposition};
+
+    assert_eq!(ManualResolutionAction::Honor.as_str(), "honor");
+    assert_eq!(ManualResolutionAction::Reject.as_str(), "reject");
+    assert_eq!(
+        ManualResolutionAction::RecordRemainderDisposition.as_str(),
+        "record_remainder_disposition"
+    );
+    assert_eq!(
+        RemainderDisposition::RefundedExternally.as_str(),
+        "refunded_externally"
+    );
+}
 use crate::{Memo, RawAmount, TransferState};
 
 type TestResult = Result<(), Box<dyn Error>>;

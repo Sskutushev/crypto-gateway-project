@@ -14,17 +14,15 @@ records that it did.
 - **Topics** (Settings → Topics): `crypto-payments`, `payment-gateway`,
   `usdt`, `tron`, `non-custodial`, `rust`, `postgresql`, `webhooks`,
   `self-hosted`, `stablecoin`.
-- **Base branch.** `main` does not exist yet. Create it from the current
-  branch and protect it:
-  ```
-  git branch main feat/standalone-gateway-foundation
-  git push origin main
-  ```
-  Then Settings → Branches → add a rule for `main`: require a pull request,
-  require the `ci` checks (`fmt, clippy, unit tests`, `PostgreSQL scenarios`,
+- **Base branch.** `main` exists; the implementation-status baseline reviewed
+  on 2026-09-24 is
+  `c19028965e93f4d3731d67fec5c219d4fbd0b5e2`. In GitHub Settings, verify that
+  `main` is the default branch and that its protection rule requires a pull
+  request, the `ci` checks (`fmt, clippy, unit tests`, `PostgreSQL scenarios`,
   `fuzz smoke`, `cargo deny, cargo audit`, `compose and kustomize validate`,
-  `image, SBOM, scan, publish`), require linear history, no force pushes.
-  Set `main` as the default branch afterwards.
+  `image, SBOM, scan, publish`), linear history, and no force pushes.
+  Repository documentation cannot prove those remote settings; inspect them
+  before a release.
 - **Security policy and private reporting.** Settings → Code security →
   enable *Private vulnerability reporting*; `SECURITY.md` points there.
 - **CODEOWNERS** names you; keep it that way until a second maintainer exists.
@@ -116,8 +114,10 @@ of the derived secret.
 Generate 32 to 256 random characters, hash with SHA-256, insert the hash:
 `scripts/create-dev-operator.sql` and `scripts/create-dev-merchant.sql` show
 the rows. In production, generate keys in your secret manager and insert only
-hashes. Give Prometheus a `read` key, the price feeder an `ingest` key, and
-`admin` to a person.
+hashes. Give Prometheus a `read` key, the price/rail-health feeder an `ingest`
+key, a separate `risk_ingest` key to each KYT integration, and `admin` to a
+person. Bind every risk key to its exact provider in
+`operator_risk_provider_bindings`; an unbound key cannot submit a verdict.
 
 ## 8. Price and rail-health feeds — blocking
 
@@ -139,8 +139,9 @@ amount above which a person settles.
 ## 10. Screening provider — optional
 
 A KYT vendor account, if you want screening before automatic settlement. Its
-integration posts `POST /v1/operator/transfers/{id}/risk-evaluations` with an
-`ingest` key. Without one, every transfer reads as `skipped`, and the
+integration posts `POST /v1/operator/transfers/{id}/risk-evaluations` with its
+provider-bound `risk_ingest` key. Without one, every transfer reads as
+`skipped`, and the
 settlement tiers that require `allow` hold the payment for a person.
 
 ## 11. Legal — blocking for real money, outside this repository

@@ -1,9 +1,13 @@
 use std::{error::Error, str::FromStr};
 
 use gateway_application::{
-    OperationsRepository, OperationsService, OperatorScope, QuoteRepository, SystemClock,
+    ManualResolution, OperationsError, OperationsRepository, OperationsService, OperatorScope,
+    QuoteRepository, RepositoryError, RiskSubmission, SystemClock,
 };
-use gateway_domain::{CurrencyCode, PriceReading, RailHealth, RawAmount};
+use gateway_domain::{
+    CurrencyCode, ManualResolutionAction, PriceReading, RailHealth, RawAmount,
+    RemainderDisposition, RiskDecision,
+};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -22,8 +26,17 @@ const COLLECTOR_ID: Uuid = Uuid::from_u128(9_602);
 const POLICY_ID: Uuid = Uuid::from_u128(9_603);
 const INGEST_KEY: Uuid = Uuid::from_u128(9_604);
 const ADMIN_KEY: Uuid = Uuid::from_u128(9_605);
+const RISK_KEY: Uuid = Uuid::from_u128(9_606);
 const INGEST_SECRET: &str = "operator-ingest-secret-000000000000";
 const ADMIN_SECRET: &str = "operator-admin-secret-0000000000000";
+const RISK_SECRET: &str = "operator-risk-secret-00000000000000";
+const MANUAL_MERCHANT: Uuid = Uuid::from_u128(9_610);
+const MANUAL_INTENT: Uuid = Uuid::from_u128(9_611);
+const MANUAL_QUOTE: Uuid = Uuid::from_u128(9_612);
+const MANUAL_ATTEMPT: Uuid = Uuid::from_u128(9_613);
+const MANUAL_TRANSFER: Uuid = Uuid::from_u128(9_614);
+const MANUAL_PRICE: Uuid = Uuid::from_u128(9_615);
+const MANUAL_HEALTH: Uuid = Uuid::from_u128(9_616);
 
 #[tokio::test]
 #[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
@@ -175,6 +188,268 @@ async fn a_closed_rail_stops_new_quotes_and_only_a_person_reopens_it() -> TestRe
     Ok(())
 }
 
+#[tokio::test]
+#[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+async fn manual_honor_is_atomic_idempotent_and_cannot_be_retargeted() -> TestResult {
+    let _fixture = DATABASE.lock().await;
+    let pool = connect().await?;
+    seed(&pool).await?;
+    seed_manual_payment(&pool).await?;
+    let repository = Arc::new(PostgresRepository::new(pool.clone()));
+    let service = OperationsService::new(Arc::clone(&repository), SystemClock);
+    let admin = repository
+        .authenticate_operator_key(&digest(ADMIN_SECRET))
+        .await?
+        .ok_or("the seeded admin key did not authenticate")?;
+    let command = ManualResolution {
+        action: ManualResolutionAction::Honor,
+        transfer_id: MANUAL_TRANSFER,
+        payment_intent_id: Some(MANUAL_INTENT),
+        attempt_id: Some(MANUAL_ATTEMPT),
+        allocate_raw: Some(RawAmount::from_str("1000000")?),
+        remainder_raw: None,
+        disposition: None,
+        external_reference: None,
+        reason: "operator verified the late payer evidence".to_owned(),
+    };
+
+    let (left, right) = tokio::join!(
+        service.resolve_manual(&admin, "manual-honor-idem-0001", &command),
+        service.resolve_manual(&admin, "manual-honor-idem-0001", &command),
+    );
+    let (first, concurrent_replay) = match (left?, right?) {
+        (created, replayed) if !created.replayed && replayed.replayed => (created, replayed),
+        (replayed, created) if replayed.replayed && !created.replayed => (created, replayed),
+        (left, right) => {
+            return Err(
+                format!("expected one create and one replay, got {left:?} and {right:?}").into(),
+            );
+        }
+    };
+    assert_eq!(first.allocated_raw, command.allocate_raw);
+    assert_eq!(concurrent_replay.id, first.id);
+    let replay = service
+        .resolve_manual(&admin, "manual-honor-idem-0001", &command)
+        .await?;
+    assert!(replay.replayed);
+    assert_eq!(replay.id, first.id);
+
+    let intent_status: String =
+        sqlx::query_scalar("SELECT status FROM payment_intents WHERE id=$1")
+            .bind(MANUAL_INTENT)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(intent_status, "paid");
+    let processing: (String, String) = sqlx::query_as(
+        "SELECT processing_state, allocated_raw::text FROM chain_transfer_processing WHERE transfer_id=$1",
+    )
+    .bind(MANUAL_TRANSFER)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(processing, ("settled".to_owned(), "1000000".to_owned()));
+    for (table, count) in [
+        ("payment_allocations", 1_i64),
+        ("payment_fulfillments", 1_i64),
+        ("manual_resolution_requests", 1_i64),
+    ] {
+        let actual: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(actual, count, "unexpected row count in {table}");
+    }
+    let paid_events: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM domain_events WHERE event_type='payment_intent.paid' AND aggregate_id=$1",
+    )
+    .bind(MANUAL_INTENT)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(paid_events, 1);
+
+    let mut changed = command.clone();
+    changed.reason = "a different command under the same key".to_owned();
+    assert!(matches!(
+        service
+            .resolve_manual(&admin, "manual-honor-idem-0001", &changed)
+            .await,
+        Err(OperationsError::Repository(
+            RepositoryError::IdempotencyConflict
+        ))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+async fn manual_reject_closes_only_unallocated_parked_money() -> TestResult {
+    let _fixture = DATABASE.lock().await;
+    let pool = connect().await?;
+    seed(&pool).await?;
+    seed_manual_payment(&pool).await?;
+    let repository = Arc::new(PostgresRepository::new(pool.clone()));
+    let service = OperationsService::new(Arc::clone(&repository), SystemClock);
+    let admin = repository
+        .authenticate_operator_key(&digest(ADMIN_SECRET))
+        .await?
+        .ok_or("the seeded admin key did not authenticate")?;
+    let command = ManualResolution {
+        action: ManualResolutionAction::Reject,
+        transfer_id: MANUAL_TRANSFER,
+        payment_intent_id: None,
+        attempt_id: None,
+        allocate_raw: None,
+        remainder_raw: None,
+        disposition: None,
+        external_reference: None,
+        reason: "transfer belongs to no payable obligation".to_owned(),
+    };
+
+    let result = service
+        .resolve_manual(&admin, "manual-reject-idem-0001", &command)
+        .await?;
+    assert_eq!(result.action, ManualResolutionAction::Reject);
+    let processing: String = sqlx::query_scalar(
+        "SELECT processing_state FROM chain_transfer_processing WHERE transfer_id=$1",
+    )
+    .bind(MANUAL_TRANSFER)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(processing, "resolved");
+    let allocations: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM payment_allocations WHERE transfer_id=$1")
+            .bind(MANUAL_TRANSFER)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(allocations, 0);
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+async fn overpayment_disposition_records_external_action_without_claiming_a_refund() -> TestResult {
+    let _fixture = DATABASE.lock().await;
+    let pool = connect().await?;
+    seed(&pool).await?;
+    seed_manual_payment(&pool).await?;
+    sqlx::query("UPDATE chain_transfers SET amount_raw=1200000 WHERE id=$1")
+        .bind(MANUAL_TRANSFER)
+        .execute(&pool)
+        .await?;
+    let repository = Arc::new(PostgresRepository::new(pool.clone()));
+    let service = OperationsService::new(Arc::clone(&repository), SystemClock);
+    let admin = repository
+        .authenticate_operator_key(&digest(ADMIN_SECRET))
+        .await?
+        .ok_or("the seeded admin key did not authenticate")?;
+    let honor = ManualResolution {
+        action: ManualResolutionAction::Honor,
+        transfer_id: MANUAL_TRANSFER,
+        payment_intent_id: Some(MANUAL_INTENT),
+        attempt_id: Some(MANUAL_ATTEMPT),
+        allocate_raw: Some(RawAmount::from_str("1000000")?),
+        remainder_raw: None,
+        disposition: None,
+        external_reference: None,
+        reason: "operator matched the transfer".to_owned(),
+    };
+    service
+        .resolve_manual(&admin, "manual-overpay-honor-0001", &honor)
+        .await?;
+    let disposition = ManualResolution {
+        action: ManualResolutionAction::RecordRemainderDisposition,
+        transfer_id: MANUAL_TRANSFER,
+        payment_intent_id: Some(MANUAL_INTENT),
+        attempt_id: None,
+        allocate_raw: None,
+        remainder_raw: Some(RawAmount::from_str("200000")?),
+        disposition: Some(RemainderDisposition::RefundedExternally),
+        external_reference: Some("treasury-refund-17".to_owned()),
+        reason: "treasury supplied proof of its external refund".to_owned(),
+    };
+
+    service
+        .resolve_manual(&admin, "manual-disposition-0001", &disposition)
+        .await?;
+    let stored: (String, String) = sqlx::query_as(
+        "SELECT disposition,external_reference FROM overpayment_remainder_dispositions WHERE transfer_id=$1",
+    )
+    .bind(MANUAL_TRANSFER)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(
+        stored,
+        (
+            "refunded_externally".to_owned(),
+            "treasury-refund-17".to_owned()
+        )
+    );
+    let processing: String = sqlx::query_scalar(
+        "SELECT processing_state FROM chain_transfer_processing WHERE transfer_id=$1",
+    )
+    .bind(MANUAL_TRANSFER)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(processing, "resolved");
+    let refund_events: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM domain_events WHERE event_type LIKE '%refund%'")
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(
+        refund_events, 0,
+        "the gateway did not send the external refund"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+async fn only_the_provider_bound_risk_key_can_submit_current_evidence() -> TestResult {
+    let _fixture = DATABASE.lock().await;
+    let pool = connect().await?;
+    seed(&pool).await?;
+    seed_manual_payment(&pool).await?;
+    let repository = Arc::new(PostgresRepository::new(pool));
+    let service = OperationsService::new(Arc::clone(&repository), SystemClock);
+    let price_key = repository
+        .authenticate_operator_key(&digest(INGEST_SECRET))
+        .await?
+        .ok_or("the seeded price key did not authenticate")?;
+    let risk_key = repository
+        .authenticate_operator_key(&digest(RISK_SECRET))
+        .await?
+        .ok_or("the seeded risk key did not authenticate")?;
+    let mut submission = RiskSubmission {
+        transfer_id: MANUAL_TRANSFER,
+        provider: "example-kyt".to_owned(),
+        decision: RiskDecision::Allow,
+        score: Some(1),
+        reasons: serde_json::json!({"screened": true}),
+        evaluated_at: OffsetDateTime::now_utc(),
+    };
+
+    assert!(matches!(
+        service
+            .submit_risk_evaluation(&price_key, &submission)
+            .await,
+        Err(OperationsError::MissingScope(OperatorScope::RiskIngest))
+    ));
+    let id = service
+        .submit_risk_evaluation(&risk_key, &submission)
+        .await?;
+    assert_ne!(id, Uuid::nil());
+    submission.provider = "impersonated-provider".to_owned();
+    assert!(matches!(
+        service.submit_risk_evaluation(&risk_key, &submission).await,
+        Err(OperationsError::RiskProviderNotAllowed)
+    ));
+    submission.provider = "example-kyt".to_owned();
+    submission.evaluated_at = OffsetDateTime::now_utc() + Duration::hours(24);
+    assert!(matches!(
+        service.submit_risk_evaluation(&risk_key, &submission).await,
+        Err(OperationsError::InvalidRiskEvaluation)
+    ));
+    Ok(())
+}
+
 fn digest(secret: &str) -> [u8; 32] {
     Sha256::digest(secret.as_bytes()).into()
 }
@@ -248,6 +523,7 @@ async fn seed(pool: &PgPool) -> TestResult {
     for (id, secret, label, scopes) in [
         (INGEST_KEY, INGEST_SECRET, "price-feeder", vec!["ingest"]),
         (ADMIN_KEY, ADMIN_SECRET, "on-call", vec!["read", "admin"]),
+        (RISK_KEY, RISK_SECRET, "risk-feeder", vec!["risk_ingest"]),
     ] {
         sqlx::query(
             r"
@@ -263,5 +539,112 @@ async fn seed(pool: &PgPool) -> TestResult {
         .execute(pool)
         .await?;
     }
+    sqlx::query(
+        "INSERT INTO operator_risk_provider_bindings(operator_key_id,provider,enabled_at) VALUES($1,'example-kyt',now())",
+    )
+    .bind(RISK_KEY)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn seed_manual_payment(pool: &PgPool) -> TestResult {
+    let now = OffsetDateTime::now_utc();
+    sqlx::query(
+        "INSERT INTO merchants(id,external_id,display_name,status) VALUES($1,'manual-merchant','Manual Merchant','active')",
+    )
+    .bind(MANUAL_MERCHANT)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO price_snapshots(id,asset_id,fiat_currency,rate_numerator,rate_denominator,sources,observed_at) VALUES($1,$2,'AED',1,1,'[{},{}]'::jsonb,$3)",
+    )
+    .bind(MANUAL_PRICE)
+    .bind(ASSET_ID)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO rail_health_snapshots(id,asset_id,health,observed_at) VALUES($1,$2,'healthy',$3)",
+    )
+    .bind(MANUAL_HEALTH)
+    .bind(ASSET_ID)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO payment_intents(id,merchant_id,amount_minor,currency,status,reference,created_at,updated_at) VALUES($1,$2,100,'AED','risk_hold','manual-intent',$3,$3)",
+    )
+    .bind(MANUAL_INTENT)
+    .bind(MANUAL_MERCHANT)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        r"INSERT INTO payment_quotes(
+             id,merchant_id,payment_intent_id,asset_id,collector_address_id,fiat_currency,
+             fiat_amount_minor,base_amount_raw,amount_raw,rate_numerator,rate_denominator,
+             price_sources,price_observed_at,policy_version,rail_health_observed_at,
+             created_at,expires_at,late_payment_until,price_snapshot_id,quote_policy_id,
+             rail_health_snapshot_id
+           ) VALUES($1,$2,$3,$4,$5,'AED',100,1000000,1000000,1,1,'[{}]'::jsonb,$6,'v1',$6,$6,$7,$8,$9,$10,$11)",
+    )
+    .bind(MANUAL_QUOTE)
+    .bind(MANUAL_MERCHANT)
+    .bind(MANUAL_INTENT)
+    .bind(ASSET_ID)
+    .bind(COLLECTOR_ID)
+    .bind(now)
+    .bind(now + Duration::hours(1))
+    .bind(now + Duration::hours(2))
+    .bind(MANUAL_PRICE)
+    .bind(POLICY_ID)
+    .bind(MANUAL_HEALTH)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO payment_attempts(id,merchant_id,payment_intent_id,quote_id,collector_address_id,expected_amount_raw,status,quote_expires_at,late_payment_until,created_at,updated_at) VALUES($1,$2,$3,$4,$5,1000000,'awaiting_payment',$6,$7,$8,$8)",
+    )
+    .bind(MANUAL_ATTEMPT)
+    .bind(MANUAL_MERCHANT)
+    .bind(MANUAL_INTENT)
+    .bind(MANUAL_QUOTE)
+    .bind(COLLECTOR_ID)
+    .bind(now + Duration::hours(1))
+    .bind(now + Duration::hours(2))
+    .bind(now)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        r"INSERT INTO chain_transfers(
+             id,asset_id,collector_address_id,chain,network,chain_environment,tx_hash,
+             event_index,block_number,block_hash,block_time,token_key,from_address_key,
+             from_address_text,to_address_key,to_address_text,amount_raw,decimals,
+             canonicalization_policy,verifier_version,canonicalized_at
+           ) VALUES($1,$2,$3,'tron','nile','testnet','manual-tx',0,1,'manual-block',$4,$5,$6,'TFrom',$7,'TCollector',1000000,6,'test','test',$4)",
+    )
+    .bind(MANUAL_TRANSFER)
+    .bind(ASSET_ID)
+    .bind(COLLECTOR_ID)
+    .bind(now)
+    .bind([11_u8; 20].as_slice())
+    .bind([13_u8; 21].as_slice())
+    .bind([12_u8; 21].as_slice())
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO chain_transfer_state_current(transfer_id,state,state_version,updated_at) VALUES($1,'finalized',1,$2)",
+    )
+    .bind(MANUAL_TRANSFER)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO chain_transfer_processing(transfer_id,allocated_raw,processing_state,updated_at) VALUES($1,0,'unmatched',$2)",
+    )
+    .bind(MANUAL_TRANSFER)
+    .bind(now)
+    .execute(pool)
+    .await?;
     Ok(())
 }

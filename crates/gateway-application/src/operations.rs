@@ -13,9 +13,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use gateway_domain::{
-    AggregatedPrice, CurrencyCode, PriceAggregationError, PriceAggregationPolicy,
-    PriceDiscardReason, PriceReading, RailHealth,
+    AggregatedPrice, CurrencyCode, ManualResolutionAction, PriceAggregationError,
+    PriceAggregationPolicy, PriceDiscardReason, PriceReading, RailHealth, RawAmount,
+    RemainderDisposition,
 };
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -27,6 +29,8 @@ use crate::{Clock, RepositoryError};
 pub enum OperatorScope {
     /// Feed the gateway evidence: prices, rail health, risk decisions.
     Ingest,
+    /// Submit KYT evidence for a provider explicitly bound to this key.
+    RiskIngest,
     /// See the operator views: conflicts, unmatched money, held payments.
     Read,
     /// Close and reopen a rail.
@@ -38,6 +42,7 @@ impl OperatorScope {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Ingest => "ingest",
+            Self::RiskIngest => "risk_ingest",
             Self::Read => "read",
             Self::Admin => "admin",
         }
@@ -51,6 +56,7 @@ impl OperatorScope {
     pub fn parse(value: &str) -> Result<Self, OperationsError> {
         match value {
             "ingest" => Ok(Self::Ingest),
+            "risk_ingest" => Ok(Self::RiskIngest),
             "read" => Ok(Self::Read),
             "admin" => Ok(Self::Admin),
             other => Err(OperationsError::UnknownScope(other.to_owned())),
@@ -129,6 +135,33 @@ pub struct RiskSubmission {
     pub evaluated_at: OffsetDateTime,
 }
 
+/// One explicit operator decision about money the automatic path parked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManualResolution {
+    pub action: ManualResolutionAction,
+    pub transfer_id: Uuid,
+    pub payment_intent_id: Option<Uuid>,
+    pub attempt_id: Option<Uuid>,
+    pub allocate_raw: Option<RawAmount>,
+    pub remainder_raw: Option<RawAmount>,
+    pub disposition: Option<RemainderDisposition>,
+    pub external_reference: Option<String>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManualResolutionResult {
+    pub id: Uuid,
+    pub action: ManualResolutionAction,
+    pub transfer_id: Uuid,
+    pub payment_intent_id: Option<Uuid>,
+    pub attempt_id: Option<Uuid>,
+    pub merchant_id: Option<Uuid>,
+    pub allocated_raw: Option<RawAmount>,
+    pub remainder_raw: Option<RawAmount>,
+    pub replayed: bool,
+}
+
 #[async_trait]
 pub trait OperationsRepository: Send + Sync {
     async fn authenticate_operator_key(
@@ -186,6 +219,22 @@ pub trait OperationsRepository: Send + Sync {
         submission: &RiskSubmission,
         submitted_by: Uuid,
     ) -> Result<Uuid, RepositoryError>;
+
+    async fn risk_provider_allowed(
+        &self,
+        operator_key_id: Uuid,
+        provider: &str,
+    ) -> Result<bool, RepositoryError>;
+
+    /// Applies one admin decision and its audit/outbox effects atomically.
+    async fn resolve_manual(
+        &self,
+        credential: &OperatorCredential,
+        idempotency_key: &str,
+        request_hash: &[u8; 32],
+        resolution: &ManualResolution,
+        decided_at: OffsetDateTime,
+    ) -> Result<ManualResolutionResult, OperationsError>;
 }
 
 /// The operator-facing application service.
@@ -360,11 +409,70 @@ where
         credential: &OperatorCredential,
         submission: &RiskSubmission,
     ) -> Result<Uuid, OperationsError> {
-        Self::require(credential, OperatorScope::Ingest)?;
+        Self::require(credential, OperatorScope::RiskIngest)?;
+        let provider = submission.provider.trim();
+        if provider.is_empty() || provider.len() > 100 || provider != submission.provider {
+            return Err(OperationsError::InvalidRiskEvaluation);
+        }
+        let now = self.clock.now();
+        let earliest = now
+            .checked_sub(time::Duration::hours(1))
+            .ok_or(OperationsError::InvalidRiskEvaluation)?;
+        let latest = now
+            .checked_add(time::Duration::seconds(30))
+            .ok_or(OperationsError::InvalidRiskEvaluation)?;
+        if submission.evaluated_at < earliest || submission.evaluated_at > latest {
+            return Err(OperationsError::InvalidRiskEvaluation);
+        }
+        if !self
+            .repository
+            .risk_provider_allowed(credential.key_id, provider)
+            .await?
+        {
+            return Err(OperationsError::RiskProviderNotAllowed);
+        }
         Ok(self
             .repository
             .record_risk_evaluation(submission, credential.key_id)
             .await?)
+    }
+
+    /// Resolves parked money without bypassing settlement allocation or
+    /// fulfillment primitives.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OperationsError`] when the credential lacks `admin`, the
+    /// command or idempotency key is malformed, the target is not eligible for
+    /// the requested transition, or the atomic repository transaction fails.
+    pub async fn resolve_manual(
+        &self,
+        credential: &OperatorCredential,
+        idempotency_key: &str,
+        resolution: &ManualResolution,
+    ) -> Result<ManualResolutionResult, OperationsError> {
+        Self::require(credential, OperatorScope::Admin)?;
+        let valid_key = (16..=128).contains(&idempotency_key.len())
+            && idempotency_key
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+        if !valid_key {
+            return Err(OperationsError::InvalidIdempotencyKey);
+        }
+        if !(1..=1000).contains(&resolution.reason.trim().len()) {
+            return Err(OperationsError::ReasonRequired);
+        }
+        validate_manual_resolution(resolution)?;
+        let request_hash = manual_resolution_hash(resolution);
+        self.repository
+            .resolve_manual(
+                credential,
+                idempotency_key,
+                &request_hash,
+                resolution,
+                self.clock.now(),
+            )
+            .await
     }
 
     /// Checks one scope. Absence closes the door; nothing here widens a key.
@@ -415,10 +523,94 @@ pub enum OperationsError {
     NoOpenRailStop,
     #[error("a reason is required and recorded")]
     ReasonRequired,
+    #[error("the idempotency key must contain between 16 and 128 characters")]
+    InvalidIdempotencyKey,
+    #[error("the manual-resolution fields do not match its action")]
+    InvalidManualResolution,
+    #[error("the transfer, intent or attempt is not eligible for this manual decision")]
+    ManualResolutionConflict,
+    #[error("the transfer, intent or attempt was not found")]
+    ManualResolutionNotFound,
+    #[error("the risk evaluation is stale, future-dated or malformed")]
+    InvalidRiskEvaluation,
+    #[error("this operator key is not bound to the named risk provider")]
+    RiskProviderNotAllowed,
     #[error(transparent)]
     Price(#[from] PriceAggregationError),
     #[error(transparent)]
     Repository(#[from] RepositoryError),
+}
+
+fn validate_manual_resolution(resolution: &ManualResolution) -> Result<(), OperationsError> {
+    let honor = resolution.payment_intent_id.is_some()
+        && resolution.attempt_id.is_some()
+        && resolution
+            .allocate_raw
+            .is_some_and(|amount| !amount.is_zero())
+        && resolution.remainder_raw.is_none()
+        && resolution.disposition.is_none()
+        && resolution.external_reference.is_none();
+    let reject = resolution.payment_intent_id.is_none()
+        && resolution.attempt_id.is_none()
+        && resolution.allocate_raw.is_none()
+        && resolution.remainder_raw.is_none()
+        && resolution.disposition.is_none()
+        && resolution.external_reference.is_none();
+    let disposition = resolution.payment_intent_id.is_some()
+        && resolution.attempt_id.is_none()
+        && resolution.allocate_raw.is_none()
+        && resolution
+            .remainder_raw
+            .is_some_and(|amount| !amount.is_zero())
+        && resolution.disposition.is_some()
+        && resolution
+            .external_reference
+            .as_deref()
+            .is_some_and(|reference| (1..=200).contains(&reference.trim().len()));
+    let valid = match resolution.action {
+        ManualResolutionAction::Honor => honor,
+        ManualResolutionAction::Reject => reject,
+        ManualResolutionAction::RecordRemainderDisposition => disposition,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(OperationsError::InvalidManualResolution)
+    }
+}
+
+fn manual_resolution_hash(resolution: &ManualResolution) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    for value in [
+        resolution.action.as_str().to_owned(),
+        resolution.transfer_id.to_string(),
+        resolution
+            .payment_intent_id
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
+        resolution
+            .attempt_id
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
+        resolution
+            .allocate_raw
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
+        resolution
+            .remainder_raw
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
+        resolution
+            .disposition
+            .map(|v| v.as_str().to_owned())
+            .unwrap_or_default(),
+        resolution.external_reference.clone().unwrap_or_default(),
+        resolution.reason.clone(),
+    ] {
+        digest.update((value.len() as u64).to_be_bytes());
+        digest.update(value.as_bytes());
+    }
+    digest.finalize().into()
 }
 
 impl OperationsError {
