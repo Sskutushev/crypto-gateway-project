@@ -1,13 +1,46 @@
-# The development stack: a disposable PostgreSQL and the API, on loopback.
+# The development stack: a disposable PostgreSQL, the API, and — under the
+# `workers` profile — every worker role against the TRON Nile testnet, so a
+# real testnet payment can be watched end to end on one machine.
 #
 # The API refuses to start until the database describes the rail it is
 # configured for (see the self-check settings below), so the first run is
-# three commands, in this order:
+# four commands, in this order:
 #
 #   docker compose up -d postgres
 #   docker compose run --rm -e GATEWAY_MIGRATE_ONLY=true gateway-api
 #   psql postgres://gateway:gateway@127.0.0.1:54329/gateway -f scripts/seed-dev-rail.sql
 #   docker compose up -d gateway-api
+#
+# The workers need two values from a `.env` file next to this one (see
+# .env.example): a TronGrid API key and a webhook master key. Then:
+#
+#   docker compose --profile workers up -d
+#
+# Two observers read two providers of different groups (TronGrid and the
+# public Nile node); the verifier re-reads through the public node under its
+# own source. That is enough independence for a testnet run and is not what
+# a mainnet deployment uses; see docs/deployment.md.
+
+x-rail: &rail
+  GATEWAY_CHAIN: tron
+  GATEWAY_NETWORK: nile
+  GATEWAY_CHAIN_ENVIRONMENT: testnet
+  # What scripts/seed-dev-rail.sql inserts. A process whose database
+  # disagrees with these does not start. Override the collector in .env with
+  # an address you control before paying anything.
+  GATEWAY_EXPECTED_COLLECTORS: ${GATEWAY_EXPECTED_COLLECTORS:-TAF8dttxK5iPKbvYC626aDBytrWANpLRXp}
+  GATEWAY_EXPECTED_ASSETS: tron:nile:TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj
+
+x-worker: &worker
+  build:
+    context: .
+  entrypoint: ["/usr/local/bin/gateway-worker"]
+  profiles: ["workers"]
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+
 services:
   postgres:
     image: postgres:16.4-bookworm
@@ -29,20 +62,86 @@ services:
     build:
       context: .
     environment:
+      <<: *rail
       GATEWAY_DATABASE_URL: postgres://gateway:gateway@postgres:5432/gateway
       GATEWAY_BIND_ADDRESS: 0.0.0.0:8080
       GATEWAY_RUN_MIGRATIONS: "true"
-      # What scripts/seed-dev-rail.sql inserts. A process whose database
-      # disagrees with these does not start.
-      GATEWAY_CHAIN_ENVIRONMENT: testnet
-      GATEWAY_EXPECTED_COLLECTORS: TAF8dttxK5iPKbvYC626aDBytrWANpLRXp
-      GATEWAY_EXPECTED_ASSETS: tron:nile:TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj
+      # The expiry sweep runs in worker-payment when the workers profile is
+      # up; the API keeps it for the API-only quickstart.
+      GATEWAY_EXPIRY_ENABLED: ${GATEWAY_API_EXPIRY_ENABLED:-true}
       RUST_LOG: gateway_api=info,gateway_http=info,gateway_scheduler=info,tower_http=info
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
+
+  worker-observer-a:
+    <<: *worker
+    environment:
+      <<: *rail
+      GATEWAY_WORKER_ROLES: observer
+      GATEWAY_INSTANCE_NAME: worker-observer-a
+      GATEWAY_DATABASE_URL: postgres://gateway:gateway@postgres:5432/gateway
+      GATEWAY_OBSERVER_SOURCE_KEY: trongrid-nile
+      GATEWAY_TRON_BASE_URL: https://nile.trongrid.io
+      # Empty means no key: TronGrid answers unauthenticated Nile requests, slowly.
+      GATEWAY_TRON_API_KEY: ${TRONGRID_API_KEY:-}
+      GATEWAY_TRON_LANE: block_range
+      GATEWAY_OBSERVER_INTERVAL_SECONDS: "5"
+      RUST_LOG: gateway_worker=info,gateway_scheduler=info,gateway_tron=info
+
+  worker-observer-b:
+    <<: *worker
+    environment:
+      <<: *rail
+      GATEWAY_WORKER_ROLES: observer
+      GATEWAY_INSTANCE_NAME: worker-observer-b
+      GATEWAY_DATABASE_URL: postgres://gateway:gateway@postgres:5432/gateway
+      GATEWAY_OBSERVER_SOURCE_KEY: nile-node
+      GATEWAY_TRON_BASE_URL: https://api.nileex.io
+      GATEWAY_TRON_LANE: block_range
+      GATEWAY_OBSERVER_INTERVAL_SECONDS: "5"
+      RUST_LOG: gateway_worker=info,gateway_scheduler=info,gateway_tron=info
+
+  worker-verifier:
+    <<: *worker
+    environment:
+      <<: *rail
+      GATEWAY_WORKER_ROLES: verifier
+      GATEWAY_INSTANCE_NAME: worker-verifier
+      GATEWAY_DATABASE_URL: postgres://gateway:gateway@postgres:5432/gateway
+      GATEWAY_VERIFIER_SOURCE_KEY: verifier-nile
+      GATEWAY_VERIFIER_TRON_BASE_URL: https://api.nileex.io
+      GATEWAY_VERIFIER_INTERVAL_SECONDS: "5"
+      RUST_LOG: gateway_worker=info,gateway_scheduler=info,gateway_tron=info
+
+  worker-payment:
+    <<: *worker
+    environment:
+      <<: *rail
+      GATEWAY_WORKER_ROLES: expiry,settlement,outbox
+      GATEWAY_INSTANCE_NAME: worker-payment
+      GATEWAY_DATABASE_URL: postgres://gateway:gateway@postgres:5432/gateway
+      # Empty stops worker-payment at start-up with the reason; it never signs
+      # with a key it was not given.
+      GATEWAY_WEBHOOK_MASTER_KEY: ${GATEWAY_WEBHOOK_MASTER_KEY:-}
+      GATEWAY_SETTLEMENT_INTERVAL_SECONDS: "5"
+      GATEWAY_OUTBOX_INTERVAL_SECONDS: "2"
+      GATEWAY_EXPIRY_INTERVAL_SECONDS: "30"
+      RUST_LOG: gateway_worker=info,gateway_scheduler=info,gateway_webhook=info
+
+  worker-reconciler:
+    <<: *worker
+    environment:
+      <<: *rail
+      GATEWAY_WORKER_ROLES: reconciler
+      GATEWAY_INSTANCE_NAME: worker-reconciler
+      GATEWAY_DATABASE_URL: postgres://gateway:gateway@postgres:5432/gateway
+      GATEWAY_RECONCILER_INTERVAL_SECONDS: "120"
+      GATEWAY_RECONCILER_BATCH_LIMIT: "1"
+      GATEWAY_RECONCILER_MAX_BATCHES_PER_TICK: "1"
+      RUST_LOG: gateway_worker=info,gateway_scheduler=info
 
 volumes:
   gateway-postgres:
