@@ -161,6 +161,15 @@ pub fn parse_transfers(info: &TransactionInfo) -> Result<Vec<ParsedTransfer>, Tr
         if !topic.trim().eq_ignore_ascii_case(TRANSFER_TOPIC) {
             continue;
         }
+        // A TRC-20 transfer indexes exactly the two addresses. TRC-721
+        // `Transfer(address,address,uint256)` shares the signature and indexes
+        // the token id as a fourth topic; a token that indexes fewer fields is
+        // not one this gateway accepts either. Both are other events, not a
+        // malformed answer: a block carrying one must not stop the scan of
+        // every block after it.
+        if log.topics.len() != 3 {
+            continue;
+        }
         let event_index = i32::try_from(index).map_err(|_| TronParseError::TooManyLogs)?;
         transfers.push(parse_transfer_log(event_index, log)?);
     }
@@ -168,9 +177,6 @@ pub fn parse_transfers(info: &TransactionInfo) -> Result<Vec<ParsedTransfer>, Tr
 }
 
 fn parse_transfer_log(event_index: i32, log: &LogEntry) -> Result<ParsedTransfer, TronParseError> {
-    if log.topics.len() != 3 {
-        return Err(TronParseError::WrongTopicCount(log.topics.len()));
-    }
     let contract = from_hex(&log.address).map_err(|_| TronParseError::InvalidAddress)?;
     let from = address_from_word(&log.topics[1])?;
     let to = address_from_word(&log.topics[2])?;
@@ -294,8 +300,6 @@ pub fn block_time(milliseconds: i64) -> Result<OffsetDateTime, TronParseError> {
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum TronParseError {
-    #[error("a Transfer event carries exactly three topics, found {0}")]
-    WrongTopicCount(usize),
     #[error("an ABI word is 32 bytes, found {0}")]
     WrongWordLength(usize),
     #[error("an address word must be zero-padded")]
@@ -468,6 +472,7 @@ mod fuzz_smoke {
                     log.topics
                         .first()
                         .is_some_and(|topic| topic == TRANSFER_TOPIC)
+                        && log.topics.len() == 3
                 })
                 .count();
             match parse_transfers(&info(logs)) {
