@@ -19,7 +19,7 @@
       "operatorKey": { "type": "http", "scheme": "bearer", "description": "An operator API key of 32 to 256 characters with a subset of the scopes ingest, read and admin. Never a merchant key." }
     },
     "parameters": {
-      "IdempotencyKey": { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 255 }, "description": "Scoped to the merchant, the route and the key. A replay returns the first result with Idempotent-Replayed: true; the same key with a different body is a 409." },
+      "IdempotencyKey": { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+$" }, "description": "Scoped to the merchant, the route and the key. A replay returns the first result with Idempotent-Replayed: true; the same key with a different body is a 409." },
       "Limit": { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200 }, "description": "Page size. Omitted means the service default." },
       "Before": { "name": "before", "in": "query", "schema": { "type": "string", "format": "uuid" }, "description": "Keyset cursor: items with an id below this one. Take it from next_before." },
       "IntentId": { "name": "intent_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },

@@ -26,22 +26,24 @@ POST /v1/operator/price-snapshots
   "asset_id": "...", "fiat_currency": "USD",
   "readings": [
     {"source_key": "vendor-a", "provider_group": "vendor-a",
-     "rate_numerator": "1000000", "rate_denominator": "1000000",
+     "rate_numerator": "10000", "rate_denominator": "1",
      "observed_at": "2026-09-24T10:00:00Z"},
     {"source_key": "vendor-b", "provider_group": "vendor-b",
-     "rate_numerator": "1001000", "rate_denominator": "1000000",
+     "rate_numerator": "10010", "rate_denominator": "1",
      "observed_at": "2026-09-24T10:00:01Z"}
   ]
 }
 ```
 
-A rate is a ratio of two integers: `rate_numerator / rate_denominator` fiat
-minor units per raw token unit, so `1 USD cent = 10 000 raw USDT units` is
-`1 / 10000`. The service takes the exact rational mean of the two middle
-readings, refuses when fewer groups than the policy demands agree or when
-readings sit further apart than `max_price_deviation_bps`, and stores every
-reading either way with the reason it did not count. A snapshot is as old as
-its oldest reading.
+A rate is a ratio of two integers, `rate_numerator / rate_denominator`, in
+raw token units per fiat minor unit: a quote's `amount_raw` is
+`minor_units × numerator / denominator`, rounded up. For a 6-decimal
+stablecoin at 1:1 with the dollar, one cent is 10 000 raw units, so the
+reading is `10000 / 1`; at 0.9985 it is `9985 / 1`. The service takes the
+exact rational mean of the two middle readings, refuses when fewer groups
+than the policy demands agree or when readings sit further apart than
+`max_price_deviation_bps`, and stores every reading either way with the
+reason it did not count. A snapshot is as old as its oldest reading.
 
 `422 price_not_agreed` is the feed telling you a vendor drifted; look at the
 readings before trusting either of them again.
