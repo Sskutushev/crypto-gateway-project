@@ -144,8 +144,8 @@ registered.
 
 ## Idempotency
 
-Every write carries `Idempotency-Key`, scoped to your merchant, the route and
-the key. The first request's result is stored; a repeat with the same key and
+Every write carries `Idempotency-Key`: 16 to 128 URL-safe characters
+(`A-Z a-z 0-9 _ -`), scoped to your merchant, the route and the key. The first request's result is stored; a repeat with the same key and
 the same body returns it with `Idempotent-Replayed: true` and status `200`; a
 repeat with a different body is `409 idempotency_conflict`. Retry any write
 freely with the same key.

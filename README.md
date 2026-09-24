@@ -54,24 +54,26 @@ psql "$DB" -v key_id=00000000-0000-7000-8000-000000000003 -v api_key_prefix=cgop
 docker compose up -d gateway-api
 curl -s localhost:8080/health/ready
 
-# 4. Price evidence and rail health, from two independent groups
+# 4. Price evidence and rail health, from two independent groups. A rate is
+#    raw token units per fiat minor unit: 1 cent = 10 000 units of a 6-decimal
+#    stablecoin at 1:1, so numerator 10000 over denominator 1.
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ); ASSET=00000000-0000-7000-8000-000000000101
 curl -s -X POST localhost:8080/v1/operator/price-snapshots \
   -H "Authorization: Bearer $OPERATOR_KEY" -H 'Content-Type: application/json' \
   -d "{\"asset_id\":\"$ASSET\",\"fiat_currency\":\"USD\",\"readings\":[
-    {\"source_key\":\"a\",\"provider_group\":\"a\",\"rate_numerator\":\"1\",\"rate_denominator\":\"10000\",\"observed_at\":\"$NOW\"},
-    {\"source_key\":\"b\",\"provider_group\":\"b\",\"rate_numerator\":\"1\",\"rate_denominator\":\"10000\",\"observed_at\":\"$NOW\"}]}"
+    {\"source_key\":\"a\",\"provider_group\":\"a\",\"rate_numerator\":\"10000\",\"rate_denominator\":\"1\",\"observed_at\":\"$NOW\"},
+    {\"source_key\":\"b\",\"provider_group\":\"b\",\"rate_numerator\":\"10000\",\"rate_denominator\":\"1\",\"observed_at\":\"$NOW\"}]}"
 curl -s -X POST localhost:8080/v1/operator/rail-health \
   -H "Authorization: Bearer $OPERATOR_KEY" -H 'Content-Type: application/json' \
   -d "{\"asset_id\":\"$ASSET\",\"health\":\"healthy\"}"
 
 # 5. An order, and a quote for it
 INTENT=$(curl -s -X POST localhost:8080/v1/payment-intents \
-  -H "Authorization: Bearer $MERCHANT_KEY" -H 'Idempotency-Key: order-1' \
+  -H "Authorization: Bearer $MERCHANT_KEY" -H 'Idempotency-Key: order-0001-attempt-1' \
   -H 'Content-Type: application/json' \
   -d '{"amount_minor":"4999","currency":"USD","reference":"order-1"}' | jq -r .id)
 curl -s -X POST localhost:8080/v1/payment-intents/$INTENT/quotes \
-  -H "Authorization: Bearer $MERCHANT_KEY" -H 'Idempotency-Key: quote-1' \
+  -H "Authorization: Bearer $MERCHANT_KEY" -H 'Idempotency-Key: quote-0001-attempt-1' \
   -H 'Content-Type: application/json' -d "{\"asset_id\":\"$ASSET\"}"
 
 # 6. What the operator sees
