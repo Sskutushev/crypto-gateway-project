@@ -1,7 +1,8 @@
 \set ON_ERROR_STOP on
 
--- A development rail: USDT on the TRON Nile testnet, one collector address,
--- and the policies every quote and settlement decision rests on.
+-- A development rail: the USDT test token the Nile faucet (nileex.io) hands
+-- out (TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf), one collector address, and the
+-- policies every quote and settlement decision rests on.
 --
 -- Usage:
 --   psql "$GATEWAY_DATABASE_URL" -f scripts/seed-dev-rail.sql
@@ -21,9 +22,9 @@ INSERT INTO chain_assets (
     display_symbol, decimals, status, pinned_sha256, approved_by
 ) VALUES (
     '00000000-0000-7000-8000-000000000101'::uuid, 'tron', 'nile', 'testnet',
-    decode('41ea51342dabbb928ae1e576bd39eff8aaf070a8c6', 'hex'),
+    decode('41eca9bc828a3005b9a3b909f2cc5c2a54794de05f', 'hex'),
     'USDT', 6, 'active',
-    encode(sha256(decode('41ea51342dabbb928ae1e576bd39eff8aaf070a8c6', 'hex')), 'hex'),
+    encode(sha256(decode('41eca9bc828a3005b9a3b909f2cc5c2a54794de05f', 'hex')), 'hex'),
     'seed-dev-rail'
 )
 ON CONFLICT (id) DO NOTHING;
