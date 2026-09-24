@@ -318,3 +318,175 @@ pub enum TronParseError {
 
 #[cfg(test)]
 mod tests;
+
+/// Seeded property tests over the event-log decoder; see the money module
+/// in `gateway-domain` for why these stand in for a fuzzer.
+#[cfg(test)]
+mod fuzz_smoke {
+    use std::fmt::Write as _;
+
+    use alloy_primitives::U256;
+
+    use super::{LogEntry, Receipt, TRANSFER_TOPIC, TransactionInfo, parse_transfers};
+
+    struct Generator(u64);
+
+    impl Generator {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+
+        fn below(&mut self, bound: u64) -> u64 {
+            self.next() % bound
+        }
+
+        fn hex(&mut self, bytes: usize) -> String {
+            (0..bytes).fold(String::with_capacity(bytes * 2), |mut out, _| {
+                let byte = u8::try_from(self.below(256)).unwrap_or(0);
+                let _ = write!(out, "{byte:02x}");
+                out
+            })
+        }
+
+        fn hex_up_to(&mut self, max_bytes: u64) -> String {
+            let length = usize::try_from(self.below(max_bytes)).unwrap_or(0);
+            self.hex(length)
+        }
+
+        fn text_up_to(&mut self, max_length: u64) -> String {
+            let length = usize::try_from(self.below(max_length)).unwrap_or(0);
+            self.text(length)
+        }
+
+        fn text(&mut self, length: usize) -> String {
+            let bytes: Vec<u8> = (0..length)
+                .map(|_| u8::try_from(self.below(256)).unwrap_or(0))
+                .collect();
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+    }
+
+    fn iterations() -> u64 {
+        std::env::var("GATEWAY_FUZZ_ITERATIONS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(2_000)
+    }
+
+    fn info(logs: Vec<LogEntry>) -> TransactionInfo {
+        TransactionInfo {
+            id: "a".repeat(64),
+            block_number: Some(1),
+            block_time_stamp: Some(1_700_000_000_000),
+            result: None,
+            receipt: Some(Receipt {
+                result: Some("SUCCESS".to_owned()),
+            }),
+            log: logs,
+        }
+    }
+
+    #[test]
+    fn a_well_formed_transfer_log_decodes_to_exactly_its_fields()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut generator = Generator(0x1234_5678_9ABC_DEF0);
+        for _ in 0..iterations() {
+            let contract = generator.hex(20);
+            let from = generator.hex(20);
+            let to = generator.hex(20);
+            let mut amount = generator.hex(32);
+            if U256::from_str_radix(&amount, 16)?.is_zero() {
+                amount = format!("{}1", "0".repeat(63));
+            }
+            let noise = LogEntry {
+                address: generator.hex(20),
+                topics: vec![generator.hex(32)],
+                data: generator.hex_up_to(70),
+            };
+            let transfer = LogEntry {
+                address: format!("41{contract}"),
+                topics: vec![
+                    TRANSFER_TOPIC.to_owned(),
+                    format!("{}{from}", "0".repeat(24)),
+                    format!("{}{to}", "0".repeat(24)),
+                ],
+                data: amount.clone(),
+            };
+            let parsed = parse_transfers(&info(vec![noise, transfer]))?;
+            assert_eq!(parsed.len(), 1);
+            let event = &parsed[0];
+            assert_eq!(event.event_index, 1, "the index is the log's position");
+            assert_eq!(event.contract.as_bytes()[1..], hex_bytes(&contract)?[..]);
+            assert_eq!(event.from.as_bytes()[1..], hex_bytes(&from)?[..]);
+            assert_eq!(event.to.as_bytes()[1..], hex_bytes(&to)?[..]);
+            assert_eq!(event.amount.as_u256(), U256::from_str_radix(&amount, 16)?);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn arbitrary_logs_never_panic_and_a_transfer_topic_is_decoded_or_refused() {
+        let mut generator = Generator(0xFEED_FACE_CAFE_BEEF);
+        for _ in 0..iterations() {
+            let mut logs = Vec::new();
+            for _ in 0..generator.below(4) {
+                let topic_count = usize::try_from(generator.below(5)).unwrap_or(0);
+                let mut topics = Vec::with_capacity(topic_count);
+                for index in 0..topic_count {
+                    let word = match generator.below(4) {
+                        0 => TRANSFER_TOPIC.to_owned(),
+                        1 => generator.hex(32),
+                        2 => generator.hex_up_to(40),
+                        _ => generator.text_up_to(70),
+                    };
+                    let word = if index == 0 && generator.below(2) == 0 {
+                        TRANSFER_TOPIC.to_owned()
+                    } else {
+                        word
+                    };
+                    topics.push(word);
+                }
+                logs.push(LogEntry {
+                    topics,
+                    address: match generator.below(3) {
+                        0 => format!("41{}", generator.hex(20)),
+                        1 => generator.hex_up_to(30),
+                        _ => generator.text_up_to(50),
+                    },
+                    data: match generator.below(2) {
+                        0 => generator.hex(32),
+                        _ => generator.text_up_to(70),
+                    },
+                });
+            }
+            let transfers_claimed = logs
+                .iter()
+                .filter(|log| {
+                    log.topics
+                        .first()
+                        .is_some_and(|topic| topic == TRANSFER_TOPIC)
+                })
+                .count();
+            match parse_transfers(&info(logs)) {
+                Ok(parsed) => {
+                    assert_eq!(parsed.len(), transfers_claimed);
+                    for event in parsed {
+                        assert!(!event.amount.is_zero());
+                        assert_eq!(event.contract.as_bytes().len(), 21);
+                    }
+                }
+                Err(_) => assert!(
+                    transfers_claimed > 0,
+                    "a refusal needs a Transfer log to refuse"
+                ),
+            }
+        }
+    }
+
+    fn hex_bytes(text: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        Ok(crate::address::decode_hex(text)?)
+    }
+}

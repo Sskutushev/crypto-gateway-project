@@ -51,6 +51,21 @@ entries, state changes, and webhook events in one database transaction.
 All binaries share domain crates but use distinct database roles and runtime
 credentials.
 
+### Database roles and row ownership
+
+`db/roles/` ships the roles as applied SQL: `gateway_migrator` owns every
+table; `gateway_api`, `gateway_verifier`, `gateway_payment`,
+`gateway_reconciler` and `gateway_readonly` are groups whose table privileges
+are derived from the SQL each crate embeds, and each process connects as a
+login role in exactly one group. Observers are the exception in two ways: every
+chain source gets its own login role, named as the source's `db_principal`,
+and row level security on `chain_observations` and `chain_cursors` compares
+that name with `session_user`. A compromised observer can therefore lie about
+what it saw, under its own name, for its own source, and can move its own
+cursor; it cannot write a canonical fact, an allocation, an outbox event, or
+another source's recovery point. A PostgreSQL scenario connects as each group
+and proves every refusal by SQLSTATE.
+
 ## Core aggregates
 
 - Merchant and API credential

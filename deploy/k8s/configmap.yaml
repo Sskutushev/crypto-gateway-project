@@ -1,0 +1,23 @@
+# Non-secret configuration shared by every process: which world the
+# deployment lives in and what the database must describe before any process
+# serves or takes a lease. Values are examples; the self-check refuses to
+# start a process whose database disagrees with them.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+data:
+  GATEWAY_CHAIN: tron
+  GATEWAY_NETWORK: mainnet
+  GATEWAY_CHAIN_ENVIRONMENT: mainnet
+  GATEWAY_EXPECTED_COLLECTORS: TCollectorAddressBase58CHANGE_ME
+  GATEWAY_EXPECTED_ASSETS: tron:mainnet:TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t
+  GATEWAY_MAX_CLOCK_SKEW_SECONDS: "5"
+  GATEWAY_OBSERVER_SOURCE_KEY: trongrid-mainnet
+  GATEWAY_TRON_BASE_URL: https://api.trongrid.io
+  GATEWAY_TRON_API_KEY_HEADER: TRON-PRO-API-KEY
+  GATEWAY_TRON_LANE: block_range
+  GATEWAY_VERIFIER_SOURCE_KEY: verifier-mainnet
+  GATEWAY_VERIFIER_TRON_BASE_URL: https://tron-mainnet.provider-two.example
+  GATEWAY_VERIFIER_TRON_API_KEY_HEADER: TRON-PRO-API-KEY
+  RUST_LOG: gateway_api=info,gateway_worker=info,gateway_http=info,gateway_scheduler=info,gateway_tron=info,gateway_webhook=info,tower_http=info

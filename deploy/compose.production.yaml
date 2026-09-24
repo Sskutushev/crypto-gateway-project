@@ -1,0 +1,80 @@
+# Production topology on one Docker host: the API and one worker per role,
+# each under its own database credential, against an external PostgreSQL.
+#
+# There is deliberately no database service here. The database is where the
+# money's history lives; it gets managed storage, backups and TLS, not a
+# volume on the application host.
+#
+# Secrets never appear in this file. Every service reads an env file the
+# operator creates from deploy/env/<service>.env.example.
+
+x-gateway: &gateway
+  image: ${GATEWAY_IMAGE:-ghcr.io/sskutushev/crypto-gateway-project:latest}
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp
+  user: "10001:10001"
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: "50m"
+      max-file: "5"
+
+x-worker: &worker
+  <<: *gateway
+  entrypoint: ["/usr/local/bin/gateway-worker"]
+  cpus: "0.50"
+  mem_limit: 256m
+
+services:
+  gateway-api:
+    <<: *gateway
+    env_file:
+      - ./env/api.env
+    ports:
+      # TLS terminates at the edge proxy on this host; the API listens on
+      # loopback only.
+      - "127.0.0.1:8080:8080"
+    cpus: "1.00"
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  worker-expiry:
+    <<: *worker
+    env_file:
+      - ./env/worker-expiry.env
+
+  worker-observer:
+    <<: *worker
+    env_file:
+      - ./env/worker-observer.env
+
+  worker-verifier:
+    <<: *worker
+    env_file:
+      - ./env/worker-verifier.env
+
+  worker-settlement:
+    <<: *worker
+    env_file:
+      - ./env/worker-settlement.env
+
+  worker-outbox:
+    <<: *worker
+    env_file:
+      - ./env/worker-outbox.env
+
+  worker-reconciler:
+    <<: *worker
+    env_file:
+      - ./env/worker-reconciler.env

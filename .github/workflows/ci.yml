@@ -1,0 +1,175 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # Formatting, lints and the unit tests, on the pinned toolchain.
+  check:
+    name: fmt, clippy, unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.90.0
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+
+  # The PostgreSQL scenarios, against a throwaway database. The roles scenario
+  # applies every migration twice and the role SQL twice, so a migration that
+  # is not idempotent or a grant that drifts from the code fails here.
+  scenarios:
+    name: PostgreSQL scenarios
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16.4-bookworm
+        env:
+          POSTGRES_DB: gateway
+          POSTGRES_USER: gateway
+          POSTGRES_PASSWORD: gateway
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U gateway -d gateway"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+    env:
+      GATEWAY_TEST_DATABASE_URL: "postgres://gateway:gateway@localhost:5432/gateway"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.90.0
+      - uses: Swatinem/rust-cache@v2
+      - name: migrations and roles apply twice
+        run: "cargo test -p gateway-storage --locked -- --ignored roles::"
+      - name: every scenario
+        run: cargo test --workspace --locked -- --ignored
+
+  # Seeded property tests with many more iterations than the unit run: the
+  # money parser, the TRON address codec and the event-log decoder never panic
+  # and keep their invariants. cargo-fuzz needs a nightly toolchain, which the
+  # pinned stable toolchain rules out; these tests run on it.
+  fuzz-smoke:
+    name: fuzz smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.90.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --locked --release -- fuzz_smoke
+        env:
+          GATEWAY_FUZZ_ITERATIONS: "200000"
+
+  # Dependency policy: licences, bans and sources must pass. Advisories are
+  # reported but do not fail the build until the RustSec index fetch is
+  # reliable from this runner; a failure is still visible in the job log and
+  # the step annotation, never silently skipped.
+  supply-chain:
+    name: cargo deny, cargo audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses sources
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        continue-on-error: true
+        with:
+          command: check advisories
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.90.0
+      - name: cargo audit
+        continue-on-error: true
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit --deny warnings
+
+  # The deployment files are valid before they are shipped with the image.
+  deploy-manifests:
+    name: compose and kustomize validate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: compose config
+        run: |
+          for example in deploy/env/*.env.example; do cp "$example" "${example%.example}"; done
+          docker compose -f deploy/compose.production.yaml config --quiet
+      - name: kustomize build
+        run: kubectl kustomize deploy/k8s > /dev/null
+
+  # One image for the API and the workers, with its SBOM and a scan that fails
+  # on HIGH or CRITICAL findings. Published to ghcr.io only from a version tag.
+  image:
+    name: image, SBOM, scan, publish
+    runs-on: ubuntu-24.04
+    needs: [check, scenarios]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/crypto-gateway-project
+          tags: |
+            type=semver,pattern={{version}}
+            type=sha
+      - name: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: crypto-gateway-project:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: crypto-gateway-project:ci
+          format: spdx-json
+          output-file: sbom.spdx.json
+          artifact-name: sbom.spdx.json
+      - name: scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: crypto-gateway-project:ci
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+      - name: login
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: publish
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha

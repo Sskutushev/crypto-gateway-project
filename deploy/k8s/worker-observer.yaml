@@ -1,0 +1,68 @@
+# One observer Deployment per chain source. A second provider is a copy of
+# this file with its own source key, secret and login role; independence is
+# counted by provider group, so two copies of the same provider add nothing.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-worker-observer
+  labels:
+    app.kubernetes.io/name: gateway-worker-observer
+    app.kubernetes.io/component: worker
+    gateway.role: observer
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway-worker-observer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway-worker-observer
+        app.kubernetes.io/component: worker
+        gateway.role: observer
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: ghcr.io/sskutushev/crypto-gateway-project:0.1.0
+          command: ["/usr/local/bin/gateway-worker"]
+          env:
+            - name: GATEWAY_WORKER_ROLES
+              value: observer
+            - name: GATEWAY_INSTANCE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: GATEWAY_OBSERVER_INTERVAL_SECONDS
+              value: "5"
+            - name: GATEWAY_TRON_MAX_BLOCKS_PER_SCAN
+              value: "50"
+          envFrom:
+            - configMapRef:
+                name: gateway-config
+            - secretRef:
+                name: gateway-db-observer
+            - secretRef:
+                name: gateway-tron-observer
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      terminationGracePeriodSeconds: 60

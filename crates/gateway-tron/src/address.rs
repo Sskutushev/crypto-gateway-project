@@ -204,3 +204,117 @@ mod tests {
         Ok(())
     }
 }
+
+/// Seeded property tests over the address codec; see the money module for
+/// why these stand in for a fuzzer.
+#[cfg(test)]
+mod fuzz_smoke {
+    use std::fmt::Write as _;
+
+    use gateway_domain::AddressKey;
+
+    use super::{TRON_ADDRESS_PREFIX, from_base58, from_evm_bytes, from_hex, to_base58};
+
+    struct Generator(u64);
+
+    impl Generator {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+
+        fn below(&mut self, bound: u64) -> u64 {
+            self.next() % bound
+        }
+
+        fn bytes(&mut self, length: usize) -> Vec<u8> {
+            (0..length)
+                .map(|_| u8::try_from(self.below(256)).unwrap_or(0))
+                .collect()
+        }
+    }
+
+    fn iterations() -> u64 {
+        std::env::var("GATEWAY_FUZZ_ITERATIONS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(2_000)
+    }
+
+    #[test]
+    fn every_canonical_address_round_trips_and_no_mutation_survives()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut generator = Generator(0x5DEE_CE66_D1CE_4E7B);
+        for _ in 0..iterations() {
+            let body = generator.bytes(20);
+            let key = from_evm_bytes(&body)?;
+            assert_eq!(key.as_bytes().first(), Some(&TRON_ADDRESS_PREFIX));
+            let text = to_base58(&key)?;
+            assert_eq!(from_base58(&text)?, key);
+            assert_eq!(
+                from_base58(&format!("  {text}\n"))?,
+                key,
+                "whitespace is trimmed"
+            );
+
+            let hex = key.as_bytes().iter().fold(String::new(), |mut out, byte| {
+                let _ = write!(out, "{byte:02x}");
+                out
+            });
+            assert_eq!(from_hex(&hex)?, key);
+            assert_eq!(from_hex(&format!("0x{hex}"))?, key);
+            assert_eq!(
+                from_hex(&hex[2..])?,
+                key,
+                "the 20-byte form is the same account"
+            );
+
+            // One changed character anywhere in the base58 text must not
+            // decode to the same account: that is what the checksum is for.
+            let position = usize::try_from(generator.below(text.len() as u64)).unwrap_or(0);
+            let alphabet = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+            let replacement =
+                alphabet[usize::try_from(generator.below(alphabet.len() as u64)).unwrap_or(0)];
+            let mut mutated = text.clone().into_bytes();
+            if mutated[position] == replacement {
+                continue;
+            }
+            mutated[position] = replacement;
+            let mutated = String::from_utf8(mutated)?;
+            assert_ne!(from_base58(&mutated).ok(), Some(key), "{text} -> {mutated}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn arbitrary_text_never_panics_and_never_decodes_to_a_bad_prefix() {
+        let mut generator = Generator(0xC0FF_EE00_DEAD_BEEF);
+        for _ in 0..iterations() {
+            let length = usize::try_from(generator.below(60)).unwrap_or(0);
+            let bytes = generator.bytes(length);
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            if let Ok(key) = from_base58(&text) {
+                assert_eq!(key.as_bytes().len(), 21);
+                assert_eq!(key.as_bytes().first(), Some(&TRON_ADDRESS_PREFIX));
+            }
+            if let Ok(key) = from_hex(&text) {
+                assert_eq!(key.as_bytes().len(), 21);
+                assert_eq!(key.as_bytes().first(), Some(&TRON_ADDRESS_PREFIX));
+            }
+            let wrong_length_of = usize::try_from(generator.below(40)).unwrap_or(0);
+            let wrong_length = generator.bytes(wrong_length_of);
+            if wrong_length.len() != 20 {
+                assert!(from_evm_bytes(&wrong_length).is_err());
+            }
+            if let Ok(key) = AddressKey::new(wrong_length.clone()) {
+                let encoded = to_base58(&key);
+                assert_eq!(
+                    encoded.is_ok(),
+                    wrong_length.len() == 21 && wrong_length.first() == Some(&TRON_ADDRESS_PREFIX)
+                );
+            }
+        }
+    }
+}

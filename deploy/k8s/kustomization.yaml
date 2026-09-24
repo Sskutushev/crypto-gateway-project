@@ -1,0 +1,34 @@
+# One Deployment per role, one Service for the API, and the network boundary
+# between them. Secrets are not part of this kustomization: their names are
+# fixed here (deployments reference them), their values are created by the
+# operator from secrets.example.yaml.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: crypto-gateway
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - api.yaml
+  - worker-expiry.yaml
+  - worker-observer.yaml
+  - worker-verifier.yaml
+  - worker-settlement.yaml
+  - worker-outbox.yaml
+  - worker-reconciler.yaml
+  - networkpolicy.yaml
+
+# The image is the same for the API and every worker, so a release is one
+# tag change here.
+images:
+  - name: ghcr.io/sskutushev/crypto-gateway-project
+    newTag: "0.1.0"
+
+# The label the network policies select on; it reaches pod templates and
+# selectors so every pod in the namespace is covered.
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: crypto-gateway
+    includeSelectors: true
+    includeTemplates: true

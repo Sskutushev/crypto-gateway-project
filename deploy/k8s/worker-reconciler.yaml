@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-worker-reconciler
+  labels:
+    app.kubernetes.io/name: gateway-worker-reconciler
+    app.kubernetes.io/component: worker
+    gateway.role: reconciler
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway-worker-reconciler
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway-worker-reconciler
+        app.kubernetes.io/component: worker
+        gateway.role: reconciler
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: ghcr.io/sskutushev/crypto-gateway-project:0.1.0
+          command: ["/usr/local/bin/gateway-worker"]
+          env:
+            - name: GATEWAY_WORKER_ROLES
+              value: reconciler
+            - name: GATEWAY_INSTANCE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: GATEWAY_RECONCILER_INTERVAL_SECONDS
+              value: "300"
+            - name: GATEWAY_RECONCILER_BATCH_LIMIT
+              value: "1"
+            - name: GATEWAY_RECONCILER_MAX_BATCHES_PER_TICK
+              value: "1"
+          envFrom:
+            - configMapRef:
+                name: gateway-config
+            - secretRef:
+                name: gateway-db-reconciler
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      terminationGracePeriodSeconds: 120

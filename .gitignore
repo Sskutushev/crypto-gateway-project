@@ -8,3 +8,5 @@
 *.profraw
 .DS_Store
 
+# Operator-created environment files for the production compose topology.
+deploy/env/*.env

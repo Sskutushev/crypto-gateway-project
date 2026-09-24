@@ -4,6 +4,7 @@ mod operator_reads;
 mod outbox;
 mod oversight;
 mod postgres;
+mod roles;
 mod self_check;
 mod settlement;
 #[cfg(test)]
@@ -11,6 +12,7 @@ mod test_support;
 mod verification;
 
 pub use postgres::PostgresRepository;
+pub use roles::{GRANTS_SQL, ROLES_SQL};
 
 pub use sqlx::{PgPool, postgres::PgPoolOptions};
 

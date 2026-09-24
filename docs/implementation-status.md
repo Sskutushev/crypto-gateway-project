@@ -6,7 +6,7 @@ Last updated: 2026-09-24
 
 - Branch: `feat/standalone-gateway-foundation`
 - Remote: `https://github.com/Sskutushev/crypto-gateway-project.git`
-- Working tree: clean after the reconciliation-scenario and self-check slice.
+- Working tree: clean after the roles, deployment and CI slice.
 - This tree is the repository's initial history; there is no earlier product
   implementation to preserve or migrate.
 
@@ -122,30 +122,64 @@ Last updated: 2026-09-24
   serves traffic or takes a lease, `GET /health/ready` answers 503 with every
   row and its reason, and a passed report is cached for at most ten seconds
   under a visible `evaluated_at`.
+- Least-privilege database roles as applied SQL. `db/roles/00_roles.sql`
+  creates the migrator, api, observer, verifier, payment, reconciler and
+  readonly groups; `10_grants.sql` moves every table under the migrator and
+  grants each group exactly the tables its crate reads and writes;
+  `20_observer_source_role.sql.template` binds one login role per chain
+  source to its `db_principal`. Migration 0011 puts row level security on
+  `chain_cursors`, so an observer moves its own recovery point and nobody
+  else's. Two PostgreSQL scenarios apply migrations and role SQL twice, then
+  connect as each group and prove every forbidden write is refused with
+  SQLSTATE 42501.
+- Deployment. A production Compose topology (API plus one worker per role,
+  read-only containers, no database container, env files with no secrets), a
+  Kubernetes kustomization (a Deployment per role, Service and disruption
+  budget for the API, probes on the self-check, restricted pod security,
+  network policies per role), the image built with both binaries, and
+  `docs/deployment.md` with the topology, the TLS boundary, the order of
+  operations and rotation.
+- CI and supply chain. `.github/workflows/ci.yml` runs fmt, clippy and unit
+  tests; every PostgreSQL scenario against a service container; seeded
+  property tests over the money parser, the TRON address codec and the
+  event-log decoder at two hundred thousand iterations (a stand-in for
+  cargo-fuzz, which needs a nightly toolchain); cargo deny for licences, bans
+  and sources with advisories and cargo audit reported but not blocking;
+  compose and kustomize validation; the image with an SPDX SBOM and a Trivy
+  scan; publication to GHCR from a version tag. Dependabot watches Cargo,
+  Actions and the base images.
 
 ## In progress
 
 - Dependency advisory scanning needs a reliable RustSec index connection; the
   local full `cargo deny check` stalled while fetching the advisory database.
-- CI workflow and production deployment manifests have not been added.
-- Least-privileged database roles are described but not shipped as SQL.
 - Risk screening has an attributable push path and no provider behind it: a
   transfer nobody screened reads as skipped, which the settlement bands treat
   as not screened, never as clean.
 
 ## Next slices
 
-1. Least-privileged database roles as applied SQL, with a scenario proving an
-   observer cannot write a canonical transfer.
-2. Deployment: production compose, Kubernetes manifests per role, probes and
-   limits.
-3. CI: format, clippy, deny, audit, unit, PostgreSQL scenarios, fuzz smoke,
-   image build, SBOM, scan, publish.
-4. Open-source packaging: README for people and search, SECURITY, CONTRIBUTING,
+1. Open-source packaging: README for people and search, SECURITY, CONTRIBUTING,
    OpenAPI, quickstart, and the owner's key and account instructions.
-5. A second independent TRON provider group, then the ERC20 adapter.
+2. A testnet run with two real providers, then a second independent TRON
+   provider group, then the ERC20 adapter.
 
 ## Verification
+
+- Roles, deployment and CI (2026-09-24), in `crypto-gateway-dev`: fmt clean;
+  clippy with `-D warnings` clean; `cargo test --workspace --locked` passed
+  165 tests with 27 ignored, the seven `fuzz_smoke` tests among them at the
+  default 2 000 iterations; the same seven passed at
+  `GATEWAY_FUZZ_ITERATIONS=200000` in release in 2.8 s of test time; all 27
+  PostgreSQL scenarios passed (3 HTTP, 24 storage), including
+  `roles::migrations_and_role_sql_apply_twice` and
+  `roles::each_role_is_refused_the_writes_that_are_not_its_own`. On the host:
+  `docker compose -f deploy/compose.production.yaml config --quiet` passed
+  with env files copied from the examples; `kubectl kustomize deploy/k8s`
+  rendered 17 objects; `docker build` produced an image carrying both
+  `gateway-api` and `gateway-worker`. Not run: `cargo deny` and `cargo audit`
+  (not installed in the container; CI runs them), and the workflow itself,
+  which runs on the first push to GitHub.
 
 - Reconciliation scenarios and start-up self-check (2026-09-24), in
   `crypto-gateway-dev`: `cargo fmt --all -- --check` clean;

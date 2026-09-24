@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: crypto-gateway
+  labels:
+    # Every pod in the namespace runs under the restricted Pod Security
+    # Standard; a manifest that needs more is refused at admission.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

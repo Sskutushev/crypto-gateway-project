@@ -1,0 +1,45 @@
+-- One login role per chain source. Copy this file per source, replace the
+-- placeholders, apply once.
+--
+-- The role name IS the source's identity: chain_observations.source_principal
+-- is filled by the database with session_user, and the row level security
+-- policies on chain_observations and chain_cursors compare it with
+-- chain_sources.db_principal. A source whose login role is named differently
+-- from its db_principal can read but never record anything.
+--
+-- Placeholders:
+--   {{ROLE}}        the login role, e.g. gateway_observer_trongrid_mainnet
+--   {{PASSWORD}}    from the secret manager, never from this file
+--   {{SOURCE_KEY}}  the chain_sources.source_key this role speaks for
+--
+-- The chain_sources row itself is inserted by the operator runbook with
+-- requires_dedicated_principal = TRUE and db_principal = '{{ROLE}}'; the
+-- unique index on db_principal refuses two sources sharing one role.
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{{ROLE}}') THEN
+        CREATE ROLE "{{ROLE}}" LOGIN PASSWORD '{{PASSWORD}}' IN ROLE gateway_observer;
+    END IF;
+END
+$$;
+
+-- Bind the role to its source, and refuse to continue if the source is
+-- registered under another principal: repointing a source at a different
+-- login would rewrite who confirmed historical payments.
+DO $$
+DECLARE
+    bound_principal TEXT;
+BEGIN
+    SELECT db_principal INTO bound_principal
+      FROM chain_sources
+     WHERE source_key = '{{SOURCE_KEY}}';
+    IF bound_principal IS NULL THEN
+        RAISE EXCEPTION 'chain source % is not registered; insert it first', '{{SOURCE_KEY}}';
+    END IF;
+    IF bound_principal <> '{{ROLE}}' THEN
+        RAISE EXCEPTION 'chain source % belongs to principal %, not %',
+            '{{SOURCE_KEY}}', bound_principal, '{{ROLE}}';
+    END IF;
+END
+$$;

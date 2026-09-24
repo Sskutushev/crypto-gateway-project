@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-worker-settlement
+  labels:
+    app.kubernetes.io/name: gateway-worker-settlement
+    app.kubernetes.io/component: worker
+    gateway.role: settlement
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway-worker-settlement
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway-worker-settlement
+        app.kubernetes.io/component: worker
+        gateway.role: settlement
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: ghcr.io/sskutushev/crypto-gateway-project:0.1.0
+          command: ["/usr/local/bin/gateway-worker"]
+          env:
+            - name: GATEWAY_WORKER_ROLES
+              value: settlement
+            - name: GATEWAY_INSTANCE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: GATEWAY_SETTLEMENT_INTERVAL_SECONDS
+              value: "5"
+          envFrom:
+            - configMapRef:
+                name: gateway-config
+            - secretRef:
+                name: gateway-db-payment
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      terminationGracePeriodSeconds: 60
