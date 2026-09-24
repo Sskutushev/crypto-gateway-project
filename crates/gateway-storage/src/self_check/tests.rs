@@ -107,7 +107,7 @@ async fn startup_self_check_names_each_broken_invariant() -> Result<(), Box<dyn 
     sqlx::query("INSERT INTO chain_observations(id,source_id,asset_id,collector_address_id,chain,network,chain_environment,observation_kind,tx_hash,event_index,block_number,block_hash,block_time,token_key,token_display,from_address_key,from_address_text,to_address_key,to_address_text,amount_raw,decimals,execution_status,source_finality,source_head,evidence_sha256,observer_version,parser_version,fence_token,semantic_hash,observed_at) VALUES($1,$2,$3,$4,'tron','nile','testnet','cursor_scan','tx',0,100,'block',now(),$5,'USDT',$6,'from',$7,'to',1,6,'success','confirmed',100,repeat('1',64),'test','test',1,$8,now())")
         .bind(Uuid::from_u128(9105)).bind(SOURCE).bind(ASSET).bind(COLLECTOR)
         .bind(asset_key.as_bytes()).bind(key(3)?.as_bytes()).bind(collector_key.as_bytes()).bind(vec![1_u8;32]).execute(&pool).await?;
-    sqlx::query("INSERT INTO chain_cursors(source_id,observation_kind,collector_address_id,cursor_kind,cursor_value,fence_token,updated_at) VALUES($1,'cursor_scan',$2,'block','101',1,now())")
+    sqlx::query("INSERT INTO chain_cursors(source_id,observation_kind,collector_address_id,cursor_kind,cursor_value,fence_token,updated_at) VALUES($1,'cursor_scan',$2,'block','101',1,now() - interval '1 minute')")
         .bind(SOURCE).bind(COLLECTOR).execute(&pool).await?;
     let report = SelfCheckService::new(Arc::clone(&repository), SystemClock, config()?)
         .run()

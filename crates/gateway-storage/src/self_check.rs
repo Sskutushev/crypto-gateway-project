@@ -235,10 +235,13 @@ impl PostgresRepository {
         ))
     }
 
-    /// No block cursor of an active source stands ahead of the highest head
-    /// that source itself reported. The schema records no chain head of its
-    /// own, so a source is measured against its own claim: a cursor beyond
-    /// it was written by something other than a scan of real blocks.
+    /// No block cursor of an active source stands ahead of a head that source
+    /// reported after the cursor last moved. The schema records no chain head
+    /// of its own, so a source is measured against its own claim, and only a
+    /// claim made after the cursor moved can contradict it: a scan that finds
+    /// nothing advances the cursor past the head of an older reading, and
+    /// that is a cursor doing its job, not a cursor written by something
+    /// other than a scan of real blocks.
     async fn cursor_sanity(&self) -> Result<SelfCheckResult, RepositoryError> {
         let rows = sqlx::query(
             r"
@@ -250,6 +253,7 @@ impl PostgresRepository {
                     SELECT max(observation.source_head) AS source_head
                       FROM chain_observations AS observation
                      WHERE observation.source_id = cursor_row.source_id
+                       AND observation.observed_at >= cursor_row.updated_at
               ) AS head ON true
              WHERE cursor_row.cursor_kind = 'block'
                AND cursor_row.cursor_value ~ '^[0-9]+$'
@@ -268,13 +272,14 @@ impl PostgresRepository {
             let cursor_value: String = row.try_get("cursor_value").map_err(unavailable)?;
             let source_head: i64 = row.try_get("source_head").map_err(unavailable)?;
             problems.push(format!(
-                "source {source_key} cursor {cursor_value} is ahead of its reported head {source_head}"
+                "source {source_key} cursor {cursor_value} is ahead of the head {source_head} it reported afterwards"
             ));
         }
         Ok(verdict(
             "cursor_sanity",
             &problems,
-            "no block cursor is ahead of its source's last reported head".to_owned(),
+            "no block cursor is ahead of a head its source reported after the cursor moved"
+                .to_owned(),
         ))
     }
 
