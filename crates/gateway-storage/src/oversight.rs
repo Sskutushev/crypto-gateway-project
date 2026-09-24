@@ -592,3 +592,6 @@ async fn count(
         .map_err(unavailable)?;
     Ok(u32::try_from(count).unwrap_or(u32::MAX))
 }
+
+#[cfg(test)]
+mod tests;

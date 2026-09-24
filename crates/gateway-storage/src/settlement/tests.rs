@@ -26,28 +26,28 @@ use crate::{
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-const MERCHANT: Uuid = Uuid::from_u128(7_001);
-const ACTOR_KEY: Uuid = Uuid::from_u128(7_002);
-const ASSET_ID: Uuid = Uuid::from_u128(7_101);
-const COLLECTOR_ID: Uuid = Uuid::from_u128(7_201);
-const PRICE_SNAPSHOT: Uuid = Uuid::from_u128(7_301);
-const QUOTE_POLICY: Uuid = Uuid::from_u128(7_302);
-const RAIL_HEALTH: Uuid = Uuid::from_u128(7_303);
-const FINALITY_POLICY: Uuid = Uuid::from_u128(7_304);
-const SETTLEMENT_POLICY: Uuid = Uuid::from_u128(7_305);
-const SOURCE_A: Uuid = Uuid::from_u128(7_401);
-const SOURCE_B: Uuid = Uuid::from_u128(7_402);
-const VERIFIER_SOURCE: Uuid = Uuid::from_u128(7_403);
+pub(crate) const MERCHANT: Uuid = Uuid::from_u128(7_001);
+pub(crate) const ACTOR_KEY: Uuid = Uuid::from_u128(7_002);
+pub(crate) const ASSET_ID: Uuid = Uuid::from_u128(7_101);
+pub(crate) const COLLECTOR_ID: Uuid = Uuid::from_u128(7_201);
+pub(crate) const PRICE_SNAPSHOT: Uuid = Uuid::from_u128(7_301);
+pub(crate) const QUOTE_POLICY: Uuid = Uuid::from_u128(7_302);
+pub(crate) const RAIL_HEALTH: Uuid = Uuid::from_u128(7_303);
+pub(crate) const FINALITY_POLICY: Uuid = Uuid::from_u128(7_304);
+pub(crate) const SETTLEMENT_POLICY: Uuid = Uuid::from_u128(7_305);
+pub(crate) const SOURCE_A: Uuid = Uuid::from_u128(7_401);
+pub(crate) const SOURCE_B: Uuid = Uuid::from_u128(7_402);
+pub(crate) const VERIFIER_SOURCE: Uuid = Uuid::from_u128(7_403);
 
 #[derive(Debug, Clone)]
-struct TestClock(Arc<Mutex<OffsetDateTime>>);
+pub(crate) struct TestClock(Arc<Mutex<OffsetDateTime>>);
 
 impl TestClock {
-    fn at(moment: OffsetDateTime) -> Self {
+    pub(crate) fn at(moment: OffsetDateTime) -> Self {
         Self(Arc::new(Mutex::new(moment)))
     }
 
-    fn advance(&self, by: Duration) {
+    pub(crate) fn advance(&self, by: Duration) {
         if let Ok(mut moment) = self.0.lock() {
             *moment += by;
         }
@@ -64,7 +64,7 @@ impl Clock for TestClock {
 }
 
 #[derive(Debug)]
-struct ChainDouble(Mutex<ObservedTransfer>);
+pub(crate) struct ChainDouble(pub(crate) Mutex<ObservedTransfer>);
 
 #[async_trait]
 impl ChainReader for ChainDouble {
@@ -325,13 +325,13 @@ async fn an_overpayment_keeps_the_remainder_for_a_person() -> TestResult {
     Ok(())
 }
 
-struct SeededIntent {
-    intent_id: Uuid,
-    attempt_id: Uuid,
-    expected: RawAmount,
+pub(crate) struct SeededIntent {
+    pub(crate) intent_id: Uuid,
+    pub(crate) attempt_id: Uuid,
+    pub(crate) expected: RawAmount,
 }
 
-async fn two_intents(
+pub(crate) async fn two_intents(
     repository: &Arc<PostgresRepository>,
     clock: &TestClock,
 ) -> Result<(SeededIntent, SeededIntent), Box<dyn Error>> {
@@ -376,7 +376,7 @@ async fn two_intents(
     Ok((first, second))
 }
 
-async fn record_evidence(
+pub(crate) async fn record_evidence(
     repository: &Arc<PostgresRepository>,
     lease: &ComponentLease,
     paid: &ObservedTransfer,
@@ -407,7 +407,7 @@ async fn record_evidence(
     Ok(())
 }
 
-fn source(id: Uuid, group: &str) -> ChainSource {
+pub(crate) fn source(id: Uuid, group: &str) -> ChainSource {
     ChainSource {
         id,
         chain: "tron".to_owned(),
@@ -421,7 +421,10 @@ fn source(id: Uuid, group: &str) -> ChainSource {
     }
 }
 
-fn transfer(amount: &str, block_time: OffsetDateTime) -> Result<ObservedTransfer, Box<dyn Error>> {
+pub(crate) fn transfer(
+    amount: &str,
+    block_time: OffsetDateTime,
+) -> Result<ObservedTransfer, Box<dyn Error>> {
     Ok(ObservedTransfer {
         chain: "tron".to_owned(),
         network: "nile".to_owned(),
@@ -450,7 +453,7 @@ fn transfer(amount: &str, block_time: OffsetDateTime) -> Result<ObservedTransfer
 }
 
 #[allow(clippy::too_many_lines)]
-async fn seed(pool: &PgPool) -> TestResult {
+pub(crate) async fn seed(pool: &PgPool) -> TestResult {
     sqlx::query(
         "TRUNCATE chain_sources, chain_assets, merchants, component_leases,
                   chain_finality_policies, payment_settlement_policies CASCADE",
@@ -602,6 +605,6 @@ async fn seed(pool: &PgPool) -> TestResult {
     Ok(())
 }
 
-async fn count(pool: &PgPool, query: &str) -> Result<i64, Box<dyn Error>> {
+pub(crate) async fn count(pool: &PgPool, query: &str) -> Result<i64, Box<dyn Error>> {
     Ok(sqlx::query_scalar(query).fetch_one(pool).await?)
 }

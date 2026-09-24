@@ -7,6 +7,7 @@ mod payment_intents;
 mod ports;
 mod quotes;
 mod reconciliation;
+mod self_check;
 mod settlement;
 mod verification;
 
@@ -42,9 +43,14 @@ pub use ports::{
 };
 pub use quotes::{ExpirySweeper, IssueQuote, IssueQuoteResult, QuoteService, QuoteServiceError};
 pub use reconciliation::{
-    Discrepancy, DiscrepancyKind, ReconciliationError, ReconciliationKind, ReconciliationReport,
-    ReconciliationRepository, ReconciliationService, ReconciliationWindow, RunRecord, RunStatus,
-    ScanFindings,
+    COMPONENT as RECONCILER_COMPONENT, Discrepancy, DiscrepancyKind,
+    HARD_STOP_REASON as RECONCILIATION_HARD_STOP_REASON, ReconciliationError, ReconciliationKind,
+    ReconciliationReport, ReconciliationRepository, ReconciliationService, ReconciliationWindow,
+    RunRecord, RunStatus, ScanFindings,
+};
+pub use self_check::{
+    ExpectedAsset, SelfCheckConfig, SelfCheckConfigError, SelfCheckReport, SelfCheckRepository,
+    SelfCheckResult, SelfCheckService,
 };
 pub use settlement::{
     AttemptSnapshot, PendingTransfer, SettlementCommand, SettlementRecord, SettlementReport,

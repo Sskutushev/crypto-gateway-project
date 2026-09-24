@@ -1088,4 +1088,4 @@ async fn enqueue_outbox(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

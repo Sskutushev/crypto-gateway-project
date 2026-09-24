@@ -28,6 +28,18 @@ rail.
 
 ## Development
 
+Both `gateway-api` and `gateway-worker` require these start-up self-check
+settings. They deliberately have no production-friendly fallback:
+
+- `GATEWAY_EXPECTED_COLLECTORS`: comma-separated canonical TRON base58
+  collector addresses; prevents a database-only address change from redirecting receipts.
+- `GATEWAY_EXPECTED_ASSETS`: comma-separated `chain:network:contract_base58`
+  assets; prevents an unreviewed contract from becoming payable.
+- `GATEWAY_CHAIN_ENVIRONMENT`: exactly `testnet` or `mainnet`; prevents a
+  process and its active database rows from referring to different worlds.
+- `GATEWAY_MAX_CLOCK_SKEW_SECONDS`: positive whole-second PostgreSQL/process
+  clock-skew limit, default `5`; protects time-window and lease decisions.
+
 Operator keys carrying the `read` scope can inspect the gateway through:
 
 - `GET /v1/operator/overview`

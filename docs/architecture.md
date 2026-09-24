@@ -122,6 +122,19 @@ reconciliation is stale. Existing unexpired quotes remain payable and are
 never silently discarded. Every provider switch and degraded decision is an
 audited event and metric.
 
+## Start-up self-check
+
+Every API and worker process proves its database describes the deployment it
+was configured to run before it serves traffic or takes a lease. The check
+recomputes collector and asset pins from canonical bytes, requires exact
+agreement with explicit address allowlists and chain environment, verifies an
+active finality policy for every active asset, prevents block cursors from
+running ahead of their source's last reported head, and bounds PostgreSQL clock
+skew. Any failed row stops process startup and makes readiness return the full
+failed report with HTTP 503. Readiness caches a report for no more than ten
+seconds so polling cannot turn these cross-table checks into database load or
+silently preserve an old ready answer.
+
 ## Quote and exact-amount lease lifecycle
 
 The application accepts quote evidence only from trusted pricing, policy, and

@@ -3,9 +3,11 @@ mod expiry_settings;
 use std::{env, net::SocketAddr, sync::Arc};
 
 use anyhow::{Context, Result, bail};
+use gateway_application::{SelfCheckConfig, SelfCheckService, SystemClock};
 use gateway_http::{AppState, router};
 use gateway_scheduler::ExpiryScheduler;
-use gateway_storage::{PgPoolOptions, migrate};
+use gateway_storage::{PgPoolOptions, PostgresRepository, migrate};
+use gateway_tron::from_base58;
 use tokio::{net::TcpListener, signal, sync::watch};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -32,7 +34,21 @@ async fn main() -> Result<()> {
         migrate(&pool).await.context("run database migrations")?;
     }
 
-    let mut state = AppState::new(pool);
+    let self_check_config = self_check_config()?;
+    let repository = Arc::new(PostgresRepository::new(pool.clone()));
+    let startup_report = SelfCheckService::new(
+        Arc::clone(&repository),
+        SystemClock,
+        self_check_config.clone(),
+    )
+    .run()
+    .await
+    .context("run startup self-check")?;
+    if !startup_report.passed {
+        error!(report = ?startup_report, "startup self-check failed");
+        bail!("startup self-check failed");
+    }
+    let mut state = AppState::new(pool).with_self_check(self_check_config);
     let (shutdown, expiry_shutdown) = watch::channel(false);
     let http_shutdown = shutdown.subscribe();
 
@@ -129,4 +145,15 @@ fn required_env(name: &str) -> Result<String> {
         Ok(value) if !value.is_empty() => Ok(value),
         _ => bail!("{name} is required"),
     }
+}
+
+fn self_check_config() -> Result<SelfCheckConfig> {
+    SelfCheckConfig::parse(
+        &required_env("GATEWAY_EXPECTED_COLLECTORS")?,
+        &required_env("GATEWAY_EXPECTED_ASSETS")?,
+        &required_env("GATEWAY_CHAIN_ENVIRONMENT")?,
+        &env::var("GATEWAY_MAX_CLOCK_SKEW_SECONDS").unwrap_or_else(|_| "5".to_owned()),
+        from_base58,
+    )
+    .context("parse startup self-check configuration")
 }

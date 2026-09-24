@@ -1,13 +1,12 @@
 # Implementation Status
 
-Last updated: 2026-09-23
+Last updated: 2026-09-24
 
 ## Repository state
 
 - Branch: `feat/standalone-gateway-foundation`
 - Remote: `https://github.com/Sskutushev/crypto-gateway-project.git`
-- Working tree: contains the uncommitted operator-read and metrics slice for
-  owner review; no commit or push was made.
+- Working tree: clean after the reconciliation-scenario and self-check slice.
 - This tree is the repository's initial history; there is no earlier product
   implementation to preserve or migrate.
 
@@ -105,17 +104,30 @@ Last updated: 2026-09-23
   bundle through bounded UUID keyset pages. The scrape exposes the same live
   database state plus in-process expiry counters, and fails as a whole when
   storage cannot answer so absent telemetry never resembles health.
+- One PostgreSQL scenario per reconciliation check. Each drives the real
+  pipeline to a settled payment, breaks exactly the one thing its check exists
+  to find, and asserts the finding's keys, the run row, the stored discrepancy
+  and the rail stop; then it corrects the state and proves a second run is
+  quiet while the stop it opened stays open, because only a person clears one.
+  A fulfilment with no settlement behind it is recorded as a hard stop that
+  names no rail, and the scenario says so.
+- Start-up self-check. Both binaries recompute the pins of every receiving
+  collector and active asset from stored bytes and require them to be named by
+  `GATEWAY_EXPECTED_COLLECTORS` and `GATEWAY_EXPECTED_ASSETS`, in both
+  directions; every active source, asset and collector must carry the process's
+  `GATEWAY_CHAIN_ENVIRONMENT`; every active asset needs an active finality
+  policy; no block cursor may stand ahead of the head its own source reported;
+  and PostgreSQL and the process may not disagree by more than
+  `GATEWAY_MAX_CLOCK_SKEW_SECONDS`. A failed check stops the process before it
+  serves traffic or takes a lease, `GET /health/ready` answers 503 with every
+  row and its reason, and a passed report is cached for at most ten seconds
+  under a visible `evaluated_at`.
 
 ## In progress
 
 - Dependency advisory scanning needs a reliable RustSec index connection; the
   local full `cargo deny check` stalled while fetching the advisory database.
 - CI workflow and production deployment manifests have not been added.
-- The reconciliation SQL has unit coverage of its decisions but no PostgreSQL
-  scenario of its own yet: the checks run against the migrated schema in the
-  existing scenarios, not against seeded discrepancies.
-- No start-up self-check: pinned collector and token hashes are stored and are
-  not yet verified against the process configuration before readiness.
 - Least-privileged database roles are described but not shipped as SQL.
 - Risk screening has an attributable push path and no provider behind it: a
   transfer nobody screened reads as skipped, which the settlement bands treat
@@ -123,20 +135,29 @@ Last updated: 2026-09-23
 
 ## Next slices
 
-1. A PostgreSQL scenario per reconciliation check, seeded with the discrepancy
-   each one exists to find.
-2. Start-up self-check: pinned collector and token hashes against the process
-   configuration, environment agreement, chain head, clock skew. Failure means
-   not ready.
-3. Least-privileged database roles as applied SQL, with a scenario proving an
+1. Least-privileged database roles as applied SQL, with a scenario proving an
    observer cannot write a canonical transfer.
-4. Deployment: production compose, Kubernetes manifests per role, probes and
+2. Deployment: production compose, Kubernetes manifests per role, probes and
    limits.
-5. CI: format, clippy, deny, audit, unit, PostgreSQL scenarios, fuzz smoke,
+3. CI: format, clippy, deny, audit, unit, PostgreSQL scenarios, fuzz smoke,
    image build, SBOM, scan, publish.
-6. A second independent TRON provider group, then the ERC20 adapter.
+4. Open-source packaging: README for people and search, SECURITY, CONTRIBUTING,
+   OpenAPI, quickstart, and the owner's key and account instructions.
+5. A second independent TRON provider group, then the ERC20 adapter.
 
 ## Verification
+
+- Reconciliation scenarios and start-up self-check (2026-09-24), in
+  `crypto-gateway-dev`: `cargo fmt --all -- --check` clean;
+  `cargo clippy --workspace --all-targets --locked -- -D warnings` finished
+  with no warnings; `cargo test --workspace --locked` passed 158 tests with 25
+  ignored; and
+  `GATEWAY_TEST_DATABASE_URL=postgres://gateway:gateway@host.docker.internal:54329/gateway cargo test --workspace --locked -- --ignored`
+  passed all 25 PostgreSQL scenarios (3 HTTP, 22 storage) with no failures,
+  among them the nine reconciliation scenarios in
+  `crates/gateway-storage/src/oversight/tests.rs`, the self-check scenario
+  that breaks each invariant in turn, and the readiness route answering 503
+  with the failed report.
 
 - Operator read/metrics slice (2026-09-23):
   owner-review fixes replaced row-to-JSON evidence with explicit bounded reads,

@@ -17,7 +17,7 @@ use anyhow::{Context, Result, bail};
 use gateway_application::{
     ChainSource, CollectorWatch, ObservationRepository, ObservationService, OutboxService,
     QuoteService, ReconciliationKind, ReconciliationService, ReconciliationWindow,
-    SettlementService, SystemClock, VerificationService,
+    SelfCheckService, SettlementService, SystemClock, VerificationService,
 };
 use gateway_scheduler::{
     BatchConfig, ExpiryScheduler, LeasedWorker, ObservationWorker, OutboxWorker,
@@ -45,7 +45,21 @@ async fn main() -> Result<()> {
         .await
         .context("connect to PostgreSQL")?;
     let repository = Arc::new(PostgresRepository::new(pool));
+    let startup_report = SelfCheckService::new(
+        Arc::clone(&repository),
+        SystemClock,
+        settings.self_check.clone(),
+    )
+    .run()
+    .await
+    .context("run startup self-check")?;
+    if !startup_report.passed {
+        error!(report = ?startup_report, "startup self-check failed");
+        bail!("startup self-check failed");
+    }
 
+    // No lease is requested before the checks above succeed: an incorrectly
+    // configured process must not briefly become leader and mutate state.
     let (shutdown, _) = watch::channel(false);
     let mut handles: Vec<JoinHandle<()>> = Vec::new();
 

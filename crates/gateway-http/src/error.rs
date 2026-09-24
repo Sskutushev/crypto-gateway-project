@@ -16,8 +16,6 @@ pub enum ApiError {
     Repository(#[from] RepositoryError),
     #[error(transparent)]
     Operations(#[from] OperationsError),
-    #[error("database readiness check failed")]
-    NotReady,
     #[error("payment intent not found")]
     PaymentIntentNotFound,
 }
@@ -104,11 +102,6 @@ impl IntoResponse for ApiError {
                 let (status, code) = crate::handlers::status_for(operations);
                 (status, code, error_message.clone())
             }
-            Self::NotReady => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "not_ready",
-                "the service cannot reach its database".to_owned(),
-            ),
             Self::Service(_) | Self::Quote(_) | Self::Repository(_) => {
                 tracing::error!(error = %error_message, "request failed");
                 (

@@ -8,9 +8,11 @@
 use std::{env, time::Duration};
 
 use anyhow::{Context, Result, bail};
+use gateway_application::SelfCheckConfig;
 use gateway_domain::ChainEnvironment;
 use gateway_scheduler::{BatchConfig, RetryPolicy};
 use gateway_tron::ScanLane;
+use gateway_tron::from_base58;
 
 /// Which loops this process runs. One image, several deployments: an observer
 /// with only RPC access and an observer role, a verifier with its own role, a
@@ -83,6 +85,7 @@ pub struct WorkerSettings {
     pub verifier: Option<VerifierSettings>,
     pub outbox: Option<OutboxSettings>,
     pub batches: Vec<(Role, BatchConfig)>,
+    pub self_check: SelfCheckConfig,
 }
 
 /// One provider endpoint. The verifier reads through its own, so its re-read
@@ -136,6 +139,14 @@ impl WorkerSettings {
         let network = read("GATEWAY_NETWORK").unwrap_or_else(|| "mainnet".to_owned());
         let chain_environment = chain_environment()?;
         let instance = instance_identity();
+        let self_check = SelfCheckConfig::parse(
+            &required("GATEWAY_EXPECTED_COLLECTORS")?,
+            &required("GATEWAY_EXPECTED_ASSETS")?,
+            chain_environment.as_str(),
+            &read("GATEWAY_MAX_CLOCK_SKEW_SECONDS").unwrap_or_else(|| "5".to_owned()),
+            from_base58,
+        )
+        .context("parse startup self-check configuration")?;
 
         let observer = if roles.contains(&Role::Observer) {
             Some(observer_settings()?)
@@ -172,6 +183,7 @@ impl WorkerSettings {
             verifier,
             outbox,
             batches,
+            self_check,
         })
     }
 

@@ -4,6 +4,7 @@ mod operator_reads;
 mod outbox;
 mod oversight;
 mod postgres;
+mod self_check;
 mod settlement;
 #[cfg(test)]
 mod test_support;

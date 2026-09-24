@@ -1212,9 +1212,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "gateway-application",
  "gateway-http",
  "gateway-scheduler",
  "gateway-storage",
+ "gateway-tron",
  "tokio",
  "tracing",
  "tracing-subscriber",

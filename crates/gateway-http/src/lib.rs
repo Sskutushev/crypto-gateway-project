@@ -7,10 +7,12 @@ use std::{sync::Arc, time::Duration};
 
 use axum::{Router, http::StatusCode, middleware, routing::get};
 use gateway_application::{
-    OperationsService, OperatorReadService, PaymentIntentService, QuoteService, SystemClock,
+    OperationsService, OperatorReadService, PaymentIntentService, QuoteService, SelfCheckConfig,
+    SelfCheckReport, SelfCheckService, SystemClock,
 };
 use gateway_scheduler::RunMetrics;
 use gateway_storage::{PgPool, PostgresRepository};
+use tokio::sync::Mutex;
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::{catch_panic::CatchPanicLayer, timeout::TimeoutLayer, trace::TraceLayer};
 
@@ -28,6 +30,8 @@ pub struct AppState {
     pub operator_reads: Arc<OperatorReadService<PostgresRepository>>,
     pub expiry_metrics: Option<Arc<RunMetrics>>,
     pub pool: PgPool,
+    pub self_check: Option<Arc<SelfCheckService<PostgresRepository, SystemClock>>>,
+    pub self_check_cache: Arc<Mutex<Option<SelfCheckReport>>>,
 }
 
 impl AppState {
@@ -49,12 +53,24 @@ impl AppState {
             operator_reads,
             expiry_metrics: None,
             pool,
+            self_check: None,
+            self_check_cache: Arc::new(Mutex::new(None)),
         }
     }
 
     #[must_use]
     pub fn with_expiry_metrics(mut self, metrics: Arc<RunMetrics>) -> Self {
         self.expiry_metrics = Some(metrics);
+        self
+    }
+
+    #[must_use]
+    pub fn with_self_check(mut self, config: SelfCheckConfig) -> Self {
+        self.self_check = Some(Arc::new(SelfCheckService::new(
+            Arc::clone(&self.repository),
+            SystemClock,
+            config,
+        )));
         self
     }
 }
@@ -90,6 +106,8 @@ mod tests {
         body::{Body, to_bytes},
         http::{Request, StatusCode, header},
     };
+    use gateway_application::{ExpectedAsset, SelfCheckConfig};
+    use gateway_domain::{AddressKey, ChainEnvironment};
     use gateway_storage::{PgPool, PgPoolOptions, migrate};
     use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
@@ -110,6 +128,55 @@ mod tests {
     const SECRET_ONE: &str = "cg_test_merchant_one_0000000000000001";
     const SECRET_TWO: &str = "cg_test_merchant_two_0000000000000002";
     const IDEMPOTENCY_KEY: &str = "checkout_01JABCDEFGHJKMNPQRSTVWXYZ";
+
+    #[tokio::test]
+    #[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+    async fn readiness_returns_the_failed_self_check_report() -> Result<(), Box<dyn Error>> {
+        let database_url = env::var("GATEWAY_TEST_DATABASE_URL")?;
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&database_url)
+            .await?;
+        let mut scenario_lock = pool.acquire().await?;
+        sqlx::query("SELECT pg_advisory_lock(20260923)")
+            .execute(&mut *scenario_lock)
+            .await?;
+        reset_database(&pool).await?;
+        sqlx::query("TRUNCATE chain_finality_policies CASCADE")
+            .execute(&pool)
+            .await?;
+        let config = SelfCheckConfig {
+            collectors: vec![AddressKey::new(vec![8_u8; 21])?],
+            assets: vec![ExpectedAsset {
+                chain: "tron".to_owned(),
+                network: "nile".to_owned(),
+                contract: AddressKey::new(vec![7_u8; 20])?,
+            }],
+            environment: ChainEnvironment::Testnet,
+            max_clock_skew_seconds: 5,
+        };
+        let response = router(AppState::new(pool).with_self_check(config))
+            .oneshot(
+                Request::builder()
+                    .uri("/health/ready")
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = json_body(response).await?;
+        assert_eq!(body["ready"], false);
+        assert!(
+            body["evaluated_at"]
+                .as_str()
+                .is_some_and(|stamp| stamp.ends_with('Z'))
+        );
+        assert!(body["checks"].as_array().is_some_and(|checks| {
+            checks
+                .iter()
+                .any(|check| check["name"] == "finality_policy_present" && check["passed"] == false)
+        }));
+        Ok(())
+    }
 
     #[tokio::test]
     #[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
