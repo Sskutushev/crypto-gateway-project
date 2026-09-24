@@ -79,10 +79,21 @@ curl -s localhost:8080/v1/operator/overview -H "Authorization: Bearer $OPERATOR_
 curl -s localhost:8080/metrics -H "Authorization: Bearer $OPERATOR_KEY" | head
 ```
 
-The quote names a collector address and an exact `amount_raw`. On the Nile
-testnet, with the workers running against two providers
-([`docs/deployment.md`](docs/deployment.md)), paying that amount settles the
-intent and delivers `payment_intent.paid` to the merchant's endpoint.
+The quote names a collector address and an exact `amount_raw`. To watch a
+real Nile testnet payment settle, put a TronGrid API key and a webhook master
+key into `.env` (see `.env.example`), replace the placeholder collector with
+an address you control in `.env` and `scripts/seed-dev-rail.sql`, and start
+the workers:
+
+```sh
+docker compose --profile workers up -d
+```
+
+Two observers read TronGrid and the public Nile node, the verifier re-reads
+through the node, and paying the exact `amount_raw` of test USDT to the
+collector settles the intent and delivers `payment_intent.paid` to the
+merchant's endpoint. Evidence and queues: `GET /v1/operator/payment-intents/{id}`
+and the routes in [`docs/operator-runbook.md`](docs/operator-runbook.md).
 
 ## How it works
 
