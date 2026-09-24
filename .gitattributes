@@ -1,0 +1,4 @@
+# The repository is LF everywhere; Windows checkouts convert on the way in.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
