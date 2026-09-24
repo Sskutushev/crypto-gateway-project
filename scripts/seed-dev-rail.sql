@@ -58,7 +58,10 @@ INSERT INTO quote_policies (
 ) VALUES (
     '00000000-0000-7000-8000-000000000302'::uuid,
     '00000000-0000-7000-8000-000000000101'::uuid,
-    'USD', 'quote-v1', 'active', 900, 2592000, 100, 3600, 3600, 3600, now()
+    -- A policy is reference data, not live evidence: a development rail seeded
+    -- in the morning must still quote in the afternoon, so its own age limit
+    -- is thirty days while prices and rail health stay within the hour.
+    'USD', 'quote-v1', 'active', 900, 2592000, 100, 3600, 2592000, 3600, now()
 )
 ON CONFLICT (id) DO NOTHING;
 
