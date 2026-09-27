@@ -759,24 +759,35 @@ impl QuoteRepository for PostgresRepository {
             .execute(&mut *transaction)
             .await
             .map_err(unavailable)?;
-            let intent_updated = sqlx::query(
+            if attempt_updated.rows_affected() != 1 {
+                return Err(RepositoryError::CorruptData(
+                    "a locked attempt due for expiry could not be expired".to_owned(),
+                ));
+            }
+            // Only an obligation still waiting for its first money expires.
+            // A partially paid or held intent already has money on it and
+            // stays where it is for a person to decide; one such row must not
+            // stop every other quote in the batch from expiring.
+            let intent_status = sqlx::query_scalar::<_, String>(
                 r"
-                UPDATE payment_intents
-                   SET status = 'expired', version = version + 1, updated_at = $2
-                 WHERE id = $1 AND status = 'awaiting_payment'
+                UPDATE payment_intents AS intent
+                   SET status = CASE WHEN previous.status = 'awaiting_payment'
+                                     THEN 'expired' ELSE intent.status END,
+                       version = intent.version
+                                 + CASE WHEN previous.status = 'awaiting_payment' THEN 1 ELSE 0 END,
+                       updated_at = CASE WHEN previous.status = 'awaiting_payment'
+                                         THEN $2 ELSE intent.updated_at END
+                  FROM payment_intents AS previous
+                 WHERE intent.id = $1 AND previous.id = intent.id
+                RETURNING previous.status
                 ",
             )
             .bind(intent_id)
             .bind(now)
-            .execute(&mut *transaction)
+            .fetch_one(&mut *transaction)
             .await
             .map_err(unavailable)?;
-            if attempt_updated.rows_affected() != 1 || intent_updated.rows_affected() != 1 {
-                return Err(RepositoryError::CorruptData(
-                    "quote expiry did not advance both attempt and payment intent".to_owned(),
-                ));
-            }
-            for (action, resource_type, resource_id, payload) in [
+            let mut events = vec![
                 (
                     "payment_quote.expired",
                     "payment_quote",
@@ -789,13 +800,38 @@ impl QuoteRepository for PostgresRepository {
                     *attempt_id,
                     serde_json::json!({"quote_id": quote_id, "expired_at": now}),
                 ),
-                (
+            ];
+            match intent_status.as_str() {
+                "awaiting_payment" => events.push((
                     "payment_intent.expired",
                     "payment_intent",
                     *intent_id,
                     serde_json::json!({"quote_id": quote_id, "attempt_id": attempt_id, "expired_at": now}),
-                ),
-            ] {
+                )),
+                "partially_paid" | "risk_hold" => events.push((
+                    "payment_intent.quote_window_closed",
+                    "payment_intent",
+                    *intent_id,
+                    serde_json::json!({
+                        "attempt_id": attempt_id,
+                        "kept_status": intent_status,
+                        "expired_at": now,
+                    }),
+                )),
+                // A paid, cancelled or expired intent should not have had a
+                // waiting attempt. Recorded for a person, never a blocked batch.
+                _ => events.push((
+                    "payment_intent.inconsistent_attempt_expired",
+                    "payment_intent",
+                    *intent_id,
+                    serde_json::json!({
+                        "attempt_id": attempt_id,
+                        "intent_status": intent_status,
+                        "expired_at": now,
+                    }),
+                )),
+            }
+            for (action, resource_type, resource_id, payload) in events {
                 insert_system_audit(
                     &mut transaction,
                     *merchant_id,
@@ -1665,6 +1701,69 @@ mod tests {
             refused,
             "expected the tenancy trigger to refuse, got {written:?}"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+    async fn a_partially_paid_intent_never_stops_the_expiry_of_the_others()
+    -> Result<(), Box<dyn Error>> {
+        let _fixture = DATABASE.lock().await;
+        let database_url = env::var("GATEWAY_TEST_DATABASE_URL")?;
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&database_url)
+            .await?;
+        let now = OffsetDateTime::UNIX_EPOCH + Duration::days(20_000);
+        reset_database(&pool, now).await?;
+        let repository = PostgresRepository::new(pool.clone());
+        for (intent, key, hash) in [
+            (INTENT_ONE, "expiry_partial_quote_0001", [5_u8; 32]),
+            (INTENT_TWO, "expiry_partial_quote_0002", [6_u8; 32]),
+        ] {
+            repository
+                .issue_quote_idempotently(
+                    plan(MERCHANT_ONE, intent, now)?,
+                    ACTOR_KEY,
+                    "POST /v1/payment-intents/:id/quotes",
+                    key,
+                    &hash,
+                )
+                .await?;
+        }
+        // Money arrived short on the first order before its quote ran out.
+        sqlx::query("UPDATE payment_intents SET status = 'partially_paid' WHERE id = $1")
+            .bind(INTENT_ONE)
+            .execute(&pool)
+            .await?;
+
+        repository
+            .expire_quotes_and_archive_leases(now + Duration::hours(1), 50)
+            .await?;
+
+        let states: Vec<(Uuid, String, String)> = sqlx::query_as(
+            "SELECT i.id, i.status, a.status FROM payment_intents i              JOIN payment_attempts a ON a.payment_intent_id = i.id ORDER BY i.id",
+        )
+        .fetch_all(&pool)
+        .await?;
+        assert_eq!(
+            states,
+            vec![
+                (
+                    INTENT_ONE,
+                    "partially_paid".to_owned(),
+                    "expired".to_owned()
+                ),
+                (INTENT_TWO, "expired".to_owned(), "expired".to_owned()),
+            ]
+        );
+        let kept: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM audit_events WHERE action = 'payment_intent.quote_window_closed'              AND resource_id = $1",
+        )
+        .bind(INTENT_ONE)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(kept, 1);
         Ok(())
     }
 
