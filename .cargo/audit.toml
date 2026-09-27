@@ -1,0 +1,14 @@
+# Advisories cargo-audit reports from Cargo.lock that do not reach the shipped
+# binaries. Keep this list equal to what CI proves: rsa and derivative are only
+# in the lockfile, and the job "ignored advisories stay out of the build" fails
+# if either is ever compiled.
+[advisories]
+ignore = [
+    # rsa, Marvin timing attack: reachable only through sqlx-mysql; the gateway
+    # builds sqlx with the postgres driver alone, so rsa is never compiled.
+    "RUSTSEC-2023-0071",
+    # derivative, unmaintained: lockfile-only through ark-ff, never compiled.
+    "RUSTSEC-2024-0388",
+    # paste, unmaintained (not vulnerable): compile-time proc-macro via alloy-primitives.
+    "RUSTSEC-2024-0436",
+]

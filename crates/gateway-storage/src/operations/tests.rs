@@ -648,3 +648,447 @@ async fn seed_manual_payment(pool: &PgPool) -> TestResult {
     .await?;
     Ok(())
 }
+
+const SECOND_ASSET: Uuid = Uuid::from_u128(9_620);
+const COLLECTOR_ON_SECOND_ASSET: Uuid = Uuid::from_u128(9_621);
+const SECOND_COLLECTOR: Uuid = Uuid::from_u128(9_622);
+const FOREIGN_TRANSFER: Uuid = Uuid::from_u128(9_623);
+const OTHER_MERCHANT: Uuid = Uuid::from_u128(9_624);
+const OTHER_INTENT: Uuid = Uuid::from_u128(9_625);
+
+fn honor(transfer: Uuid, intent: Uuid, attempt: Uuid) -> Result<ManualResolution, Box<dyn Error>> {
+    Ok(ManualResolution {
+        action: ManualResolutionAction::Honor,
+        transfer_id: transfer,
+        payment_intent_id: Some(intent),
+        attempt_id: Some(attempt),
+        allocate_raw: Some(RawAmount::from_str("1000000")?),
+        remainder_raw: None,
+        disposition: None,
+        external_reference: None,
+        reason: "operator checked the payer evidence".to_owned(),
+    })
+}
+
+/// A second asset on the same rail with the same precision, a collector on
+/// it, and a second collector on the first asset: the money that must never
+/// be honored against the seeded attempt.
+async fn seed_neighbours(pool: &PgPool) -> TestResult {
+    sqlx::query(
+        r"INSERT INTO chain_assets (id, chain, network, chain_environment, contract_address_key,
+              display_symbol, decimals, status, pinned_sha256, approved_by)
+          VALUES ($1, 'tron', 'nile', 'testnet', $2, 'USDX', 6, 'active', encode(sha256($2), 'hex'), 'test')",
+    )
+    .bind(SECOND_ASSET)
+    .bind([21_u8; 20].as_slice())
+    .execute(pool)
+    .await?;
+    for (id, asset, key) in [
+        (COLLECTOR_ON_SECOND_ASSET, SECOND_ASSET, [22_u8; 21]),
+        (SECOND_COLLECTOR, ASSET_ID, [23_u8; 21]),
+    ] {
+        sqlx::query(
+            r"INSERT INTO collector_addresses (id, asset_id, address_key, address_text, state, valid_from,
+                  pinned_sha256, approved_by)
+              VALUES ($1, $2, $3, 'TNeighbour', 'active', $4, encode(sha256($3), 'hex'), 'test')",
+        )
+        .bind(id)
+        .bind(asset)
+        .bind(key.as_slice())
+        .bind(OffsetDateTime::UNIX_EPOCH)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+/// A finalized, unmatched transfer of exactly the attempt's amount.
+async fn seed_transfer(
+    pool: &PgPool,
+    id: Uuid,
+    asset: Uuid,
+    collector: Uuid,
+    token: [u8; 20],
+    to: [u8; 21],
+    block_time: OffsetDateTime,
+) -> TestResult {
+    sqlx::query(
+        r"INSERT INTO chain_transfers(
+             id,asset_id,collector_address_id,chain,network,chain_environment,tx_hash,
+             event_index,block_number,block_hash,block_time,token_key,from_address_key,
+             from_address_text,to_address_key,to_address_text,amount_raw,decimals,
+             canonicalization_policy,verifier_version,canonicalized_at
+           ) VALUES($1,$2,$3,'tron','nile','testnet',$4,0,2,'neighbour-block',$5,$6,$7,'TFrom',$8,'TNeighbour',1000000,6,'test','test',$5)",
+    )
+    .bind(id)
+    .bind(asset)
+    .bind(collector)
+    .bind(format!("tx-{id}"))
+    .bind(block_time)
+    .bind(token.as_slice())
+    .bind([13_u8; 21].as_slice())
+    .bind(to.as_slice())
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO chain_transfer_state_current(transfer_id,state,state_version,updated_at) VALUES($1,'finalized',1,$2)",
+    )
+    .bind(id)
+    .bind(block_time)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO chain_transfer_processing(transfer_id,allocated_raw,processing_state,updated_at) VALUES($1,0,'unmatched',$2)",
+    )
+    .bind(id)
+    .bind(block_time)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// A refused decision leaves no money trace at all, and the transfer and the
+/// intent exactly where they were.
+async fn assert_nothing_moved(pool: &PgPool, transfer: Uuid, intent_status: &str) -> TestResult {
+    for table in [
+        "payment_allocations",
+        "payment_fulfillments",
+        "chain_transfer_intent_claims",
+        "payment_settlement_decisions",
+        "manual_resolution_requests",
+        "payment_events",
+    ] {
+        let rows: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
+            .fetch_one(pool)
+            .await?;
+        assert_eq!(rows, 0, "a refused honor wrote to {table}");
+    }
+    let webhooks: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM domain_events WHERE event_type LIKE 'payment_intent.%'",
+    )
+    .fetch_one(pool)
+    .await?;
+    assert_eq!(webhooks, 0, "a refused honor queued a merchant webhook");
+    let processing: (String, String) = sqlx::query_as(
+        "SELECT processing_state, allocated_raw::text FROM chain_transfer_processing WHERE transfer_id=$1",
+    )
+    .bind(transfer)
+    .fetch_one(pool)
+    .await?;
+    assert_eq!(processing, ("unmatched".to_owned(), "0".to_owned()));
+    let status: String = sqlx::query_scalar("SELECT status FROM payment_intents WHERE id=$1")
+        .bind(MANUAL_INTENT)
+        .fetch_one(pool)
+        .await?;
+    assert_eq!(status, intent_status);
+    Ok(())
+}
+
+async fn admin_service(
+    pool: &PgPool,
+) -> Result<
+    (
+        OperationsService<PostgresRepository, SystemClock>,
+        gateway_application::OperatorCredential,
+    ),
+    Box<dyn Error>,
+> {
+    let repository = Arc::new(PostgresRepository::new(pool.clone()));
+    let admin = repository
+        .authenticate_operator_key(&digest(ADMIN_SECRET))
+        .await?
+        .ok_or("the seeded admin key did not authenticate")?;
+    Ok((OperationsService::new(repository, SystemClock), admin))
+}
+
+#[tokio::test]
+#[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+async fn honor_refuses_money_that_arrived_in_another_asset() -> TestResult {
+    let _fixture = DATABASE.lock().await;
+    let pool = connect().await?;
+    seed(&pool).await?;
+    seed_manual_payment(&pool).await?;
+    seed_neighbours(&pool).await?;
+    seed_transfer(
+        &pool,
+        FOREIGN_TRANSFER,
+        SECOND_ASSET,
+        COLLECTOR_ON_SECOND_ASSET,
+        [21_u8; 20],
+        [22_u8; 21],
+        OffsetDateTime::now_utc(),
+    )
+    .await?;
+    let (service, admin) = admin_service(&pool).await?;
+
+    let result = service
+        .resolve_manual(
+            &admin,
+            "honor-foreign-asset-0001",
+            &honor(FOREIGN_TRANSFER, MANUAL_INTENT, MANUAL_ATTEMPT)?,
+        )
+        .await;
+
+    assert!(
+        matches!(result, Err(OperationsError::ManualResolutionConflict)),
+        "{result:?}"
+    );
+    assert_nothing_moved(&pool, FOREIGN_TRANSFER, "risk_hold").await
+}
+
+#[tokio::test]
+#[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+async fn honor_refuses_money_that_arrived_at_another_collector() -> TestResult {
+    let _fixture = DATABASE.lock().await;
+    let pool = connect().await?;
+    seed(&pool).await?;
+    seed_manual_payment(&pool).await?;
+    seed_neighbours(&pool).await?;
+    seed_transfer(
+        &pool,
+        FOREIGN_TRANSFER,
+        ASSET_ID,
+        SECOND_COLLECTOR,
+        [11_u8; 20],
+        [23_u8; 21],
+        OffsetDateTime::now_utc(),
+    )
+    .await?;
+    let (service, admin) = admin_service(&pool).await?;
+
+    let result = service
+        .resolve_manual(
+            &admin,
+            "honor-foreign-collector-01",
+            &honor(FOREIGN_TRANSFER, MANUAL_INTENT, MANUAL_ATTEMPT)?,
+        )
+        .await;
+
+    assert!(
+        matches!(result, Err(OperationsError::ManualResolutionConflict)),
+        "{result:?}"
+    );
+    assert_nothing_moved(&pool, FOREIGN_TRANSFER, "risk_hold").await
+}
+
+#[tokio::test]
+#[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+async fn honor_refuses_an_attempt_paired_with_another_merchants_intent() -> TestResult {
+    let _fixture = DATABASE.lock().await;
+    let pool = connect().await?;
+    seed(&pool).await?;
+    seed_manual_payment(&pool).await?;
+    let now = OffsetDateTime::now_utc();
+    sqlx::query("INSERT INTO merchants(id,external_id,display_name,status) VALUES($1,'other-merchant','Other Merchant','active')")
+        .bind(OTHER_MERCHANT)
+        .execute(&pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO payment_intents(id,merchant_id,amount_minor,currency,status,reference,created_at,updated_at) VALUES($1,$2,100,'AED','awaiting_payment','other-intent',$3,$3)",
+    )
+    .bind(OTHER_INTENT)
+    .bind(OTHER_MERCHANT)
+    .bind(now)
+    .execute(&pool)
+    .await?;
+    let (service, admin) = admin_service(&pool).await?;
+
+    let result = service
+        .resolve_manual(
+            &admin,
+            "honor-foreign-merchant-001",
+            &honor(MANUAL_TRANSFER, OTHER_INTENT, MANUAL_ATTEMPT)?,
+        )
+        .await;
+
+    assert!(
+        matches!(result, Err(OperationsError::ManualResolutionNotFound)),
+        "{result:?}"
+    );
+    assert_nothing_moved(&pool, MANUAL_TRANSFER, "risk_hold").await
+}
+
+#[tokio::test]
+#[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+async fn honor_never_reopens_a_cancelled_or_paid_intent() -> TestResult {
+    for closed in ["cancelled", "paid"] {
+        let _fixture = DATABASE.lock().await;
+        let pool = connect().await?;
+        seed(&pool).await?;
+        seed_manual_payment(&pool).await?;
+        sqlx::query("UPDATE payment_intents SET status=$2 WHERE id=$1")
+            .bind(MANUAL_INTENT)
+            .bind(closed)
+            .execute(&pool)
+            .await?;
+        let (service, admin) = admin_service(&pool).await?;
+
+        let result = service
+            .resolve_manual(
+                &admin,
+                &format!("honor-closed-{closed}-0001"),
+                &honor(MANUAL_TRANSFER, MANUAL_INTENT, MANUAL_ATTEMPT)?,
+            )
+            .await;
+
+        assert!(
+            matches!(result, Err(OperationsError::ManualResolutionConflict)),
+            "{closed}: {result:?}"
+        );
+        assert_nothing_moved(&pool, MANUAL_TRANSFER, closed).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+async fn honor_takes_a_late_payment_only_inside_its_window() -> TestResult {
+    // Outside: the money was sent after the attempt's late-payment window closed.
+    {
+        let _fixture = DATABASE.lock().await;
+        let pool = connect().await?;
+        seed(&pool).await?;
+        seed_manual_payment(&pool).await?;
+        sqlx::query("UPDATE payment_attempts SET status='expired' WHERE id=$1")
+            .bind(MANUAL_ATTEMPT)
+            .execute(&pool)
+            .await?;
+        sqlx::query("UPDATE payment_intents SET status='expired' WHERE id=$1")
+            .bind(MANUAL_INTENT)
+            .execute(&pool)
+            .await?;
+        sqlx::query(
+            "UPDATE chain_transfers SET block_time = now() + interval '3 hours' WHERE id=$1",
+        )
+        .bind(MANUAL_TRANSFER)
+        .execute(&pool)
+        .await?;
+        let (service, admin) = admin_service(&pool).await?;
+        let result = service
+            .resolve_manual(
+                &admin,
+                "honor-late-outside-00001",
+                &honor(MANUAL_TRANSFER, MANUAL_INTENT, MANUAL_ATTEMPT)?,
+            )
+            .await;
+        assert!(
+            matches!(result, Err(OperationsError::ManualResolutionConflict)),
+            "{result:?}"
+        );
+        assert_nothing_moved(&pool, MANUAL_TRANSFER, "expired").await?;
+    }
+    // Inside: the expired attempt and intent both end settled and paid, once.
+    let _fixture = DATABASE.lock().await;
+    let pool = connect().await?;
+    seed(&pool).await?;
+    seed_manual_payment(&pool).await?;
+    sqlx::query("UPDATE payment_attempts SET status='expired' WHERE id=$1")
+        .bind(MANUAL_ATTEMPT)
+        .execute(&pool)
+        .await?;
+    sqlx::query("UPDATE payment_intents SET status='expired' WHERE id=$1")
+        .bind(MANUAL_INTENT)
+        .execute(&pool)
+        .await?;
+    let (service, admin) = admin_service(&pool).await?;
+    service
+        .resolve_manual(
+            &admin,
+            "honor-late-inside-000001",
+            &honor(MANUAL_TRANSFER, MANUAL_INTENT, MANUAL_ATTEMPT)?,
+        )
+        .await?;
+    let states: (String, String) = sqlx::query_as(
+        "SELECT i.status, a.status FROM payment_intents i JOIN payment_attempts a ON a.payment_intent_id=i.id WHERE i.id=$1",
+    )
+    .bind(MANUAL_INTENT)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(states, ("paid".to_owned(), "settled".to_owned()));
+    let paid: i64 = sqlx::query_scalar("SELECT count(*) FROM domain_events WHERE event_type='payment_intent.paid' AND aggregate_id=$1")
+        .bind(MANUAL_INTENT)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(paid, 1);
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+async fn a_second_honor_under_a_new_key_is_refused_and_pays_nothing_twice() -> TestResult {
+    let _fixture = DATABASE.lock().await;
+    let pool = connect().await?;
+    seed(&pool).await?;
+    seed_manual_payment(&pool).await?;
+    let (service, admin) = admin_service(&pool).await?;
+    let command = honor(MANUAL_TRANSFER, MANUAL_INTENT, MANUAL_ATTEMPT)?;
+    service
+        .resolve_manual(&admin, "honor-first-key-00000001", &command)
+        .await?;
+
+    let again = service
+        .resolve_manual(&admin, "honor-second-key-0000001", &command)
+        .await;
+
+    assert!(
+        matches!(again, Err(OperationsError::ManualResolutionConflict)),
+        "{again:?}"
+    );
+    for (table, expected) in [
+        ("payment_allocations", 1_i64),
+        ("payment_fulfillments", 1_i64),
+        ("manual_resolution_requests", 1_i64),
+    ] {
+        let rows: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(rows, expected, "{table}");
+    }
+    let paid: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM domain_events WHERE event_type='payment_intent.paid'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(paid, 1);
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+async fn the_database_itself_refuses_an_allocation_across_collectors() -> TestResult {
+    let _fixture = DATABASE.lock().await;
+    let pool = connect().await?;
+    seed(&pool).await?;
+    seed_manual_payment(&pool).await?;
+    seed_neighbours(&pool).await?;
+    seed_transfer(
+        &pool,
+        FOREIGN_TRANSFER,
+        ASSET_ID,
+        SECOND_COLLECTOR,
+        [11_u8; 20],
+        [23_u8; 21],
+        OffsetDateTime::now_utc(),
+    )
+    .await?;
+
+    // A hand-written statement that names the attempt's collector for a
+    // transfer that arrived elsewhere: no application check stands in the way.
+    let written = sqlx::query(
+        r"INSERT INTO payment_allocations (id, attempt_id, payment_intent_id, merchant_id, transfer_id,
+              allocated_raw, allocated_by, reason, created_at, collector_address_id)
+          VALUES ($1, $2, $3, $4, $5, 1000000, 'test', 'manual', now(), $6)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(MANUAL_ATTEMPT)
+    .bind(MANUAL_INTENT)
+    .bind(MANUAL_MERCHANT)
+    .bind(FOREIGN_TRANSFER)
+    .bind(COLLECTOR_ID)
+    .execute(&pool)
+    .await;
+
+    let refused = matches!(&written, Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("23503"));
+    assert!(refused, "expected a foreign-key refusal, got {written:?}");
+    Ok(())
+}

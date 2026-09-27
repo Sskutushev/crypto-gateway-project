@@ -101,6 +101,14 @@ jobs:
         run: |
           cargo install cargo-audit --locked
           cargo audit --deny warnings
+      - name: ignored advisories stay out of the build
+        run: |
+          for crate in rsa derivative; do
+            if cargo tree --locked -i "$crate" --edges normal,build 2>/dev/null | grep -q .; then
+              echo "::error::$crate is now compiled; its ignored advisory in .cargo/audit.toml must be revisited"
+              exit 1
+            fi
+          done
 
   # The deployment files are valid before they are shipped with the image.
   deploy-manifests:

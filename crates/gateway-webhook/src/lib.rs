@@ -20,6 +20,8 @@ const MAX_DETAIL_CHARS: usize = 500;
 /// No rejecting peer may make the worker buffer an unbounded response.
 const MAX_DETAIL_BYTES: usize = 2_048;
 const WEBHOOK_PORT: u16 = 443;
+/// Upper bound on resolving a merchant host before a delivery.
+const DNS_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Posts signed events over HTTPS.
 #[derive(Debug, Clone)]
@@ -59,16 +61,30 @@ impl HttpWebhookSender {
         let answers = if let Ok(ip) = host.parse::<IpAddr>() {
             vec![SocketAddr::new(ip, WEBHOOK_PORT)]
         } else {
-            tokio::net::lookup_host((host.as_str(), WEBHOOK_PORT))
-                .await
-                .map_err(|_| SafeDeliveryError::ResolutionFailed)?
-                .collect()
+            bounded_resolution(
+                DNS_TIMEOUT.min(self.timeout),
+                tokio::net::lookup_host((host.as_str(), WEBHOOK_PORT)),
+            )
+            .await?
+            .collect()
         };
         let approved = approve_answers(answers)?;
         let client = build_client(self.timeout, &self.user_agent, Some((&host, &approved)))
             .map_err(|_| SafeDeliveryError::ClientUnavailable)?;
         Ok((client, parsed))
     }
+}
+
+/// Resolves within a bound. The client timeout starts only once a request is
+/// sent, so a resolver that never answers would otherwise hold the worker.
+async fn bounded_resolution<F, I>(limit: Duration, lookup: F) -> Result<I, SafeDeliveryError>
+where
+    F: std::future::Future<Output = std::io::Result<I>>,
+{
+    tokio::time::timeout(limit, lookup)
+        .await
+        .map_err(|_| SafeDeliveryError::ResolutionFailed)?
+        .map_err(|_| SafeDeliveryError::ResolutionFailed)
 }
 
 fn build_client(
@@ -81,6 +97,10 @@ fn build_client(
         .connect_timeout(timeout.min(Duration::from_secs(10)))
         .redirect(reqwest::redirect::Policy::none())
         .https_only(true)
+        // A proxy resolves the name itself and would bypass the addresses
+        // approved and pinned below, so the SSRF check would not hold. The
+        // merchant endpoint is always reached directly.
+        .no_proxy()
         .user_agent(user_agent.to_owned());
     if let Some((host, addresses)) = pinned {
         // Reqwest still receives the original URL below. Only name resolution
@@ -311,9 +331,89 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        HttpWebhookSender, MAX_DETAIL_BYTES, append_bounded, approve_answers, is_public_ip,
-        validate_url,
+        HttpWebhookSender, MAX_DETAIL_BYTES, SafeDeliveryError, append_bounded, approve_answers,
+        bounded_resolution, build_client, is_public_ip, validate_url,
     };
+
+    /// Set only in the child process that `delivery_never_goes_through_a_system_proxy` starts.
+    const PROXY_PROBE: &str = "GATEWAY_WEBHOOK_PROXY_PROBE";
+
+    #[tokio::test]
+    async fn a_resolver_that_never_answers_is_cut_off() {
+        let started = std::time::Instant::now();
+        let result = bounded_resolution(
+            Duration::from_millis(200),
+            std::future::pending::<std::io::Result<Vec<SocketAddr>>>(),
+        )
+        .await;
+        assert!(matches!(result, Err(SafeDeliveryError::ResolutionFailed)));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// A system proxy would resolve the merchant host itself and bypass the
+    /// pinned, approved addresses. The environment cannot be changed inside
+    /// this process (unsafe code is forbidden), so the test binary runs itself
+    /// again with `HTTPS_PROXY` and `ALL_PROXY` pointed at a trap listener and
+    /// proves the trap never saw a connection.
+    #[test]
+    fn delivery_never_goes_through_a_system_proxy() -> Result<(), Box<dyn std::error::Error>> {
+        let trap = std::net::TcpListener::bind("127.0.0.1:0")?;
+        trap.set_nonblocking(true)?;
+        let proxy = format!("http://{}", trap.local_addr()?);
+        let status = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "tests::proxy_probe_child",
+                "--include-ignored",
+                "--test-threads=1",
+            ])
+            .env("HTTPS_PROXY", &proxy)
+            .env("https_proxy", &proxy)
+            .env("ALL_PROXY", &proxy)
+            .env("all_proxy", &proxy)
+            .env_remove("NO_PROXY")
+            .env_remove("no_proxy")
+            .env(PROXY_PROBE, "1")
+            .status()?;
+        assert!(
+            status.success(),
+            "the child delivery did not reach its pinned target"
+        );
+        let reached_proxy = match trap.accept() {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => false,
+            Err(error) => return Err(error.into()),
+        };
+        assert!(
+            !reached_proxy,
+            "a webhook delivery went through the system proxy"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "run only as the child process of delivery_never_goes_through_a_system_proxy"]
+    async fn proxy_probe_child() -> Result<(), Box<dyn std::error::Error>> {
+        if std::env::var_os(PROXY_PROBE).is_none() {
+            return Ok(());
+        }
+        let target = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = target.local_addr()?;
+        let accepted = tokio::spawn(async move { target.accept().await.is_ok() });
+        let client = build_client(
+            Duration::from_secs(3),
+            "gateway-test",
+            Some(("merchant.example", &[address])),
+        )?;
+        // TLS against the bare listener fails; only where the connection went matters.
+        let _ = client
+            .post(format!("https://merchant.example:{}/hook", address.port()))
+            .send()
+            .await;
+        let reached_target = tokio::time::timeout(Duration::from_secs(3), accepted).await??;
+        assert!(reached_target, "the pinned target was never contacted");
+        Ok(())
+    }
 
     fn endpoint(url: &str) -> WebhookEndpoint {
         WebhookEndpoint {

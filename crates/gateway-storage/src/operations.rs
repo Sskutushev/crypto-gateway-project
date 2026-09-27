@@ -451,6 +451,12 @@ struct ManualHonorRow {
     transfer_allocated_raw: String,
     finality: String,
     processing_state: String,
+    /// The transfer is at the attempt's collector, in its quote's asset, on
+    /// its quote's chain, network and environment.
+    bound_to_attempt: bool,
+    attempt_status: String,
+    intent_status: String,
+    within_late_window: bool,
 }
 
 #[derive(Debug, FromRow)]
@@ -485,15 +491,29 @@ async fn honor_transfer(
     let allocate = resolution
         .allocate_raw
         .ok_or(OperationsError::InvalidManualResolution)?;
+    // Every binding between the transfer and the obligation is read from the
+    // locked rows, never taken from the request: the money must have arrived
+    // at this attempt's collector, in this quote's asset, on this quote's
+    // chain, network and environment, while the attempt could still be paid.
     let row = sqlx::query_as::<_, ManualHonorRow>(
         r"SELECT i.merchant_id, i.amount_minor AS fiat_amount_minor,
                   a.expected_amount_raw::text AS expected_raw,
                   COALESCE((SELECT sum(pa.allocated_raw) FROM payment_allocations pa WHERE pa.attempt_id=a.id),0)::text AS attempt_allocated_raw,
                   t.amount_raw::text AS transfer_raw,
                   p.allocated_raw::text AS transfer_allocated_raw,
-                  s.state AS finality, p.processing_state
+                  s.state AS finality, p.processing_state,
+                  (t.collector_address_id = a.collector_address_id
+                     AND t.asset_id = q.asset_id
+                     AND t.chain = ca.chain AND t.network = ca.network
+                     AND t.chain_environment = ca.chain_environment) AS bound_to_attempt,
+                  a.status AS attempt_status, i.status AS intent_status,
+                  t.block_time <= a.late_payment_until AS within_late_window
              FROM payment_attempts a
              JOIN payment_intents i ON i.id=a.payment_intent_id AND i.merchant_id=a.merchant_id
+             JOIN payment_quotes q ON q.id=a.quote_id AND q.payment_intent_id=i.id
+                                  AND q.merchant_id=a.merchant_id
+                                  AND q.collector_address_id=a.collector_address_id
+             JOIN chain_assets ca ON ca.id=q.asset_id
              JOIN chain_transfers t ON t.id=$1
              JOIN chain_transfer_state_current s ON s.transfer_id=t.id
              JOIN chain_transfer_processing p ON p.transfer_id=t.id
@@ -509,6 +529,9 @@ async fn honor_transfer(
     .ok_or(OperationsError::ManualResolutionNotFound)?;
     if row.finality != "finalized" || !matches!(row.processing_state.as_str(), "held" | "unmatched")
     {
+        return Err(OperationsError::ManualResolutionConflict);
+    }
+    if !honor_is_bound(&row) {
         return Err(OperationsError::ManualResolutionConflict);
     }
     let expected = parse_raw(&row.expected_raw)?;
@@ -605,7 +628,13 @@ async fn honor_transfer(
         &resolution.reason,
         now,
     )
-    .await?;
+    .await
+    .map_err(|error| match error {
+        // The guarded state change refused: nothing was written, and the
+        // operator is told the decision does not fit, not that storage failed.
+        RepositoryError::TransitionRefused(_) => OperationsError::ManualResolutionConflict,
+        other => OperationsError::Repository(other),
+    })?;
     if matches!(
         record,
         SettlementRecord::ForeignClaim | SettlementRecord::AlreadyProcessed
@@ -614,6 +643,23 @@ async fn honor_transfer(
     }
     record_admin_audit(tx, credential, resolution, intent_id, now).await?;
     load_resolution(tx, credential.key_id, key, hash, false).await
+}
+
+/// Whether an operator may honor this transfer against this attempt.
+///
+/// The transfer must belong to the attempt's own collector, asset and rail,
+/// the attempt and its intent must still be open for money, and the money
+/// must have been sent inside the attempt's late-payment window. A cancelled
+/// or paid intent is final; honoring is an exception path, not a way around
+/// the lifecycle.
+fn honor_is_bound(row: &ManualHonorRow) -> bool {
+    row.bound_to_attempt
+        && matches!(row.attempt_status.as_str(), "awaiting_payment" | "expired")
+        && matches!(
+            row.intent_status.as_str(),
+            "awaiting_payment" | "partially_paid" | "risk_hold" | "expired"
+        )
+        && row.within_late_window
 }
 
 async fn reject_transfer(
