@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Payment</title>
+  <link rel="stylesheet" href="/checkout/assets/checkout.css">
+  <script src="/checkout/assets/checkout.js" defer></script>
+</head>
+<body>
+  <main class="card" aria-live="polite">
+    <header>
+      <p class="merchant" data-field="merchant_name"></p>
+      <p class="description" data-field="description"></p>
+      <p class="fiat" data-field="fiat"></p>
+    </header>
+
+    <section class="status" data-status="loading">
+      <p class="status-title" data-field="status_title">Loading the payment...</p>
+      <p class="status-detail" data-field="status_detail"></p>
+    </section>
+
+    <section class="pay" hidden>
+      <div class="row">
+        <span class="label">Send exactly</span>
+        <span class="value amount"><span data-field="amount"></span> <span data-field="symbol"></span></span>
+        <button type="button" data-copy="amount">Copy</button>
+      </div>
+      <p class="hint">Send this exact amount in one transfer. A different amount cannot be matched to your order automatically.</p>
+
+      <div class="row">
+        <span class="label">Network</span>
+        <span class="value" data-field="network"></span>
+      </div>
+      <div class="row">
+        <span class="label">Token contract</span>
+        <span class="value mono" data-field="contract_address"></span>
+        <button type="button" data-copy="contract_address">Copy</button>
+      </div>
+      <p class="hint">Check that your wallet shows this contract. A token with the same name on another contract or network is not this payment.</p>
+
+      <div class="row">
+        <span class="label">To address</span>
+        <span class="value mono" data-field="collector_address"></span>
+        <button type="button" data-copy="collector_address">Copy</button>
+      </div>
+      <img class="qr" alt="QR code of the payment address" width="220" height="220">
+
+      <div class="row">
+        <span class="label">Pay before</span>
+        <span class="value" data-field="expires_in"></span>
+      </div>
+    </section>
+
+    <section class="receipt" hidden>
+      <div class="row">
+        <span class="label">Received</span>
+        <span class="value"><span data-field="received"></span> <span data-field="symbol"></span></span>
+      </div>
+      <div class="row">
+        <span class="label">Transaction</span>
+        <a class="value mono" data-field="transaction" target="_blank" rel="noopener noreferrer"></a>
+      </div>
+    </section>
+
+    <footer>
+      <p>This page never asks for a wallet password or seed phrase. If you sent money and this page does not reflect it, contact the merchant with the transaction hash.</p>
+    </footer>
+  </main>
+</body>
+</html>

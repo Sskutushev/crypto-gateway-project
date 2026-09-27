@@ -7,8 +7,8 @@ use std::{sync::Arc, time::Duration};
 
 use axum::{Router, http::StatusCode, middleware, routing::get};
 use gateway_application::{
-    OperationsService, OperatorReadService, PaymentIntentService, QuoteService, SelfCheckConfig,
-    SelfCheckReport, SelfCheckService, SystemClock,
+    CheckoutService, OperationsService, OperatorReadService, PaymentIntentService, QuoteService,
+    SelfCheckConfig, SelfCheckReport, SelfCheckService, SystemClock,
 };
 use gateway_scheduler::RunMetrics;
 use gateway_storage::{PgPool, PostgresRepository};
@@ -30,6 +30,7 @@ pub struct AppState {
     pub quotes: Arc<QuoteService<PostgresRepository, SystemClock>>,
     pub operations: Arc<OperationsService<PostgresRepository, SystemClock>>,
     pub operator_reads: Arc<OperatorReadService<PostgresRepository>>,
+    pub checkout: Arc<CheckoutService<PostgresRepository>>,
     pub expiry_metrics: Option<Arc<RunMetrics>>,
     pub pool: PgPool,
     pub self_check: Option<Arc<SelfCheckService<PostgresRepository, SystemClock>>>,
@@ -47,12 +48,14 @@ impl AppState {
         let quotes = Arc::new(QuoteService::new(Arc::clone(&repository), SystemClock));
         let operations = Arc::new(OperationsService::new(Arc::clone(&repository), SystemClock));
         let operator_reads = Arc::new(OperatorReadService::new(Arc::clone(&repository)));
+        let checkout = Arc::new(CheckoutService::new(Arc::clone(&repository)));
         Self {
             repository,
             payment_intents,
             quotes,
             operations,
             operator_reads,
+            checkout,
             expiry_metrics: None,
             pool,
             self_check: None,
@@ -90,6 +93,7 @@ pub fn router(state: AppState) -> Router {
         .route("/health/ready", get(health::ready))
         .merge(protected)
         .merge(operator)
+        .merge(handlers::checkout_routes())
         .with_state(state)
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -130,7 +134,8 @@ mod tests {
             let concrete = path
                 .replace("{intent_id}", "00000000-0000-7000-8000-000000000001")
                 .replace("{asset_id}", "00000000-0000-7000-8000-000000000002")
-                .replace("{transfer_id}", "00000000-0000-7000-8000-000000000003");
+                .replace("{transfer_id}", "00000000-0000-7000-8000-000000000003")
+                .replace("{checkout_token}", &"c".repeat(64));
             let response = app
                 .clone()
                 .oneshot(

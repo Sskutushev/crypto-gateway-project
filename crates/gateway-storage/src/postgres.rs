@@ -83,7 +83,7 @@ const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 /// A token contract in the chain's own display form. TRON wallets show
 /// base58check; any other chain is shown as the canonical bytes in hex until
 /// its adapter supplies a display form.
-fn contract_display(chain: &str, key: &[u8]) -> Result<String, RepositoryError> {
+pub(crate) fn contract_display(chain: &str, key: &[u8]) -> Result<String, RepositoryError> {
     if chain == "tron" {
         // Both TRON byte forms are real: 21 bytes with the 0x41 prefix, and
         // the 20-byte form event logs carry. Anything else is corrupt.
@@ -2264,6 +2264,91 @@ mod tests {
         .fetch_one(&pool)
         .await?;
         assert_eq!(twice, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+    async fn the_payment_page_shows_the_attempt_and_never_calls_seen_money_paid()
+    -> Result<(), Box<dyn Error>> {
+        let _fixture = DATABASE.lock().await;
+        let database_url = env::var("GATEWAY_TEST_DATABASE_URL")?;
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&database_url)
+            .await?;
+        let now = OffsetDateTime::UNIX_EPOCH + Duration::days(20_000);
+        reset_database(&pool, now).await?;
+        let repository = Arc::new(PostgresRepository::new(pool.clone()));
+        let route = "POST /v1/payment-intents/:id/quotes";
+        let mut tokens = Vec::new();
+        for (intent, key, hash) in [
+            (INTENT_ONE, "checkout_scenario_quote1", [21_u8; 32]),
+            (INTENT_TWO, "checkout_scenario_quote2", [22_u8; 32]),
+        ] {
+            let IdempotentQuote::Issued(quote) = repository
+                .issue_quote_idempotently(
+                    plan(MERCHANT_ONE, intent, now)?,
+                    ACTOR_KEY,
+                    route,
+                    key,
+                    &hash,
+                )
+                .await?
+            else {
+                return Err("the quote was not issued".into());
+            };
+            tokens.push(quote.checkout_token);
+        }
+        let checkout = gateway_application::CheckoutService::new(Arc::clone(&repository));
+
+        let waiting = checkout
+            .view(&tokens[0])
+            .await?
+            .ok_or("no page for a live quote")?;
+        assert_eq!(waiting.status, gateway_application::CheckoutStatus::Waiting);
+        assert_eq!(waiting.amount, waiting.amount_raw.to_decimal_string(6));
+        assert!(waiting.asset.contract_address.starts_with('T'));
+        assert_eq!(waiting.collector_address, "TTestCollector");
+        assert_eq!(waiting.received, "0");
+
+        repository
+            .cancel_idempotently(
+                MERCHANT_ONE,
+                INTENT_ONE,
+                ACTOR_KEY,
+                "POST /v1/payment-intents/:id/cancel",
+                "checkout_scenario_cancel",
+                &[1; 32],
+                None,
+            )
+            .await?;
+        let cancelled = checkout
+            .view(&tokens[0])
+            .await?
+            .ok_or("no page after cancel")?;
+        assert_eq!(
+            cancelled.status,
+            gateway_application::CheckoutStatus::Cancelled
+        );
+
+        sqlx::query("UPDATE payment_intents SET status = 'paid' WHERE id = $1")
+            .bind(INTENT_TWO)
+            .execute(&pool)
+            .await?;
+        sqlx::query("UPDATE payment_attempts SET status = 'settled' WHERE payment_intent_id = $1")
+            .bind(INTENT_TWO)
+            .execute(&pool)
+            .await?;
+        let paid = checkout
+            .view(&tokens[1])
+            .await?
+            .ok_or("no page after payment")?;
+        assert_eq!(paid.status, gateway_application::CheckoutStatus::Paid);
+
+        // Unknown and malformed tokens are indistinguishable.
+        assert!(checkout.view(&"0".repeat(64)).await?.is_none());
+        assert!(checkout.view("not-a-token").await?.is_none());
         Ok(())
     }
 

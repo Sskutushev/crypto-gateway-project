@@ -1,3 +1,4 @@
+mod checkout;
 mod health;
 mod observations;
 mod operations;
@@ -12,6 +13,10 @@ mod self_check;
 mod settlement;
 mod verification;
 
+pub use checkout::{
+    CheckoutFacts, CheckoutRepository, CheckoutService, CheckoutStatus, CheckoutView,
+    is_checkout_token,
+};
 pub use health::{ComponentState, ComponentStatus, HealthError, HealthRepository, HealthService};
 pub use observations::{
     ChainScanner, ChainSource, CollectorState, CollectorWatch, ComponentLease, CursorKind,

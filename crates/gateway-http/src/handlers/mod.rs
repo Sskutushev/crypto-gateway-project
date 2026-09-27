@@ -1,3 +1,4 @@
+mod checkout;
 pub mod health;
 mod operator;
 mod operator_reads;
@@ -43,7 +44,23 @@ pub const ROUTES: &[(&str, &str)] = &[
     ("GET", "/v1/operator/reconciliation/discrepancies"),
     ("GET", "/v1/operator/payment-intents/{intent_id}"),
     ("GET", "/metrics"),
+    ("GET", "/v1/checkout/{checkout_token}"),
+    ("GET", "/v1/checkout/{checkout_token}/qr.svg"),
+    ("GET", "/checkout/{checkout_token}"),
+    ("GET", "/checkout/assets/checkout.js"),
+    ("GET", "/checkout/assets/checkout.css"),
 ];
+
+/// The hosted payment page and its read: public, no credential. The token in
+/// the path is the only key, and it opens a read of one attempt.
+pub fn checkout_routes() -> Router<AppState> {
+    Router::new()
+        .route("/v1/checkout/{checkout_token}", get(checkout::status))
+        .route("/v1/checkout/{checkout_token}/qr.svg", get(checkout::qr))
+        .route("/checkout/assets/checkout.js", get(checkout::script))
+        .route("/checkout/assets/checkout.css", get(checkout::style))
+        .route("/checkout/{checkout_token}", get(checkout::page))
+}
 
 pub fn payment_intent_routes() -> Router<AppState> {
     Router::new()

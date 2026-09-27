@@ -18,6 +18,11 @@ pub enum ApiError {
     Operations(#[from] OperationsError),
     #[error("payment intent not found")]
     PaymentIntentNotFound,
+    /// A malformed and an unknown checkout token answer alike.
+    #[error("payment page not found")]
+    CheckoutNotFound,
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 #[derive(Debug, Serialize)]
@@ -32,6 +37,8 @@ struct ErrorBody {
 }
 
 impl IntoResponse for ApiError {
+    // One flat table from error to status and code; splitting it would scatter it.
+    #[allow(clippy::too_many_lines)]
     fn into_response(self) -> axum::response::Response {
         let error_message = self.to_string();
         let (status, code, message) = match self {
@@ -109,6 +116,19 @@ impl IntoResponse for ApiError {
                 "rail_stopped",
                 error_message.clone(),
             ),
+            Self::CheckoutNotFound => (
+                StatusCode::NOT_FOUND,
+                "checkout_not_found",
+                error_message.clone(),
+            ),
+            Self::Internal(ref detail) => {
+                tracing::error!(error = %detail, "request failed");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal_error",
+                    "the request could not be completed".to_owned(),
+                )
+            }
             Self::Operations(ref operations) => {
                 let (status, code) = crate::handlers::status_for(operations);
                 (status, code, error_message.clone())

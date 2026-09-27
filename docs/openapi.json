@@ -9,6 +9,7 @@
   },
   "servers": [{ "url": "https://gateway.example.com", "description": "TLS terminates in front of the API" }],
   "tags": [
+    { "name": "checkout", "description": "The hosted payment page: public, read-only, opened by a per-attempt token." },
     { "name": "health", "description": "Process liveness and the start-up self-check, re-evaluated as readiness." },
     { "name": "merchant", "description": "Authenticated by a merchant API key. Isolated per merchant." },
     { "name": "operator", "description": "Authenticated by an operator API key carrying ingest, risk_ingest, read or admin scopes." }
@@ -22,6 +23,7 @@
       "IdempotencyKey": { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+$" }, "description": "Scoped to the merchant, the route and the key. A replay returns the first result with Idempotent-Replayed: true; the same key with a different body is a 409." },
       "Limit": { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200 }, "description": "Page size. Omitted means the service default." },
       "Before": { "name": "before", "in": "query", "schema": { "type": "string", "format": "uuid" }, "description": "Keyset cursor: items with an id below this one. Take it from next_before." },
+      "CheckoutToken": { "name": "checkout_token", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^[0-9a-f]{64}$" } },
       "IntentId": { "name": "intent_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
       "AssetId": { "name": "asset_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
       "TransferId": { "name": "transfer_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
@@ -59,6 +61,19 @@
           "created_at": { "$ref": "#/components/schemas/Timestamp" }, "updated_at": { "$ref": "#/components/schemas/Timestamp" }
         }
       },
+      "CheckoutView": { "type": "object", "required": ["status", "merchant_name", "fiat_amount", "asset", "collector_address", "amount_raw", "amount", "received", "expires_at", "late_payment_until"],
+        "properties": {
+          "status": { "type": "string", "enum": ["paid", "needs_review", "underpaid", "cancelled", "confirming", "expired", "waiting"], "description": "paid means settled and the merchant told; confirming means a matching transfer is on the chain and not yet final or settled; needs_review means money arrived that a person must look at." },
+          "merchant_name": { "type": "string" }, "description": { "type": ["string", "null"] },
+          "fiat_amount": { "$ref": "#/components/schemas/FiatAmount" },
+          "asset": { "$ref": "#/components/schemas/IssuedQuote/properties/asset" },
+          "collector_address": { "type": "string" },
+          "amount_raw": { "$ref": "#/components/schemas/IntegerString" },
+          "amount": { "type": "string", "description": "amount_raw in whole tokens, exact." },
+          "received": { "type": "string", "description": "Credited to this attempt so far, in whole tokens." },
+          "expires_at": { "$ref": "#/components/schemas/Timestamp" }, "late_payment_until": { "$ref": "#/components/schemas/Timestamp" },
+          "transaction_hash": { "type": ["string", "null"] }, "explorer_url": { "type": ["string", "null"] }
+        } },
       "CancelPaymentIntent": { "type": "object", "additionalProperties": false, "properties": { "reason": { "type": ["string", "null"], "maxLength": 500, "description": "Kept in the audit trail and sent with the payment_intent.cancelled webhook." } } },
       "IssueQuote": { "type": "object", "required": ["asset_id"], "additionalProperties": false, "properties": { "asset_id": { "type": "string", "format": "uuid", "description": "An allowlisted asset; the contract is never named by symbol." } } },
       "IssuedQuote": {
@@ -261,6 +276,27 @@
           "409": { "description": "payment_intent_not_cancellable: the order is paid, partially paid or held, or money or a decision exists for it; or idempotency_conflict.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "422": { "description": "invalid_request: the reason is longer than 500 characters.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
         } }
+    },
+    "/v1/checkout/{checkout_token}": {
+      "get": { "tags": ["checkout"], "summary": "The hosted payment page's state", "description": "Public: the per-attempt token from the quote is the only key, and it opens a read of that attempt only. Responses are not cacheable and send no referrer. A malformed and an unknown token answer alike.", "security": [],
+        "parameters": [{ "$ref": "#/components/parameters/CheckoutToken" }],
+        "responses": { "200": { "description": "The buyer-facing state.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CheckoutView" } } } }, "404": { "description": "checkout_not_found.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }, "503": { "$ref": "#/components/responses/StorageUnavailable" } } }
+    },
+    "/v1/checkout/{checkout_token}/qr.svg": {
+      "get": { "tags": ["checkout"], "summary": "The payment address as a QR code", "description": "Encodes the address only; the buyer enters the exact amount shown beside it, because wallets differ in which payment URI fields they honour.", "security": [],
+        "parameters": [{ "$ref": "#/components/parameters/CheckoutToken" }],
+        "responses": { "200": { "description": "SVG image.", "content": { "image/svg+xml": { "schema": { "type": "string" } } } }, "404": { "description": "checkout_not_found.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }, "503": { "$ref": "#/components/responses/StorageUnavailable" } } }
+    },
+    "/checkout/{checkout_token}": {
+      "get": { "tags": ["checkout"], "summary": "The hosted payment page", "description": "A static page under a strict content security policy (own script, style and image only). It reads its state from /v1/checkout/{checkout_token}.", "security": [],
+        "parameters": [{ "$ref": "#/components/parameters/CheckoutToken" }],
+        "responses": { "200": { "description": "HTML.", "content": { "text/html": { "schema": { "type": "string" } } } } } }
+    },
+    "/checkout/assets/checkout.js": {
+      "get": { "tags": ["checkout"], "summary": "The payment page script", "security": [], "responses": { "200": { "description": "JavaScript.", "content": { "text/javascript": { "schema": { "type": "string" } } } } } }
+    },
+    "/checkout/assets/checkout.css": {
+      "get": { "tags": ["checkout"], "summary": "The payment page style", "security": [], "responses": { "200": { "description": "CSS.", "content": { "text/css": { "schema": { "type": "string" } } } } } }
     },
     "/v1/operator/price-snapshots": {
       "post": { "tags": ["operator"], "summary": "Submit price readings", "description": "Requires the ingest scope. Readings from independent provider groups are aggregated by policy: the exact rational mean of the two middle readings, a deviation ceiling, and a refusal that still stores every reading with the reason it did not count.", "security": [{ "operatorKey": ["ingest"] }],
