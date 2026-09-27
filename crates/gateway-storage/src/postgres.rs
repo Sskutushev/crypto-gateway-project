@@ -419,6 +419,7 @@ impl QuoteRepository for PostgresRepository {
 
     async fn load_quote_context(
         &self,
+        merchant_id: Uuid,
         asset_id: Uuid,
         currency: &CurrencyCode,
     ) -> Result<QuoteContext, RepositoryError> {
@@ -446,6 +447,7 @@ impl QuoteRepository for PostgresRepository {
                    stop.reason_code AS rail_stop_reason
               FROM collector_addresses AS collector
               JOIN chain_assets AS asset ON asset.id = collector.asset_id
+              JOIN merchants AS merchant ON merchant.id = $3
               LEFT JOIN LATERAL (
                     SELECT snapshot.id, snapshot.rate_numerator,
                            snapshot.rate_denominator, snapshot.sources,
@@ -489,12 +491,15 @@ impl QuoteRepository for PostgresRepository {
                AND collector.state = 'active'
                AND collector.valid_from <= now()
                AND asset.status = 'active'
+               AND ((merchant.collector_policy = 'own' AND collector.merchant_id = merchant.id)
+                    OR (merchant.collector_policy = 'shared' AND collector.merchant_id IS NULL))
              ORDER BY collector.valid_from, collector.id
              LIMIT 1
             ",
         )
         .bind(asset_id)
         .bind(currency.as_str())
+        .bind(merchant_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(unavailable)?
@@ -587,6 +592,7 @@ impl QuoteRepository for PostgresRepository {
               JOIN price_snapshots AS price ON price.id = $4
               JOIN quote_policies AS policy ON policy.id = $5
               JOIN rail_health_snapshots AS rail ON rail.id = $6
+              JOIN merchants AS merchant ON merchant.id = $22
              WHERE collector.id = $1
                AND collector.asset_id = $2
                AND collector.state = 'active'
@@ -613,6 +619,8 @@ impl QuoteRepository for PostgresRepository {
                AND rail.health = 'healthy'
                AND rail.observed_at = $20
                AND collector.address_text = $21
+               AND ((merchant.collector_policy = 'own' AND collector.merchant_id = merchant.id)
+                    OR (merchant.collector_policy = 'shared' AND collector.merchant_id IS NULL))
              FOR UPDATE OF collector
             ",
         )
@@ -639,6 +647,7 @@ impl QuoteRepository for PostgresRepository {
         .bind(plan.policy_observed_at())
         .bind(plan.rail_health_observed_at())
         .bind(plan.collector_address())
+        .bind(plan.merchant_id())
         .fetch_optional(&mut *transaction)
         .await
         .map_err(unavailable)?;
@@ -1519,6 +1528,146 @@ mod tests {
         )?)
     }
 
+    #[tokio::test]
+    #[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+    #[allow(clippy::too_many_lines)]
+    async fn a_merchant_on_its_own_policy_is_quoted_only_on_its_own_address()
+    -> Result<(), Box<dyn Error>> {
+        const COLLECTOR_TWO: Uuid = Uuid::from_u128(402);
+        const MERCHANT_THREE: Uuid = Uuid::from_u128(103);
+        const INTENT_THREE: Uuid = Uuid::from_u128(503);
+        let _fixture = DATABASE.lock().await;
+        let database_url = env::var("GATEWAY_TEST_DATABASE_URL")?;
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&database_url)
+            .await?;
+        let now = OffsetDateTime::UNIX_EPOCH + Duration::days(20_000);
+        reset_database(&pool, now).await?;
+
+        // Two merchants that keep their own keys, each with its own address,
+        // and a third that has not registered one yet.
+        sqlx::query("UPDATE merchants SET collector_policy = 'own'")
+            .execute(&pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO merchants (id, external_id, display_name, status) \
+             VALUES ($1, 'quote-merchant-three', 'quote-merchant-three', 'active')",
+        )
+        .bind(MERCHANT_THREE)
+        .execute(&pool)
+        .await?;
+        sqlx::query("UPDATE collector_addresses SET merchant_id = $2 WHERE id = $1")
+            .bind(COLLECTOR_ID)
+            .bind(MERCHANT_ONE)
+            .execute(&pool)
+            .await?;
+        sqlx::query(
+            r"INSERT INTO collector_addresses (id, asset_id, address_key, address_text, state,
+                  valid_from, pinned_sha256, approved_by, merchant_id)
+              VALUES ($1, $2, $3, 'TMerchantTwo', 'active', $4, encode(sha256($3), 'hex'),
+                  'test-fixture', $5)",
+        )
+        .bind(COLLECTOR_TWO)
+        .bind(ASSET_ID)
+        .bind([9_u8; 21].as_slice())
+        .bind(OffsetDateTime::UNIX_EPOCH)
+        .bind(MERCHANT_TWO)
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            r"INSERT INTO payment_intents (id, merchant_id, amount_minor, currency, status,
+                  reference, created_at, updated_at)
+              VALUES ($1, $2, 1000, 'USD', 'requires_quote', 'order-three', $3, $3)",
+        )
+        .bind(INTENT_THREE)
+        .bind(MERCHANT_TWO)
+        .bind(OffsetDateTime::UNIX_EPOCH)
+        .execute(&pool)
+        .await?;
+        let repository = PostgresRepository::new(pool.clone());
+        let usd = CurrencyCode::new("USD")?;
+
+        // Each merchant is offered only its own address.
+        assert_eq!(
+            repository
+                .load_quote_context(MERCHANT_ONE, ASSET_ID, &usd)
+                .await?
+                .collector_address_id,
+            COLLECTOR_ID
+        );
+        assert_eq!(
+            repository
+                .load_quote_context(MERCHANT_TWO, ASSET_ID, &usd)
+                .await?
+                .collector_address_id,
+            COLLECTOR_TWO
+        );
+        // No address of its own is no quote, never someone else's address.
+        assert!(matches!(
+            repository
+                .load_quote_context(MERCHANT_THREE, ASSET_ID, &usd)
+                .await,
+            Err(RepositoryError::CollectorUnavailable)
+        ));
+
+        // A plan that names another merchant's address is refused when issued.
+        let foreign = repository
+            .issue_quote_idempotently(
+                plan(MERCHANT_TWO, INTENT_THREE, now)?,
+                ACTOR_KEY,
+                "POST /v1/payment-intents/:id/quotes",
+                "quote_foreign_collector_01",
+                &[3; 32],
+            )
+            .await;
+        assert!(
+            matches!(foreign, Err(RepositoryError::CollectorUnavailable)),
+            "{foreign:?}"
+        );
+        let issued = repository
+            .issue_quote_idempotently(
+                plan(MERCHANT_ONE, INTENT_ONE, now)?,
+                ACTOR_KEY,
+                "POST /v1/payment-intents/:id/quotes",
+                "quote_own_collector_00001",
+                &[4; 32],
+            )
+            .await?;
+        assert!(matches!(issued, IdempotentQuote::Issued(_)));
+
+        // And the database refuses the same quote written by hand.
+        let written = sqlx::query(
+            r"INSERT INTO payment_quotes(
+                 id,merchant_id,payment_intent_id,asset_id,collector_address_id,fiat_currency,
+                 fiat_amount_minor,base_amount_raw,amount_raw,rate_numerator,rate_denominator,
+                 price_sources,price_observed_at,policy_version,rail_health_observed_at,
+                 created_at,expires_at,late_payment_until,price_snapshot_id,quote_policy_id,
+                 rail_health_snapshot_id
+               ) VALUES($1,$2,$3,$4,$5,'USD',1000,10000,10000,1,10,'[{}]'::jsonb,$6,'policy-v1',$6,
+                        $6,$7,$8,$9,$10,$11)",
+        )
+        .bind(Uuid::from_u128(701))
+        .bind(MERCHANT_TWO)
+        .bind(INTENT_THREE)
+        .bind(ASSET_ID)
+        .bind(COLLECTOR_ID)
+        .bind(now)
+        .bind(now + Duration::minutes(15))
+        .bind(now + Duration::days(30))
+        .bind(PRICE_SNAPSHOT_ID)
+        .bind(QUOTE_POLICY_ID)
+        .bind(RAIL_HEALTH_SNAPSHOT_ID)
+        .execute(&pool)
+        .await;
+        let refused = matches!(&written, Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("23514"));
+        assert!(
+            refused,
+            "expected the tenancy trigger to refuse, got {written:?}"
+        );
+        Ok(())
+    }
+
     #[allow(clippy::too_many_lines)]
     async fn reset_database(pool: &PgPool, now: OffsetDateTime) -> Result<(), Box<dyn Error>> {
         migrate(pool).await?;
@@ -1530,8 +1679,8 @@ mod tests {
             (MERCHANT_TWO, "quote-merchant-two"),
         ] {
             sqlx::query(
-                "INSERT INTO merchants (id, external_id, display_name, status) \
-                 VALUES ($1, $2, $2, 'active')",
+                "INSERT INTO merchants (id, external_id, display_name, status, collector_policy) \
+                 VALUES ($1, $2, $2, 'active', 'shared')",
             )
             .bind(merchant_id)
             .bind(external_id)

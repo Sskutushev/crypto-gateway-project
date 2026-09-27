@@ -846,8 +846,8 @@ mod tests {
             (MERCHANT_TWO, KEY_TWO, "merchant-two", SECRET_TWO),
         ] {
             sqlx::query(
-                "INSERT INTO merchants (id, external_id, display_name, status) \
-                 VALUES ($1, $2, $2, 'active')",
+                "INSERT INTO merchants (id, external_id, display_name, status, collector_policy) \
+                 VALUES ($1, $2, $2, 'active', 'shared')",
             )
             .bind(merchant_id)
             .bind(external_id)

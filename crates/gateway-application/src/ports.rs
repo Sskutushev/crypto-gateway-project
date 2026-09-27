@@ -77,8 +77,11 @@ pub trait QuoteRepository: Send + Sync {
         request_hash: &[u8; 32],
     ) -> Result<Option<IssuedQuote>, RepositoryError>;
 
+    /// The pricing, policy and rail state for a quote, on a collector that
+    /// receives money for this merchant under its collector policy.
     async fn load_quote_context(
         &self,
+        merchant_id: Uuid,
         asset_id: Uuid,
         currency: &CurrencyCode,
     ) -> Result<QuoteContext, RepositoryError>;

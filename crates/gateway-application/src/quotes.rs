@@ -74,7 +74,7 @@ where
             .ok_or(QuoteServiceError::PaymentIntentNotFound)?;
         let context = self
             .repository
-            .load_quote_context(input.asset_id, &intent.amount.currency)
+            .load_quote_context(merchant_id, input.asset_id, &intent.amount.currency)
             .await?;
         if let Some(reason) = context.rail_stop_reason {
             return Err(QuoteServiceError::RailStopped(reason));
