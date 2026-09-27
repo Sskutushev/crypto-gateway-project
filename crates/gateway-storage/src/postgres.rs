@@ -577,7 +577,24 @@ impl QuoteRepository for PostgresRepository {
         .await
         .map_err(unavailable)?
         .ok_or(RepositoryError::PaymentIntentNotQuotable)?;
-        if intent.0 != "requires_quote"
+        // A first quote, or a new one for an order whose last quote ran out
+        // before any money arrived. Once money, a hold or a manual decision
+        // exists, quoting again could ask the buyer to pay twice.
+        let requotable = intent.0 == "expired"
+            && !sqlx::query_scalar::<_, bool>(
+                r"
+                SELECT EXISTS (
+                    SELECT 1 FROM payment_settlement_decisions WHERE payment_intent_id = $1
+                    UNION ALL
+                    SELECT 1 FROM chain_transfer_intent_claims WHERE payment_intent_id = $1
+                )
+                ",
+            )
+            .bind(plan.payment_intent_id())
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(unavailable)?;
+        if (intent.0 != "requires_quote" && !requotable)
             || intent.1 != plan.fiat_amount().minor_units
             || intent.2 != plan.fiat_amount().currency.as_str()
         {
@@ -690,7 +707,7 @@ impl QuoteRepository for PostgresRepository {
             r"
             UPDATE payment_intents
                SET status = 'awaiting_payment', version = version + 1, updated_at = $3
-             WHERE id = $1 AND merchant_id = $2 AND status = 'requires_quote'
+             WHERE id = $1 AND merchant_id = $2 AND status IN ('requires_quote', 'expired')
             ",
         )
         .bind(plan.payment_intent_id())
@@ -1005,7 +1022,7 @@ async fn insert_quote_attempt_and_lease(
     .bind(plan.created_at())
     .execute(&mut **transaction)
     .await
-    .map_err(unavailable)?;
+    .map_err(classify_quote_insert_error)?;
 
     let lease_id = Uuid::now_v7();
     sqlx::query(
@@ -1258,8 +1275,13 @@ fn classify_insert_error(error: sqlx::Error) -> RepositoryError {
 #[allow(clippy::needless_pass_by_value)]
 fn classify_quote_insert_error(error: sqlx::Error) -> RepositoryError {
     if let sqlx::Error::Database(database_error) = &error
-        && database_error.constraint() == Some("payment_quotes_payment_intent_id_key")
+        && matches!(
+            database_error.constraint(),
+            Some("payment_attempts_one_live_per_intent")
+        )
     {
+        // Two quotes for the same order at once: one wins, the other is told
+        // the order is not quotable now.
         return RepositoryError::PaymentIntentNotQuotable;
     }
     unavailable(error)
@@ -1764,6 +1786,154 @@ mod tests {
         .fetch_one(&pool)
         .await?;
         assert_eq!(kept, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+    #[allow(clippy::too_many_lines)]
+    async fn an_order_whose_quote_ran_out_unpaid_is_quoted_again_and_only_then()
+    -> Result<(), Box<dyn Error>> {
+        let _fixture = DATABASE.lock().await;
+        let database_url = env::var("GATEWAY_TEST_DATABASE_URL")?;
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&database_url)
+            .await?;
+        let now = OffsetDateTime::UNIX_EPOCH + Duration::days(20_000);
+        reset_database(&pool, now).await?;
+        let repository = PostgresRepository::new(pool.clone());
+        let route = "POST /v1/payment-intents/:id/quotes";
+        repository
+            .issue_quote_idempotently(
+                plan(MERCHANT_ONE, INTENT_ONE, now)?,
+                ACTOR_KEY,
+                route,
+                "requote_first_quote_0001",
+                &[7; 32],
+            )
+            .await?;
+        // While the first quote is live, the order cannot be quoted again.
+        let second_live = repository
+            .issue_quote_idempotently(
+                plan(MERCHANT_ONE, INTENT_ONE, now)?,
+                ACTOR_KEY,
+                route,
+                "requote_while_live_00001",
+                &[8; 32],
+            )
+            .await;
+        assert!(
+            matches!(second_live, Err(RepositoryError::PaymentIntentNotQuotable)),
+            "{second_live:?}"
+        );
+
+        let later = now + Duration::hours(2);
+        repository
+            .expire_quotes_and_archive_leases(later, 50)
+            .await?;
+        refresh_evidence(&pool, later).await?;
+        let requoted = repository
+            .issue_quote_idempotently(
+                plan(MERCHANT_ONE, INTENT_ONE, later)?,
+                ACTOR_KEY,
+                route,
+                "requote_after_expiry_001",
+                &[9; 32],
+            )
+            .await?;
+        assert!(matches!(requoted, IdempotentQuote::Issued(_)));
+        let attempts: Vec<String> = sqlx::query_scalar(
+            "SELECT status FROM payment_attempts WHERE payment_intent_id = $1 ORDER BY created_at",
+        )
+        .bind(INTENT_ONE)
+        .fetch_all(&pool)
+        .await?;
+        assert_eq!(
+            attempts,
+            vec!["expired".to_owned(), "awaiting_payment".to_owned()]
+        );
+        // The first attempt still holds its amount for late money.
+        let leases: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM amount_leases AS lease JOIN payment_attempts AS attempt              ON attempt.id = lease.attempt_id WHERE attempt.payment_intent_id = $1",
+        )
+        .bind(INTENT_ONE)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(leases, 2);
+
+        // Once money is claimed for the order, it is never quoted again.
+        let latest = later + Duration::hours(2);
+        repository
+            .expire_quotes_and_archive_leases(latest, 50)
+            .await?;
+        let transfer = Uuid::from_u128(801);
+        sqlx::query(
+            r"INSERT INTO chain_transfers(
+                 id,asset_id,collector_address_id,chain,network,chain_environment,tx_hash,
+                 event_index,block_number,block_hash,block_time,token_key,from_address_key,
+                 from_address_text,to_address_key,to_address_text,amount_raw,decimals,
+                 canonicalization_policy,verifier_version,canonicalized_at
+               ) VALUES($1,$2,$3,'tron','nile','testnet','requote-tx',0,1,'b',$4,$5,$6,'TFrom',$7,'TTestCollector',1,6,'t','t',$4)",
+        )
+        .bind(transfer)
+        .bind(ASSET_ID)
+        .bind(COLLECTOR_ID)
+        .bind(latest)
+        .bind([7_u8; 20].as_slice())
+        .bind([1_u8; 21].as_slice())
+        .bind([8_u8; 21].as_slice())
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            r"INSERT INTO chain_transfer_intent_claims (transfer_id, payment_intent_id, attempt_id,
+                  merchant_id, match_strategy, claimed_at, collector_address_id)
+              SELECT $1, attempt.payment_intent_id, attempt.id, attempt.merchant_id, 'manual', $2,
+                     attempt.collector_address_id
+                FROM payment_attempts AS attempt
+               WHERE attempt.payment_intent_id = $3
+               ORDER BY attempt.created_at LIMIT 1",
+        )
+        .bind(transfer)
+        .bind(latest)
+        .bind(INTENT_ONE)
+        .execute(&pool)
+        .await?;
+        refresh_evidence(&pool, latest).await?;
+        let with_money = repository
+            .issue_quote_idempotently(
+                plan(MERCHANT_ONE, INTENT_ONE, latest)?,
+                ACTOR_KEY,
+                route,
+                "requote_with_money_00001",
+                &[10; 32],
+            )
+            .await;
+        assert!(
+            matches!(with_money, Err(RepositoryError::PaymentIntentNotQuotable)),
+            "{with_money:?}"
+        );
+        Ok(())
+    }
+
+    /// Moves the seeded price, policy and rail evidence to `at`, exactly as a
+    /// plan built at `at` describes it, so a later quote passes the issue-time
+    /// comparison with the stored evidence.
+    async fn refresh_evidence(pool: &PgPool, at: OffsetDateTime) -> Result<(), Box<dyn Error>> {
+        sqlx::query("UPDATE price_snapshots SET observed_at = $1, sources = $2")
+            .bind(at)
+            .bind(json!([
+                {"provider_group":"source-a","observed_at":at},
+                {"provider_group":"source-b","observed_at":at}
+            ]))
+            .execute(pool)
+            .await?;
+        for table in ["quote_policies", "rail_health_snapshots"] {
+            sqlx::query(&format!("UPDATE {table} SET observed_at = $1"))
+                .bind(at)
+                .execute(pool)
+                .await?;
+        }
         Ok(())
     }
 

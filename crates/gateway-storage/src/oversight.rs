@@ -411,8 +411,13 @@ impl PostgresRepository {
               LEFT JOIN payment_settlement_decisions AS decision
                      ON decision.payment_intent_id = fulfilment.payment_intent_id
                     AND decision.outcome = 'settled'
-              LEFT JOIN payment_quotes AS quote
-                     ON quote.payment_intent_id = fulfilment.payment_intent_id
+              LEFT JOIN LATERAL (
+                    SELECT latest.asset_id
+                      FROM payment_quotes AS latest
+                     WHERE latest.payment_intent_id = fulfilment.payment_intent_id
+                     ORDER BY latest.created_at DESC
+                     LIMIT 1
+              ) AS quote ON true
              WHERE fulfilment.claimed_at >= $1
                AND fulfilment.claimed_at < $2
                AND decision.id IS NULL
