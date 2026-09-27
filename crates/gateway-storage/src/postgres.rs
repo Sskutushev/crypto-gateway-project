@@ -7,7 +7,8 @@ use gateway_application::{
 };
 use gateway_domain::{
     CurrencyCode, FiatAmount, IssuedQuote, MoneyError, PaymentIntent, PaymentIntentStatus,
-    PriceSnapshot, QuotePlan, QuotePolicySnapshot, RailHealth, RailHealthSnapshot, RawAmount,
+    PriceSnapshot, QuoteAsset, QuotePlan, QuotePolicySnapshot, RailHealth, RailHealthSnapshot,
+    RawAmount,
 };
 use serde_json::Value;
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
@@ -68,6 +69,44 @@ struct IssuedQuoteRow {
     created_at: OffsetDateTime,
     expires_at: OffsetDateTime,
     late_payment_until: OffsetDateTime,
+    asset_chain: String,
+    asset_network: String,
+    asset_environment: String,
+    asset_symbol: String,
+    asset_decimals: i16,
+    contract_address_key: Vec<u8>,
+    checkout_token: String,
+}
+
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+/// A token contract in the chain's own display form. TRON wallets show
+/// base58check; any other chain is shown as the canonical bytes in hex until
+/// its adapter supplies a display form.
+fn contract_display(chain: &str, key: &[u8]) -> Result<String, RepositoryError> {
+    if chain == "tron" {
+        // Both TRON byte forms are real: 21 bytes with the 0x41 prefix, and
+        // the 20-byte form event logs carry. Anything else is corrupt.
+        let address = if key.len() == 20 {
+            gateway_tron::from_evm_bytes(key)
+        } else {
+            gateway_domain::AddressKey::new(key.to_vec())
+                .map_err(|_| gateway_tron::TronAddressError::WrongLength)
+        }
+        .map_err(|error| RepositoryError::CorruptData(error.to_string()))?;
+        return gateway_tron::to_base58(&address)
+            .map_err(|error| RepositoryError::CorruptData(error.to_string()));
+    }
+    Ok(key
+        .iter()
+        .flat_map(|byte| {
+            [
+                HEX_DIGITS[usize::from(byte >> 4)],
+                HEX_DIGITS[usize::from(byte & 0x0f)],
+            ]
+        })
+        .map(char::from)
+        .collect())
 }
 
 impl TryFrom<IssuedQuoteRow> for IssuedQuote {
@@ -85,6 +124,16 @@ impl TryFrom<IssuedQuoteRow> for IssuedQuote {
                 "quote price sources are not an array".to_owned(),
             ));
         }
+        let decimals = u8::try_from(row.asset_decimals)
+            .map_err(|_| RepositoryError::CorruptData("asset decimals out of range".to_owned()))?;
+        let asset = QuoteAsset {
+            contract_address: contract_display(&row.asset_chain, &row.contract_address_key)?,
+            chain: row.asset_chain,
+            network: row.asset_network,
+            chain_environment: row.asset_environment,
+            symbol: row.asset_symbol,
+            decimals,
+        };
 
         Ok(Self {
             id: row.id,
@@ -107,6 +156,9 @@ impl TryFrom<IssuedQuoteRow> for IssuedQuote {
             created_at: row.created_at,
             expires_at: row.expires_at,
             late_payment_until: row.late_payment_until,
+            amount: amount_raw.to_decimal_string(decimals),
+            asset,
+            checkout_token: row.checkout_token,
         })
     }
 }
@@ -1307,10 +1359,15 @@ async fn find_quote(
                quote.rate_numerator::TEXT, quote.rate_denominator::TEXT,
                quote.price_sources, quote.price_observed_at, quote.policy_version,
                quote.rail_health_observed_at, quote.created_at, quote.expires_at,
-               quote.late_payment_until
+               quote.late_payment_until,
+               asset.chain AS asset_chain, asset.network AS asset_network,
+               asset.chain_environment AS asset_environment,
+               asset.display_symbol AS asset_symbol, asset.decimals AS asset_decimals,
+               asset.contract_address_key, attempt.checkout_token
           FROM payment_quotes AS quote
           JOIN payment_attempts AS attempt ON attempt.quote_id = quote.id
           JOIN collector_addresses AS collector ON collector.id = quote.collector_address_id
+          JOIN chain_assets AS asset ON asset.id = quote.asset_id
          WHERE quote.merchant_id = $1 AND quote.id = $2
         ",
     )

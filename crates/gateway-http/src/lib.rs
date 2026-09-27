@@ -179,7 +179,7 @@ mod tests {
         Ok(())
     }
 
-    use std::{collections::BTreeSet, env, error::Error};
+    use std::{collections::BTreeSet, env, error::Error, str::FromStr};
 
     use axum::{
         body::{Body, to_bytes},
@@ -359,12 +359,34 @@ mod tests {
         assert_eq!(quote["amount_raw"], "1235");
         assert_eq!(quote["collector_address"], "TContractCollector");
         assert_eq!(quote["price_snapshot_id"], PRICE_SNAPSHOT_ID.to_string());
+        // What a buyer's wallet needs, exact: the token by contract, its
+        // precision, and the same amount in whole tokens.
+        let decimals = quote["asset"]["decimals"]
+            .as_u64()
+            .ok_or("the quote names no decimals")?;
+        assert_eq!(
+            quote["amount"],
+            gateway_domain::RawAmount::from_str("1235")?.to_decimal_string(u8::try_from(decimals)?)
+        );
+        assert!(
+            quote["asset"]["contract_address"]
+                .as_str()
+                .is_some_and(|address| address.starts_with('T'))
+        );
+        assert!(
+            quote["checkout_token"].as_str().is_some_and(
+                |token| token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit())
+            )
+        );
         assert_eq!(
             object_keys(&quote),
             BTreeSet::from([
+                "amount",
                 "amount_raw",
+                "asset",
                 "asset_id",
                 "attempt_id",
+                "checkout_token",
                 "collector_address",
                 "collector_address_id",
                 "created_at",

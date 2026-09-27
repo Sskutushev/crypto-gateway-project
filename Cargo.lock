@@ -1295,6 +1295,7 @@ dependencies = [
  "gateway-application",
  "gateway-domain",
  "gateway-scheduler",
+ "gateway-tron",
  "serde",
  "serde_json",
  "sha2",

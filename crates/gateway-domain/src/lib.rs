@@ -24,7 +24,7 @@ pub use price::{
     PriceReading, aggregate,
 };
 pub use quote::{
-    IssuedQuote, PriceSnapshot, QuoteError, QuotePlan, QuotePolicySnapshot, RailHealth,
+    IssuedQuote, PriceSnapshot, QuoteAsset, QuoteError, QuotePlan, QuotePolicySnapshot, RailHealth,
     RailHealthSnapshot,
 };
 pub use settlement::{

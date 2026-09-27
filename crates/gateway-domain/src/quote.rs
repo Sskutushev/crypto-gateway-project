@@ -75,6 +75,19 @@ pub struct QuotePlan {
     late_payment_until: OffsetDateTime,
 }
 
+/// The token a quote is paid in, as a buyer's wallet names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuoteAsset {
+    pub chain: String,
+    pub network: String,
+    pub chain_environment: String,
+    pub symbol: String,
+    pub decimals: u8,
+    /// The token contract in the chain's own display form. The symbol alone
+    /// never identifies a token: a lookalike with the same symbol is not it.
+    pub contract_address: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IssuedQuote {
     pub id: Uuid,
@@ -102,6 +115,12 @@ pub struct IssuedQuote {
     pub expires_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
     pub late_payment_until: OffsetDateTime,
+    pub asset: QuoteAsset,
+    /// `amount_raw` in whole tokens for display. The exact integer to send is
+    /// always `amount_raw`; this string is the same value, never a rounding.
+    pub amount: String,
+    /// Opens the hosted payment page for this attempt.
+    pub checkout_token: String,
 }
 
 impl QuotePlan {

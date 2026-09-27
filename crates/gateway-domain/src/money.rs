@@ -158,6 +158,26 @@ impl RawAmount {
         self.0
     }
 
+    /// The amount in whole tokens, for people: `1500000` with 6 decimals is
+    /// `1.5`. Exact string arithmetic on the integer, never a float; trailing
+    /// zeros of the fraction are dropped because they carry no value.
+    #[must_use]
+    pub fn to_decimal_string(self, decimals: u8) -> String {
+        let digits = self.0.to_string();
+        let decimals = usize::from(decimals);
+        if decimals == 0 {
+            return digits;
+        }
+        let padded = format!("{digits:0>width$}", width = decimals + 1);
+        let (whole, fraction) = padded.split_at(padded.len() - decimals);
+        let fraction = fraction.trim_end_matches('0');
+        if fraction.is_empty() {
+            whole.to_owned()
+        } else {
+            format!("{whole}.{fraction}")
+        }
+    }
+
     /// Adds two raw token quantities without wrapping.
     ///
     /// # Errors
@@ -457,5 +477,29 @@ mod fuzz_smoke {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_raw_amount_reads_in_whole_tokens_exactly() -> Result<(), Box<dyn std::error::Error>> {
+        let cases = [
+            ("1500000", 6, "1.5"),
+            ("1000000", 6, "1"),
+            ("1", 6, "0.000001"),
+            ("273001427", 6, "273.001427"),
+            ("42", 0, "42"),
+            (
+                "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+                18,
+                "115792089237316195423570985008687907853269984665640564039457.584007913129639935",
+            ),
+        ];
+        for (raw, decimals, expected) in cases {
+            assert_eq!(
+                RawAmount::from_str(raw)?.to_decimal_string(decimals),
+                expected,
+                "{raw}"
+            );
+        }
+        Ok(())
     }
 }
