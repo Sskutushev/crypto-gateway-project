@@ -72,6 +72,7 @@ struct CandidateRow {
     memo_reference: Option<String>,
     leased_from: OffsetDateTime,
     leased_until: OffsetDateTime,
+    quote_expires_at: OffsetDateTime,
     status: String,
 }
 
@@ -96,6 +97,7 @@ impl TryFrom<CandidateRow> for AttemptCandidate {
                 .map_err(|error| corrupt(error.to_string()))?,
             leased_from: row.leased_from,
             leased_until: row.leased_until,
+            quote_expires_at: row.quote_expires_at,
             status: AttemptStatus::parse(&row.status)
                 .map_err(|error| corrupt(error.to_string()))?,
         })
@@ -202,6 +204,7 @@ impl SettlementRepository for PostgresRepository {
                    attempt.memo_reference,
                    lease.leased_from,
                    lease.lease_until AS leased_until,
+                   attempt.quote_expires_at,
                    attempt.status
               FROM amount_leases AS lease
               JOIN payment_attempts AS attempt ON attempt.id = lease.attempt_id
@@ -217,6 +220,7 @@ impl SettlementRepository for PostgresRepository {
                    attempt.memo_reference,
                    history.leased_from,
                    history.leased_until,
+                   attempt.quote_expires_at,
                    attempt.status
               FROM amount_lease_history AS history
               JOIN payment_attempts AS attempt ON attempt.id = history.attempt_id

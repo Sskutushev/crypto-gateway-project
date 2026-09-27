@@ -507,7 +507,7 @@ async fn honor_transfer(
                      AND t.chain = ca.chain AND t.network = ca.network
                      AND t.chain_environment = ca.chain_environment) AS bound_to_attempt,
                   a.status AS attempt_status, i.status AS intent_status,
-                  t.block_time <= a.late_payment_until AS within_late_window
+                  t.block_time < a.late_payment_until AS within_late_window
              FROM payment_attempts a
              JOIN payment_intents i ON i.id=a.payment_intent_id AND i.merchant_id=a.merchant_id
              JOIN payment_quotes q ON q.id=a.quote_id AND q.payment_intent_id=i.id

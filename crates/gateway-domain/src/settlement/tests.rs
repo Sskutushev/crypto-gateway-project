@@ -58,6 +58,7 @@ fn candidate(
         memo_reference: None,
         leased_from,
         leased_until,
+        quote_expires_at: leased_from + Duration::minutes(15),
         status,
     })
 }
@@ -482,6 +483,39 @@ fn a_cancelled_attempt_does_not_absorb_a_payment() -> TestResult {
         SettlementOutcome::Hold {
             reason: HoldReason::Cancelled,
         }
+    );
+    Ok(())
+}
+
+#[test]
+fn money_sent_before_the_quote_ran_out_is_on_time_even_if_the_expiry_sweep_ran_first() -> TestResult
+{
+    // The sweep marked the attempt expired; the block itself is from inside the quote.
+    let candidates = vec![candidate(
+        ATTEMPT_ONE,
+        INTENT_ONE,
+        "273001427",
+        AttemptStatus::Expired,
+        now() - Duration::minutes(10),
+        now() + Duration::days(30),
+    )?];
+
+    let on_time = match_transfer(
+        &transfer("273001427", now() - Duration::minutes(1))?,
+        &candidates,
+    );
+    let late = match_transfer(
+        &transfer("273001427", now() + Duration::minutes(6))?,
+        &candidates,
+    );
+
+    assert!(
+        matches!(on_time, MatchOutcome::Matched { late: false, .. }),
+        "{on_time:?}"
+    );
+    assert!(
+        matches!(late, MatchOutcome::Matched { late: true, .. }),
+        "{late:?}"
     );
     Ok(())
 }
