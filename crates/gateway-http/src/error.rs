@@ -71,9 +71,20 @@ impl IntoResponse for ApiError {
                 "payment_intent_reference_conflict",
                 error_message.clone(),
             ),
-            Self::Service(ServiceError::Money(_) | ServiceError::PaymentIntent(_)) => (
+            Self::Service(
+                ServiceError::Money(_)
+                | ServiceError::PaymentIntent(_)
+                | ServiceError::InvalidCancellationReason,
+            ) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "invalid_request",
+                error_message.clone(),
+            ),
+            Self::Service(ServiceError::Repository(
+                RepositoryError::PaymentIntentNotCancellable,
+            )) => (
+                StatusCode::CONFLICT,
+                "payment_intent_not_cancellable",
                 error_message.clone(),
             ),
             Self::Quote(QuoteServiceError::Repository(

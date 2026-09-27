@@ -374,6 +374,164 @@ impl PaymentIntentRepository for PostgresRepository {
         .map_err(unavailable)?;
         row.map(TryInto::try_into).transpose()
     }
+
+    #[allow(clippy::too_many_lines)]
+    async fn cancel_idempotently(
+        &self,
+        merchant_id: Uuid,
+        intent_id: Uuid,
+        actor_key_id: Uuid,
+        route: &str,
+        idempotency_key: &str,
+        request_hash: &[u8; 32],
+        reason: Option<&str>,
+    ) -> Result<Option<IdempotentCreate>, RepositoryError> {
+        let mut transaction = self.pool.begin().await.map_err(unavailable)?;
+        let recorded = sqlx::query_scalar::<_, Uuid>(
+            r"
+            INSERT INTO api_idempotency_records (
+                merchant_id, route, idempotency_key, request_hash, resource_id
+            ) VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (merchant_id, route, idempotency_key) DO NOTHING
+            RETURNING resource_id
+            ",
+        )
+        .bind(merchant_id)
+        .bind(route)
+        .bind(idempotency_key)
+        .bind(request_hash.as_slice())
+        .bind(intent_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(unavailable)?;
+        if recorded.is_none() {
+            let (stored_hash, resource) = sqlx::query_as::<_, (Vec<u8>, Uuid)>(
+                "SELECT request_hash, resource_id FROM api_idempotency_records \
+                 WHERE merchant_id = $1 AND route = $2 AND idempotency_key = $3",
+            )
+            .bind(merchant_id)
+            .bind(route)
+            .bind(idempotency_key)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(unavailable)?;
+            if stored_hash.as_slice() != request_hash {
+                return Err(RepositoryError::IdempotencyConflict);
+            }
+            let intent = find_intent(&mut transaction, merchant_id, resource).await?;
+            transaction.commit().await.map_err(unavailable)?;
+            return Ok(intent.map(IdempotentCreate::Replayed));
+        }
+
+        // The intent row is the lock settlement also takes before it can mark
+        // the order paid, so a payment and a cancellation serialise here.
+        let Some(status) = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM payment_intents WHERE id = $1 AND merchant_id = $2 FOR UPDATE",
+        )
+        .bind(intent_id)
+        .bind(merchant_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(unavailable)?
+        else {
+            return Ok(None);
+        };
+        let money_or_decision = sqlx::query_scalar::<_, bool>(
+            r"
+            SELECT EXISTS (
+                SELECT 1 FROM payment_settlement_decisions WHERE payment_intent_id = $1
+                UNION ALL
+                SELECT 1 FROM chain_transfer_intent_claims WHERE payment_intent_id = $1
+            )
+            ",
+        )
+        .bind(intent_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(unavailable)?;
+        if !matches!(
+            status.as_str(),
+            "requires_quote" | "awaiting_payment" | "expired"
+        ) || money_or_decision
+        {
+            return Err(RepositoryError::PaymentIntentNotCancellable);
+        }
+        let now = OffsetDateTime::now_utc();
+        sqlx::query(
+            r"
+            UPDATE payment_intents
+               SET status = 'cancelled', version = version + 1, updated_at = $2
+             WHERE id = $1
+            ",
+        )
+        .bind(intent_id)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(unavailable)?;
+        // The live attempt closes too. Its amount reservation stays until its
+        // late-payment window ends: money that still arrives is recognised and
+        // held for a person, never credited elsewhere.
+        let cancelled_attempts = sqlx::query_scalar::<_, Uuid>(
+            r"
+            UPDATE payment_attempts SET status = 'cancelled', updated_at = $2
+             WHERE payment_intent_id = $1 AND status = 'awaiting_payment'
+            RETURNING id
+            ",
+        )
+        .bind(intent_id)
+        .bind(now)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(unavailable)?;
+        insert_system_audit(
+            &mut transaction,
+            merchant_id,
+            "payment_intent.cancelled",
+            "payment_intent",
+            intent_id,
+            serde_json::json!({
+                "actor_key_id": actor_key_id,
+                "reason": reason,
+                "previous_status": status,
+                "cancelled_attempts": cancelled_attempts,
+            }),
+        )
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO domain_events (
+                id, merchant_id, channel, event_type, aggregate_type, aggregate_id, payload,
+                available_at, created_at
+            ) VALUES ($1, $2, 'webhook', 'payment_intent.cancelled', 'payment_intent', $3, $4, $5, $5)
+            ",
+        )
+        .bind(Uuid::now_v7())
+        .bind(merchant_id)
+        .bind(intent_id)
+        .bind(serde_json::json!({"payment_intent_id": intent_id, "reason": reason}))
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(unavailable)?;
+        sqlx::query(
+            "UPDATE api_idempotency_records SET completed_at = now() \
+             WHERE merchant_id = $1 AND route = $2 AND idempotency_key = $3",
+        )
+        .bind(merchant_id)
+        .bind(route)
+        .bind(idempotency_key)
+        .execute(&mut *transaction)
+        .await
+        .map_err(unavailable)?;
+        let intent = find_intent(&mut transaction, merchant_id, intent_id)
+            .await?
+            .ok_or_else(|| {
+                RepositoryError::CorruptData("a cancelled intent is missing".to_owned())
+            })?;
+        transaction.commit().await.map_err(unavailable)?;
+        Ok(Some(IdempotentCreate::Created(intent)))
+    }
 }
 
 #[async_trait]
@@ -1308,7 +1466,8 @@ mod tests {
     use std::{env, error::Error, str::FromStr, sync::Arc};
 
     use gateway_application::{
-        Clock, IdempotentQuote, IssueQuote, QuoteRepository, QuoteService, RepositoryError,
+        Clock, IdempotentCreate, IdempotentQuote, IssueQuote, PaymentIntentRepository,
+        QuoteRepository, QuoteService, RepositoryError,
     };
     use gateway_domain::{
         CurrencyCode, FiatAmount, PriceSnapshot, QuotePlan, QuotePolicySnapshot, RailHealth,
@@ -1913,6 +2072,141 @@ mod tests {
             matches!(with_money, Err(RepositoryError::PaymentIntentNotQuotable)),
             "{with_money:?}"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+    #[allow(clippy::too_many_lines)]
+    async fn an_order_without_money_is_cancelled_once_and_one_with_money_never()
+    -> Result<(), Box<dyn Error>> {
+        let _fixture = DATABASE.lock().await;
+        let database_url = env::var("GATEWAY_TEST_DATABASE_URL")?;
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&database_url)
+            .await?;
+        let now = OffsetDateTime::UNIX_EPOCH + Duration::days(20_000);
+        reset_database(&pool, now).await?;
+        let repository = PostgresRepository::new(pool.clone());
+        repository
+            .issue_quote_idempotently(
+                plan(MERCHANT_ONE, INTENT_ONE, now)?,
+                ACTOR_KEY,
+                "POST /v1/payment-intents/:id/quotes",
+                "cancel_scenario_quote_001",
+                &[11; 32],
+            )
+            .await?;
+        let route = "POST /v1/payment-intents/:id/cancel";
+
+        let cancelled = repository
+            .cancel_idempotently(
+                MERCHANT_ONE,
+                INTENT_ONE,
+                ACTOR_KEY,
+                route,
+                "cancel_scenario_key_0001",
+                &[1; 32],
+                Some("customer left"),
+            )
+            .await?;
+        assert!(
+            matches!(cancelled, Some(IdempotentCreate::Created(ref intent)) if intent.status.as_str() == "cancelled")
+        );
+        let attempt: String =
+            sqlx::query_scalar("SELECT status FROM payment_attempts WHERE payment_intent_id = $1")
+                .bind(INTENT_ONE)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(attempt, "cancelled");
+        let leases: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM amount_leases AS lease JOIN payment_attempts AS attempt              ON attempt.id = lease.attempt_id WHERE attempt.payment_intent_id = $1",
+        )
+        .bind(INTENT_ONE)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(
+            leases, 1,
+            "the amount stays reserved for money that still arrives"
+        );
+        let webhooks: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM domain_events WHERE event_type = 'payment_intent.cancelled' AND aggregate_id = $1",
+        )
+        .bind(INTENT_ONE)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(webhooks, 1);
+
+        // The same request again is the same answer; the same key with a
+        // different body is a conflict.
+        let replay = repository
+            .cancel_idempotently(
+                MERCHANT_ONE,
+                INTENT_ONE,
+                ACTOR_KEY,
+                route,
+                "cancel_scenario_key_0001",
+                &[1; 32],
+                Some("customer left"),
+            )
+            .await?;
+        assert!(matches!(replay, Some(IdempotentCreate::Replayed(_))));
+        assert!(matches!(
+            repository
+                .cancel_idempotently(
+                    MERCHANT_ONE,
+                    INTENT_ONE,
+                    ACTOR_KEY,
+                    route,
+                    "cancel_scenario_key_0001",
+                    &[2; 32],
+                    None
+                )
+                .await,
+            Err(RepositoryError::IdempotencyConflict)
+        ));
+
+        // An order with money on it is never cancelled.
+        sqlx::query("UPDATE payment_intents SET status = 'partially_paid' WHERE id = $1")
+            .bind(INTENT_TWO)
+            .execute(&pool)
+            .await?;
+        assert!(matches!(
+            repository
+                .cancel_idempotently(
+                    MERCHANT_ONE,
+                    INTENT_TWO,
+                    ACTOR_KEY,
+                    route,
+                    "cancel_scenario_key_0002",
+                    &[3; 32],
+                    None
+                )
+                .await,
+            Err(RepositoryError::PaymentIntentNotCancellable)
+        ));
+        // Another merchant's order does not exist for this merchant.
+        assert!(
+            repository
+                .cancel_idempotently(
+                    MERCHANT_TWO,
+                    INTENT_TWO,
+                    ACTOR_KEY,
+                    route,
+                    "cancel_scenario_key_0003",
+                    &[4; 32],
+                    None
+                )
+                .await?
+                .is_none()
+        );
+        let twice: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM domain_events WHERE event_type = 'payment_intent.cancelled'",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(twice, 1);
         Ok(())
     }
 

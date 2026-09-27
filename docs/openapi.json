@@ -59,6 +59,7 @@
           "created_at": { "$ref": "#/components/schemas/Timestamp" }, "updated_at": { "$ref": "#/components/schemas/Timestamp" }
         }
       },
+      "CancelPaymentIntent": { "type": "object", "additionalProperties": false, "properties": { "reason": { "type": ["string", "null"], "maxLength": 500, "description": "Kept in the audit trail and sent with the payment_intent.cancelled webhook." } } },
       "IssueQuote": { "type": "object", "required": ["asset_id"], "additionalProperties": false, "properties": { "asset_id": { "type": "string", "format": "uuid", "description": "An allowlisted asset; the contract is never named by symbol." } } },
       "IssuedQuote": {
         "type": "object",
@@ -236,15 +237,26 @@
         "responses": { "200": { "description": "The intent, as this merchant sees it.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentIntent" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "404": { "$ref": "#/components/responses/NotFound" } } }
     },
     "/v1/payment-intents/{intent_id}/quotes": {
-      "post": { "tags": ["merchant"], "summary": "Quote an intent in an asset", "description": "Reserves an exact token amount at one collector address for a bounded time. The rate comes from server-owned price evidence and always rounds up; the gateway never re-prices an issued quote.", "security": [{ "merchantKey": [] }],
+      "post": { "tags": ["merchant"], "summary": "Quote an intent in an asset", "description": "Reserves an exact token amount at one collector address for a bounded time. The rate comes from server-owned price evidence and always rounds up; the gateway never re-prices an issued quote. An order whose quote expired before any money arrived can be quoted again: a new attempt on the same intent, while the earlier one keeps its amount reserved for late money.", "security": [{ "merchantKey": [] }],
         "parameters": [{ "$ref": "#/components/parameters/IntentId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IssueQuote" } } } },
         "responses": {
           "201": { "description": "Issued.", "headers": { "Idempotent-Replayed": { "$ref": "#/components/headers/IdempotentReplayed" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IssuedQuote" } } } },
           "200": { "description": "Replayed. A replay stays available during a later pricing or rail outage.", "headers": { "Idempotent-Replayed": { "$ref": "#/components/headers/IdempotentReplayed" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IssuedQuote" } } } },
           "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "description": "payment_intent_not_quotable: the intent is not awaiting a quote; or idempotency_conflict.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "payment_intent_not_quotable: the intent is neither awaiting its first quote nor expired with no money, hold or decision on it, or another attempt is live; or idempotency_conflict.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "503": { "description": "quote_unavailable: no fresh, agreeing price, policy or rail-health evidence, or no free amount slot; rail_stopped: a person or the reconciler closed this rail. Nothing is invented.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        } }
+    },
+    "/v1/payment-intents/{intent_id}/cancel": {
+      "post": { "tags": ["merchant"], "summary": "Cancel an order that has no money on it", "description": "Cancels the intent and its live attempt and queues a payment_intent.cancelled webhook. Allowed while the intent is requires_quote, awaiting_payment or expired and no money, hold or manual decision exists for it. The amount reservation stays until its late-payment window ends, so money that still arrives is held for a person. Repeating the request with the same key answers with the cancelled intent.", "security": [{ "merchantKey": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IntentId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": false, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CancelPaymentIntent" } } } },
+        "responses": {
+          "200": { "description": "Cancelled, or the replay of an earlier cancellation.", "headers": { "Idempotent-Replayed": { "$ref": "#/components/headers/IdempotentReplayed" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentIntent" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "description": "payment_intent_not_cancellable: the order is paid, partially paid or held, or money or a decision exists for it; or idempotency_conflict.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "422": { "description": "invalid_request: the reason is longer than 500 characters.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
         } }
     },
     "/v1/operator/price-snapshots": {

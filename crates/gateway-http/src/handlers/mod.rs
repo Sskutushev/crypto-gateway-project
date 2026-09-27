@@ -24,6 +24,7 @@ pub const ROUTES: &[(&str, &str)] = &[
     ("POST", "/v1/payment-intents"),
     ("GET", "/v1/payment-intents/{intent_id}"),
     ("POST", "/v1/payment-intents/{intent_id}/quotes"),
+    ("POST", "/v1/payment-intents/{intent_id}/cancel"),
     ("POST", "/v1/operator/price-snapshots"),
     ("POST", "/v1/operator/rail-health"),
     ("POST", "/v1/operator/rail-stops"),
@@ -54,6 +55,10 @@ pub fn payment_intent_routes() -> Router<AppState> {
         .route(
             "/v1/payment-intents/{intent_id}/quotes",
             post(quotes::create),
+        )
+        .route(
+            "/v1/payment-intents/{intent_id}/cancel",
+            post(payment_intents::cancel),
         )
 }
 

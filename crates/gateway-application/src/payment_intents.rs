@@ -10,6 +10,14 @@ use uuid::Uuid;
 use crate::{Clock, IdempotentCreate, PaymentIntentRepository, RepositoryError};
 
 const CREATE_ROUTE: &str = "POST /v1/payment-intents";
+const CANCEL_ROUTE: &str = "POST /v1/payment-intents/:id/cancel";
+
+/// The merchant's reason, kept in the audit trail and sent with the webhook.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancelPaymentIntent {
+    pub reason: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreatePaymentIntent {
@@ -95,6 +103,59 @@ where
         }
     }
 
+    /// Cancels an order that has no money on it. Repeating the same request
+    /// with the same key answers with the cancelled intent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceError::NotFound`] for an unknown intent, and
+    /// [`RepositoryError::PaymentIntentNotCancellable`] once money, a hold or a
+    /// decision exists for it.
+    pub async fn cancel(
+        &self,
+        merchant_id: Uuid,
+        actor_key_id: Uuid,
+        idempotency_key: &str,
+        intent_id: Uuid,
+        input: CancelPaymentIntent,
+    ) -> Result<CreatePaymentIntentResult, ServiceError> {
+        validate_idempotency_key(idempotency_key)?;
+        let reason = input
+            .reason
+            .as_deref()
+            .map(str::trim)
+            .filter(|reason| !reason.is_empty());
+        if reason.is_some_and(|reason| reason.chars().count() > 500) {
+            return Err(ServiceError::InvalidCancellationReason);
+        }
+        let payload = serde_json::to_vec(&(intent_id, reason))
+            .map_err(|error| ServiceError::Internal(error.to_string()))?;
+        let request_hash: [u8; 32] = Sha256::digest(payload).into();
+        match self
+            .repository
+            .cancel_idempotently(
+                merchant_id,
+                intent_id,
+                actor_key_id,
+                CANCEL_ROUTE,
+                idempotency_key,
+                &request_hash,
+                reason,
+            )
+            .await?
+        {
+            None => Err(ServiceError::NotFound),
+            Some(IdempotentCreate::Created(intent)) => Ok(CreatePaymentIntentResult {
+                intent,
+                replayed: false,
+            }),
+            Some(IdempotentCreate::Replayed(intent)) => Ok(CreatePaymentIntentResult {
+                intent,
+                replayed: true,
+            }),
+        }
+    }
+
     /// Loads a payment intent owned by the merchant.
     ///
     /// # Errors
@@ -136,6 +197,8 @@ pub enum ServiceError {
     InvalidIdempotencyKey,
     #[error("payment intent was not found")]
     NotFound,
+    #[error("the cancellation reason must be at most 500 characters")]
+    InvalidCancellationReason,
     #[error(transparent)]
     Money(#[from] gateway_domain::MoneyError),
     #[error(transparent)]
@@ -185,6 +248,19 @@ mod tests {
             _merchant_id: Uuid,
             _intent_id: Uuid,
         ) -> Result<Option<PaymentIntent>, RepositoryError> {
+            Ok(None)
+        }
+
+        async fn cancel_idempotently(
+            &self,
+            _merchant_id: Uuid,
+            _intent_id: Uuid,
+            _actor_key_id: Uuid,
+            _route: &str,
+            _idempotency_key: &str,
+            _request_hash: &[u8; 32],
+            _reason: Option<&str>,
+        ) -> Result<Option<IdempotentCreate>, RepositoryError> {
             Ok(None)
         }
     }

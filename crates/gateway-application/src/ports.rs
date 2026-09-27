@@ -65,6 +65,21 @@ pub trait PaymentIntentRepository: Send + Sync {
         merchant_id: Uuid,
         intent_id: Uuid,
     ) -> Result<Option<PaymentIntent>, RepositoryError>;
+
+    /// Cancels an order that has no money on it, under a merchant-scoped
+    /// idempotency key. `None` when the intent does not exist for this
+    /// merchant.
+    #[allow(clippy::too_many_arguments)]
+    async fn cancel_idempotently(
+        &self,
+        merchant_id: Uuid,
+        intent_id: Uuid,
+        actor_key_id: Uuid,
+        route: &str,
+        idempotency_key: &str,
+        request_hash: &[u8; 32],
+        reason: Option<&str>,
+    ) -> Result<Option<IdempotentCreate>, RepositoryError>;
 }
 
 #[async_trait]
@@ -139,6 +154,10 @@ pub enum RepositoryError {
     DuplicateReference,
     #[error("the payment intent cannot receive a quote in its current state")]
     PaymentIntentNotQuotable,
+    /// Money, a hold or a manual decision already exists for the order, or it
+    /// is paid: cancelling now would hide money that has to be dealt with.
+    #[error("the payment intent cannot be cancelled in its current state")]
+    PaymentIntentNotCancellable,
     #[error("the requested asset or collector address is unavailable")]
     CollectorUnavailable,
     #[error("all exact-amount slots are currently leased")]

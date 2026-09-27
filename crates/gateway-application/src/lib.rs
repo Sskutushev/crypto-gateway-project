@@ -37,7 +37,8 @@ pub use outbox::{
     OutboxService, PreviousSecret, WebhookEndpoint, WebhookSender,
 };
 pub use payment_intents::{
-    CreatePaymentIntent, CreatePaymentIntentResult, PaymentIntentService, ServiceError,
+    CancelPaymentIntent, CreatePaymentIntent, CreatePaymentIntentResult, PaymentIntentService,
+    ServiceError,
 };
 pub use ports::{
     ApiCredential, Clock, ExpiryResult, IdempotentCreate, IdempotentQuote, LeaseRepository,
