@@ -5,6 +5,7 @@ mod operator_reads;
 mod outbox;
 mod payment_intents;
 mod ports;
+mod provisioning;
 mod quotes;
 mod reconciliation;
 mod self_check;
@@ -33,7 +34,7 @@ pub use operator_reads::{
 };
 pub use outbox::{
     DeliveryAttempt, DeliveryResult, OutboxError, OutboxEvent, OutboxReport, OutboxRepository,
-    OutboxService, WebhookEndpoint, WebhookSender,
+    OutboxService, PreviousSecret, WebhookEndpoint, WebhookSender,
 };
 pub use payment_intents::{
     CreatePaymentIntent, CreatePaymentIntentResult, PaymentIntentService, ServiceError,
@@ -41,6 +42,10 @@ pub use payment_intents::{
 pub use ports::{
     ApiCredential, Clock, ExpiryResult, IdempotentCreate, IdempotentQuote, LeaseRepository,
     PaymentIntentRepository, QuoteContext, QuoteRepository, RepositoryError, SystemClock,
+};
+pub use provisioning::{
+    CollectorPolicy, EndpointState, IssuedApiKey, MerchantRecord, NewCollector, ProvisioningError,
+    ProvisioningRepository, ProvisioningService, RandomBytes, WebhookRegistration,
 };
 pub use quotes::{ExpirySweeper, IssueQuote, IssueQuoteResult, QuoteService, QuoteServiceError};
 pub use reconciliation::{

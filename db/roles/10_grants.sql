@@ -11,6 +11,7 @@
 --   operator_reads.rs operator reads
 --   oversight.rs      component health and reconciliation
 --   self_check.rs     start-up invariants, read by every process
+--   provisioning.rs   onboarding: merchants, keys, webhooks, collectors
 --
 -- A privilege that is not on this list is a privilege a process does not have,
 -- and a new table gets nothing until it is added here. That is the point: an
@@ -39,7 +40,7 @@ $$;
 
 GRANT USAGE ON SCHEMA public TO
     gateway_api, gateway_observer, gateway_verifier, gateway_payment,
-    gateway_reconciler, gateway_readonly;
+    gateway_reconciler, gateway_readonly, gateway_provisioner;
 
 -- Every process proves its rails at start-up (self_check.rs) and every leased
 -- worker holds its lease in component_leases.
@@ -157,3 +158,24 @@ TO gateway_readonly;
 -- ever read, and by nobody else until this file names it.
 ALTER DEFAULT PRIVILEGES FOR ROLE gateway_migrator IN SCHEMA public
     GRANT SELECT ON TABLES TO gateway_readonly, gateway_reconciler;
+
+-- Provisioner: the `gateway-worker admin` commands. It decides who can be paid
+-- and where, so it may create merchants, keys, webhook endpoints and
+-- collectors, and change only the columns that revoke, rotate or retire them.
+-- It never touches a quote, a transfer or an allocation, and it can neither
+-- rewrite a key's hash nor move a merchant between collector policies.
+GRANT SELECT ON
+    merchants, merchant_api_keys, webhook_endpoints, collector_addresses, chain_assets
+TO gateway_provisioner;
+GRANT INSERT ON
+    merchants, merchant_api_keys, webhook_endpoints, collector_addresses,
+    audit_events, domain_events
+TO gateway_provisioner;
+-- FOR SHARE on a merchant row needs an UPDATE privilege on some column.
+GRANT UPDATE (updated_at) ON merchants TO gateway_provisioner;
+GRANT UPDATE (revoked_at) ON merchant_api_keys TO gateway_provisioner;
+GRANT UPDATE (
+    secret_version, secret_fingerprint, previous_secret_version,
+    previous_secret_fingerprint, previous_valid_until, status, disabled_at
+) ON webhook_endpoints TO gateway_provisioner;
+GRANT UPDATE (state, retired_at) ON collector_addresses TO gateway_provisioner;

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use gateway_domain::{SigningSecret, WebhookError, sign_event};
+use gateway_domain::{SigningSecret, WebhookError, sign_event_with_all};
 use serde_json::{Value, json};
 use thiserror::Error;
 use time::{Duration, OffsetDateTime};
@@ -31,6 +31,16 @@ pub struct WebhookEndpoint {
     pub url: String,
     pub secret_version: i32,
     pub secret_fingerprint: [u8; 32],
+    /// The previous secret while its transition period lasts; `None` once it
+    /// has ended. Loaded only while still valid.
+    pub previous_secret: Option<PreviousSecret>,
+}
+
+/// A rotated-out secret that still signs deliveries until its deadline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreviousSecret {
+    pub version: i32,
+    pub fingerprint: [u8; 32],
 }
 
 /// What one delivery attempt did. Every variant is recorded; none of them is
@@ -281,8 +291,28 @@ where
                 continue;
             }
 
+            // During a rotation the previous secret signs too, so a merchant
+            // still verifying with it keeps accepting events. A previous
+            // secret that no longer matches its fingerprint is left out, not
+            // used: the current signature alone is still correct.
+            let previous = match endpoint.previous_secret {
+                Some(previous) => {
+                    let secret = SigningSecret::derive(
+                        &self.master_key,
+                        previous.version,
+                        endpoint.merchant_id,
+                        endpoint.id,
+                    )?;
+                    (secret.fingerprint() == previous.fingerprint).then_some(secret)
+                }
+                None => None,
+            };
             let timestamp = self.clock.now().unix_timestamp();
-            let signature = sign_event(&secret, timestamp, &body);
+            let mut signing = vec![&secret];
+            if let Some(previous) = previous.as_ref() {
+                signing.push(previous);
+            }
+            let signature = sign_event_with_all(&signing, timestamp, &body);
             let result = self
                 .sender
                 .deliver(endpoint, event.id, &body, &signature)

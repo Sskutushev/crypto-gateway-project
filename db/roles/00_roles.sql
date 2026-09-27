@@ -13,6 +13,7 @@
 --   CREATE ROLE gateway_reconciler_prod LOGIN PASSWORD '<from secrets>' IN ROLE gateway_reconciler;
 --   CREATE ROLE gateway_migrator_prod  LOGIN PASSWORD '<from secrets>' IN ROLE gateway_migrator;
 --   CREATE ROLE gateway_readonly_prod  LOGIN PASSWORD '<from secrets>' IN ROLE gateway_readonly;
+--   CREATE ROLE gateway_provisioner_prod LOGIN PASSWORD '<from secrets>' IN ROLE gateway_provisioner;
 --
 -- Observers are different: every chain source gets its own login role, named
 -- exactly as the source's `db_principal`, because row level security ties an
@@ -34,7 +35,8 @@ BEGIN
         'gateway_verifier',
         'gateway_payment',
         'gateway_reconciler',
-        'gateway_readonly'
+        'gateway_readonly',
+        'gateway_provisioner'
     ] LOOP
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
             EXECUTE format('CREATE ROLE %I NOLOGIN', role_name);

@@ -208,6 +208,7 @@ fn endpoint() -> Result<WebhookEndpoint, Box<dyn Error>> {
         url: "https://merchant.example/hooks".to_owned(),
         secret_version: 1,
         secret_fingerprint: secret.fingerprint(),
+        previous_secret: None,
     })
 }
 
@@ -345,5 +346,64 @@ async fn a_weak_master_key_is_refused_at_construction() -> TestResult {
     let refused = OutboxService::new(repository, sender, FixedClock, vec![1_u8; 8], "pod", 5);
 
     assert!(refused.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn during_a_rotation_each_delivery_is_signed_with_the_new_and_the_previous_secret()
+-> TestResult {
+    let previous = SigningSecret::derive(&master_key(), 1, MERCHANT, ENDPOINT)?;
+    let current = SigningSecret::derive(&master_key(), 2, MERCHANT, ENDPOINT)?;
+    let mut rotating = endpoint()?;
+    rotating.secret_version = 2;
+    rotating.secret_fingerprint = current.fingerprint();
+    rotating.previous_secret = Some(super::PreviousSecret {
+        version: 1,
+        fingerprint: previous.fingerprint(),
+    });
+    let repository = FakeRepository::with(vec![event()], vec![rotating]);
+    let sender = ScriptedSender::new(DeliveryResult::Accepted {
+        status: 200,
+        duration_ms: 1,
+    });
+
+    service(Arc::clone(&repository), Arc::clone(&sender))?
+        .deliver_due(10)
+        .await?;
+
+    let seen = sender.seen();
+    let (signature, body) = seen.first().ok_or("nothing was sent")?;
+    let timestamp = FixedClock.now().unix_timestamp();
+    let expected = gateway_domain::sign_event_with_all(&[&current, &previous], timestamp, body);
+    assert_eq!(signature, &expected);
+    // Each value verifies on its own: a merchant on either secret accepts it.
+    for secret in [&current, &previous] {
+        let alone = gateway_domain::sign_event(secret, timestamp, body);
+        let value = alone.split(",v1=").nth(1).ok_or("no signature value")?;
+        assert!(signature.contains(&format!("v1={value}")));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_previous_secret_that_does_not_match_its_fingerprint_is_left_out() -> TestResult {
+    let mut rotating = endpoint()?;
+    rotating.previous_secret = Some(super::PreviousSecret {
+        version: 7,
+        fingerprint: [9_u8; 32],
+    });
+    let repository = FakeRepository::with(vec![event()], vec![rotating]);
+    let sender = ScriptedSender::new(DeliveryResult::Accepted {
+        status: 200,
+        duration_ms: 1,
+    });
+
+    service(Arc::clone(&repository), Arc::clone(&sender))?
+        .deliver_due(10)
+        .await?;
+
+    let seen = sender.seen();
+    let (signature, _) = seen.first().ok_or("nothing was sent")?;
+    assert_eq!(signature.matches(",v1=").count(), 1);
     Ok(())
 }

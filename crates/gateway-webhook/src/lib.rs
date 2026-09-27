@@ -166,6 +166,19 @@ impl WebhookSender for HttpWebhookSender {
     }
 }
 
+/// Checks a merchant webhook URL against the same policy delivery enforces
+/// (https, port 443, no credentials, no fragment), so an address that would
+/// never be called is refused when it is registered, not at the first payment.
+///
+/// # Errors
+///
+/// Returns a readable reason when the URL is refused.
+pub fn validate_endpoint_url(raw_url: &str) -> Result<(), String> {
+    validate_url(raw_url)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 fn validate_url(raw_url: &str) -> Result<Url, SafeDeliveryError> {
     let authority = raw_url
         .strip_prefix("https://")
@@ -422,6 +435,7 @@ mod tests {
             url: url.to_owned(),
             secret_version: 1,
             secret_fingerprint: [0_u8; 32],
+            previous_secret: None,
         }
     }
 

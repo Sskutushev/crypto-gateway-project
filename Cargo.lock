@@ -1313,6 +1313,7 @@ dependencies = [
  "bs58",
  "gateway-application",
  "gateway-domain",
+ "k256",
  "reqwest",
  "serde",
  "serde_json",
@@ -1348,6 +1349,9 @@ dependencies = [
  "gateway-storage",
  "gateway-tron",
  "gateway-webhook",
+ "getrandom 0.3.4",
+ "serde_json",
+ "time",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1920,6 +1924,7 @@ dependencies = [
  "elliptic-curve",
  "once_cell",
  "sha2",
+ "signature",
 ]
 
 [[package]]

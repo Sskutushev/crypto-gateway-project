@@ -9,6 +9,7 @@
 //! and the process does not exit until every loop has stopped, so no in-flight
 //! transaction is abandoned by a disappearing runtime.
 
+mod admin;
 mod settings;
 
 use std::sync::Arc;
@@ -37,6 +38,12 @@ const AGENT_VERSION: &str = concat!("gateway-worker/", env!("CARGO_PKG_VERSION")
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // `gateway-worker admin ...` is a one-shot operator command, not a worker:
+    // it needs neither the worker roles nor the start-up self-check.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("admin") {
+        return admin::run(&args[1..]).await;
+    }
     init_tracing()?;
     let settings = WorkerSettings::from_env()?;
     let pool = PgPoolOptions::new()
