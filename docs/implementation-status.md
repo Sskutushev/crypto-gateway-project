@@ -1,18 +1,119 @@
 # Implementation Status
 
-Last updated: 2026-09-24
+Last updated: 2026-09-27
 
 ## Repository state
 
-- Current `main` baseline:
-  `c19028965e93f4d3731d67fec5c219d4fbd0b5e2`.
-- Active hardening branch at this handoff: `feat/production-readiness-p0`.
-- Remote: `https://github.com/Sskutushev/crypto-gateway-project.git`
-- `main` exists. Do not recreate it or commit directly to it; verify the remote
+- `main` baseline: `c19028965e93f4d3731d67fec5c219d4fbd0b5e2`. `main`
+  exists; do not recreate it or commit directly to it, and verify the remote
   branch-protection settings before release work.
+- Active branch: `feat/merchant-owned-collectors`, stacked on
+  `feat/production-readiness-p0` (PR #16). Head at this update: `f6ac2d3`.
+  The branch has no pull request of its own yet.
+- Remote: `https://github.com/Sskutushev/crypto-gateway-project.git`
+- No release has been tagged.
 - This file distinguishes implemented repository capabilities from external
   production readiness. It does not certify providers, KYT, secrets, backups,
   disaster recovery, capacity, legal approval or a mainnet deployment.
+
+## Session 2026-09-27: money binding, merchant-owned collectors, onboarding
+
+Branch `feat/merchant-owned-collectors`, stacked on
+`feat/production-readiness-p0` (PR #16, whose head is `189d3ac`).
+
+Commits on top of the P0 work:
+
+- `189d3ac` — money binding. Manual `honor` binds the transfer to the
+  attempt's collector, its quote's asset and rail, an open attempt and
+  intent, and the late-payment window, all read from locked rows. Paid and
+  partially-paid transitions move only from an explicit set of states and
+  require exactly one updated row; a refusal rolls the whole settlement back
+  before a claim, event or webhook, and automatic settlement parks the
+  transfer as `held` / `manual_required`. Migration 0014 adds the collector to
+  allocations and claims with composite foreign keys to the attempt and the
+  transfer. Webhook delivery ignores system proxies and bounds DNS
+  resolution. Supply chain: documented advisory ignores in
+  `.cargo/audit.toml` and `deny.toml`, and a CI guard that fails if an
+  advisory ignored as not compiled starts being compiled.
+- `39f9d17` — merchant-owned collectors. Migration 0015 adds
+  `merchants.collector_policy` (`own` by default for new merchants; merchants
+  that existed before are `shared`), `collector_addresses.merchant_id`, and a
+  trigger on `payment_quotes` refusing a quote on a collector that does not
+  receive money for its merchant. Quote context and the issue-time re-check
+  select by policy with no fallback. The self-check pins every active or
+  receiving-only collector; the two-way agreement with
+  `GATEWAY_EXPECTED_COLLECTORS` covers operator collectors only, and `none`
+  declares a deployment without them.
+- `6fc15a2` — onboarding. `gateway-worker admin` (`apps/gateway-worker/src/admin.rs`):
+  `merchant-create`, `api-key-issue`, `api-key-revoke`, `webhook-add`,
+  `webhook-rotate`, `webhook-disable`, `webhook-test`, `collector-statement`,
+  `collector-register`, `collector-retire`, each audited in its own
+  transaction and printing one JSON object. TIP-191 ownership proof
+  (`crates/gateway-tron/src/ownership.rs`): a fixed statement naming the
+  gateway purpose, merchant, address and issue time, valid for 24 hours and
+  at most five minutes in the future. Migration 0016 webhook key ring:
+  rotation with a transition period in which deliveries carry
+  `t=..,v1=<new>,v1=<previous>`. The `gateway_provisioner` role with
+  column-level grants (`db/roles/00_roles.sql`, `db/roles/10_grants.sql`).
+  `examples/` (webhook receivers in TypeScript and Python, create-payment,
+  Postman), `docs/money-invariants.md`, `docs/scope-and-limits.md`.
+- `64b0e3a` — the expiry batch no longer stalls on a partially paid or held
+  intent: the attempt always expires, only an intent still awaiting its first
+  money becomes `expired`, and the closure on one with money is audited as
+  `payment_intent.quote_window_closed`. Covered by the PostgreSQL scenario
+  `a_partially_paid_intent_never_stops_the_expiry_of_the_others`.
+- `f6ac2d3` — lateness is judged by the block time against the quote's
+  `expires_at`, not by the attempt's status when settlement runs; the manual
+  honor window uses the same half-open boundary (`block_time <
+  late_payment_until`).
+- Documentation (this update): README quickstart onboards through the admin
+  CLI, with Integrate and Scope pointers; `docs/owner-setup.md`,
+  `docs/merchant-integration.md`, `docs/operator-runbook.md` and
+  `CHANGELOG.md` describe the CLI, collector policies, the ownership proof,
+  the provisioner role, secret rotation and the audit trail.
+
+Verified (reported for the tree carrying `189d3ac`, `39f9d17` and `6fc15a2`,
+in the `crypto-gateway-dev` container): `cargo fmt --all -- --check` clean;
+`cargo clippy --workspace --all-targets --locked -- -D warnings` clean;
+`cargo test --workspace --locked` passed; PostgreSQL scenarios passed —
+storage 40, HTTP 3, and the 2 role scenarios, which now include the
+provisioner role's refusals. Gate results for `64b0e3a` and `f6ac2d3` are not
+recorded here; rerun the full set on the current head before opening the pull
+request. Not run in this session: `cargo deny`, `cargo audit`, the GitHub
+Actions workflow, a testnet payment.
+
+Working tree at this update: uncommitted work in progress by another
+engineer (`crates/gateway-storage/src/oversight.rs`,
+`crates/gateway-storage/src/postgres.rs`, untracked
+`db/migrations/0017_attempts_and_checkout.sql`). It is not described above
+and is not verified.
+
+Next smallest slices, in order:
+
+1. Record the gates for `64b0e3a` and `f6ac2d3` (the expiry defect for
+   partially paid intents is fixed in `64b0e3a`), and update the "Known gap"
+   and late-payment rows of `docs/scope-and-limits.md`, which still describe
+   the behaviour before those two commits.
+2. A cancel route for an intent that has no money on it, audited, with the
+   existing refusal path for money that arrives afterwards.
+3. Re-quoting an intent: a new attempt supersedes the previous one, whose
+   lease stays until its `late_payment_until`, instead of today's one quote
+   per intent.
+4. The quote response carries the token's `decimals` and an exact display
+   amount, so merchants stop hard-coding decimals.
+5. A hosted checkout page for the payer (address, exact amount, expiry).
+6. The first release tag, once the branch stack is merged and CI is green on
+   `main`.
+
+Smaller gaps found while documenting: no admin command moves a collector to
+`receiving_only` (the runbook's retirement procedure uses one unaudited SQL
+update for it), and the CLI has no list commands.
+
+Still needs the owner: genuinely independent TRON providers and keys, a
+sustained Nile testnet run with a merchant address registered by signature,
+an external security audit, and the remaining steps of `docs/owner-setup.md`
+(branch protection, master key, provisioner and process credentials,
+policies, KYT, legal).
 
 ## Product decisions
 
@@ -23,6 +124,8 @@ Last updated: 2026-09-24
 - PostgreSQL is the sole operational source of truth.
 - Merchant fulfillment is a signed webhook contract backed by a transactional
   outbox.
+- By default a merchant is paid on its own address (`collector_policy =
+  'own'`); an operator-owned address is an explicit `shared` choice.
 - Apache-2.0 is the initial license choice; the owner may change it before the
   first public release.
 - First rail: USDT TRC20. ERC20 and TON are later adapters.
@@ -117,9 +220,12 @@ Last updated: 2026-09-24
   A fulfilment with no settlement behind it is recorded as a hard stop that
   names no rail, and the scenario says so.
 - Start-up self-check. Both binaries recompute the pins of every receiving
-  collector and active asset from stored bytes and require them to be named by
+  collector and active asset from stored bytes and require every operator
+  collector and every active asset to be named by
   `GATEWAY_EXPECTED_COLLECTORS` and `GATEWAY_EXPECTED_ASSETS`, in both
-  directions; every active source, asset and collector must carry the process's
+  directions (since 2026-09-27 merchant-owned collectors are pinned but not
+  listed, and `none` declares a deployment without operator collectors);
+  every active source, asset and collector must carry the process's
   `GATEWAY_CHAIN_ENVIRONMENT`; every active asset needs an active finality
   policy; no block cursor may stand ahead of the head its own source reported;
   and PostgreSQL and the process may not disagree by more than
@@ -128,9 +234,9 @@ Last updated: 2026-09-24
   row and its reason, and a passed report is cached for at most ten seconds
   under a visible `evaluated_at`.
 - Least-privilege database roles as applied SQL. `db/roles/00_roles.sql`
-  creates the migrator, api, observer, verifier, payment, reconciler and
-  readonly groups; `10_grants.sql` moves every table under the migrator and
-  grants each group exactly the tables its crate reads and writes;
+  creates the migrator, api, observer, verifier, payment, reconciler,
+  readonly and (since 2026-09-27) provisioner groups; `10_grants.sql` moves
+  every table under the migrator and grants each group exactly the tables its crate reads and writes;
   `20_observer_source_role.sql.template` binds one login role per chain
   source to its `db_principal`. Migration 0011 puts row level security on
   `chain_cursors`, so an observer moves its own recovery point and nobody
@@ -168,24 +274,34 @@ Last updated: 2026-09-24
   `scripts/create-dev-operator.sql` seed a Nile testnet rail and an operator
   key; evidence-bundle timestamps now serialise as RFC 3339 like every other
   response.
+- Manual resolution of parked money. Admin-only `honor` of a finalized
+  held/unmatched transfer through the existing atomic settlement
+  transaction, `reject` of an unallocated transfer, and a recorded external
+  overpayment disposition. Every command is idempotent and audited; the
+  gateway still does not send refunds. Since 2026-09-27 `honor` is bound to
+  the attempt's collector, asset, rail, open states and late window.
+- Merchant-owned collectors, the admin CLI for onboarding, the TIP-191
+  ownership proof, the webhook key ring with rotation, the `webhook.test`
+  event and the `gateway_provisioner` role: see the 2026-09-27 session above.
 
 ## In progress
 
 - Dependency advisory scanning needs a reliable RustSec index connection; the
   local full `cargo deny check` stalled while fetching the advisory database.
+  Ignored advisories are now documented, with a CI guard (2026-09-27); the
+  CI job is the authority on the current result.
 - Risk screening has an attributable push path and no provider behind it: a
   transfer nobody screened reads as skipped, which the settlement bands treat
   as not screened, never as clean.
-- Admin-only manual resolution now honors a finalized held/unmatched transfer
-  through the existing atomic settlement transaction, rejects an unallocated
-  transfer, or records an externally completed overpayment disposition. Every
-  command is idempotent and audited; the gateway still does not send refunds.
 
 ## Next slices
 
+The product slices for the current branch are listed in the 2026-09-27
+session above. Before real money, independently of them:
+
 1. The owner's remaining steps in `docs/owner-setup.md`: verify repository and
-   branch-protection settings, provision providers, collector, master key and
-   scoped credentials, approve policies, then run a sustained testnet soak
+   branch-protection settings, provision providers, master key, provisioner
+   and scoped credentials, register collectors, approve policies, then run a sustained testnet soak
    with genuinely independent providers.
 2. Integrate a real KYT provider and exercise the implemented operator decision
    paths for held, unmatched, overpaid and late payments in the testnet soak.
@@ -200,6 +316,9 @@ The entries below record what passed for the named tree and date. They are
 evidence for those revisions, not a claim that the current working tree, a
 GitHub workflow, external providers or a deployed mainnet environment is
 healthy. Run the relevant checks again after every change.
+
+- Money binding, merchant-owned collectors and onboarding (2026-09-27): see
+  the session section above for the gates reported and what was not run.
 
 - Open-source packaging (2026-09-24), in `crypto-gateway-dev`: fmt clean;
   clippy with `-D warnings` clean; `cargo test --workspace --locked` passed
@@ -335,8 +454,10 @@ links were listed, not fetched.
 - Managed PostgreSQL choice and credentials (later; local development does not
   need them).
 - Two genuinely independent TRON data sources and API keys.
-- Corporate collector wallet address for each enabled network. Public address
-  only; never provide a private key or seed phrase.
+- For merchants on `shared`: the operator collector address for each enabled
+  network. For merchants on `own`: each merchant's address and its signed
+  ownership statement. Public addresses only; never provide a private key or
+  seed phrase.
 - KYT provider/account and policy thresholds before automatic settlement.
 - Legal entity, supported payer jurisdictions, sanctions/KYC requirements, and
   written approval before enabling a production payment policy.

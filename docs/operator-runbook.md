@@ -1,8 +1,11 @@
 # Operator runbook
 
 The operator feeds the gateway the evidence it will not invent, reads what it
-found, and is the only party that can reopen a rail. Every route below needs
-an operator key; the scope each one needs is in [`openapi.json`](openapi.json).
+found, onboards merchants, and is the only party that can reopen a rail.
+Every HTTP route below needs an operator key; the scope each one needs is in
+[`openapi.json`](openapi.json). Onboarding and rotation run through the admin
+CLI, `gateway-worker admin <command>`, connected as the `gateway_provisioner`
+database role.
 
 ## Keys and scopes
 
@@ -11,7 +14,7 @@ an operator key; the scope each one needs is in [`openapi.json`](openapi.json).
 | `ingest` | submit price readings and rail health | pricing and rail-health feeders |
 | `risk_ingest` | submit current screening decisions for one DB-bound provider | one KYT integration credential per provider |
 | `read` | read the overview, every queue, evidence bundles, `/metrics` | people, dashboards, Prometheus |
-| `admin` | close and reopen a rail | a person, never a job |
+| `admin` | close and reopen a rail, resolve parked money | a person, never a job |
 
 A key carries only the scopes its holder needs. Prometheus gets a `read` key.
 An `ingest` key cannot submit screening decisions. A `risk_ingest` key must
@@ -91,7 +94,7 @@ The queues, each a keyset page (`limit`, `before`, `next_before`):
 |---|---|
 | `/v1/operator/conflicts` | Sources disagreed about a chain event. No fact was made; decide which source lied. |
 | `/v1/operator/unmatched-transfers` | Money that matched no reservation exactly. Refund, credit or match by hand. |
-| `/v1/operator/held-payments` | Settlement bands wanted a person: amount over the auto-settle tier, risk review, ambiguity. |
+| `/v1/operator/held-payments` | Settlement bands wanted a person: amount over the auto-settle tier, risk review, ambiguity, a late payment, or a payment whose intent stopped being payable. |
 | `/v1/operator/dead-letters` | Events no endpoint accepted after every retry, with the delivery history. |
 | `/v1/operator/reconciliation/runs` | Every run, clean or not. |
 | `/v1/operator/reconciliation/discrepancies` | Findings nobody has resolved. |
@@ -111,7 +114,14 @@ narrow:
 - `honor` assigns one finalized `held`/`unmatched` transfer to an existing
   intent and attempt. `allocate_raw` must equal the exact safe allocation
   `min(outstanding obligation, unallocated transfer)`; the normal claim,
-  allocation, fulfilment, event and outbox transaction is reused.
+  allocation, fulfilment, event and outbox transaction is reused. The binding
+  is read from locked rows, never from the request: the transfer must be at
+  the attempt's own collector, in its quote's asset, on its chain, network
+  and environment; the attempt must be `awaiting_payment` or `expired`; the
+  intent must be `awaiting_payment`, `partially_paid`, `risk_hold` or
+  `expired`; and the transfer's block time must be before the attempt's
+  `late_payment_until`. Anything else is a `409` and nothing is
+  written. A paid or cancelled intent is final.
 - `reject` closes a finalized held/unmatched transfer only when no allocation
   exists.
 - `record_remainder_disposition` records how an overpayment remainder was
@@ -122,6 +132,198 @@ narrow:
 An identical replay returns the first result. Reusing the key for a different
 command returns `idempotency_conflict`. Never repair these states with direct
 SQL updates.
+
+Automatic settlement follows the same rules: a payment state moves only from
+an explicit set of states and must change exactly one row. When the intent or
+attempt stopped being payable between the match and the settlement (cancelled,
+or paid through another attempt), the whole settlement rolls back and the
+transfer is parked as `held` with a `manual_required` decision instead of
+being retried forever. It appears in `/v1/operator/held-payments`.
+
+## Onboarding with the admin CLI
+
+```
+gateway-worker admin <command> --actor <your name> [flags]
+```
+
+The CLI reads `GATEWAY_DATABASE_URL` (the provisioner login) and, for
+`webhook-add` and `webhook-rotate`, `GATEWAY_WEBHOOK_MASTER_KEY` — the same
+master key the outbox worker signs with. Every command prints one JSON
+object on stdout and writes its change and one `audit_events` row in the same
+transaction. A secret (`api-key-issue`'s `secret`, a webhook
+`signing_secret`) appears only in that output; store it before closing the
+terminal.
+
+| Command | Flags | Prints |
+|---|---|---|
+| `merchant-create` | `--external-id`, `--name`, `[--collector-policy own\|shared]` (default `own`) | `merchant_id`, `external_id`, `collector_policy`, `created` |
+| `api-key-issue` | `--merchant`, `--label` | `key_id`, `merchant_id`, `prefix`, `secret` |
+| `api-key-revoke` | `--key`, `--reason` | `key_id`, `revoked` |
+| `webhook-add` | `--merchant`, `--url`, `[--description]` | `endpoint_id`, `merchant_id`, `url`, `secret_version`, `signing_secret` |
+| `webhook-rotate` | `--endpoint`, `--reason`, `[--transition-hours 1..720]` (default 72) | `endpoint_id`, `secret_version`, `signing_secret`, `previous_secret_signs_until` |
+| `webhook-disable` | `--endpoint`, `--reason` | `endpoint_id`, `disabled` |
+| `webhook-test` | `--endpoint` | `endpoint_id`, `event_id` |
+| `collector-statement` | `--merchant`, `--address`, `[--issued]`; no `--actor`, no database | `statement`, `issued`, `valid_for_hours` |
+| `collector-register` | `--asset`, `--address`, and either `--merchant --issued --signature` or `[--merchant] --manual-evidence` | `collector_id`, `merchant_id`, `address`, `ownership_evidence` |
+| `collector-retire` | `--collector`, `--reason` | `collector_id`, `retired` |
+
+The CLI has no list commands. Read identifiers with the `gateway_readonly`
+role, for example
+`SELECT id, key_prefix, label, created_at, revoked_at FROM merchant_api_keys WHERE merchant_id = '<uuid>'`.
+
+### Rotate a webhook secret
+
+Rotate when a merchant's secret may have leaked, when a person who saw it
+leaves, or on your schedule. One endpoint's rotation never affects another.
+
+1. Agree a transition period with the merchant: long enough for them to
+   deploy (72 hours by default, 1 to 720 hours).
+2. Rotate:
+
+   ```
+   gateway-worker admin webhook-rotate --actor <you> --endpoint <uuid> \
+     --reason '<why>' --transition-hours 72
+   ```
+
+   Hand `signing_secret` to the merchant over a trusted channel, with
+   `previous_secret_signs_until`.
+3. Until that moment every delivery carries
+   `Gateway-Signature: t=<t>,v1=<new>,v1=<previous>`. The merchant adds the
+   new secret beside the old one (a verifier that accepts any matching `v1`
+   keeps working), then removes the old one before the transition ends.
+4. Confirm with a test event once the merchant says the new secret is
+   deployed:
+
+   ```
+   gateway-worker admin webhook-test --actor <you> --endpoint <uuid>
+   ```
+
+   The `webhook.test` event is delivered by the outbox worker like any other
+   event, to every active endpoint of that merchant. Check the delivery in
+   `webhook_deliveries` for the printed `event_id`, or ask the merchant; a
+   refused test shows up there with its status, and after every retry in
+   `/v1/operator/dead-letters`.
+
+If the secret leaked, keep the transition short: the previous secret stays
+valid for signing until it ends. A rotation started from a stale secret
+version, or two rotations at once, is refused rather than overwritten; run
+it again. Rotating a secret does not change the master key; rotating the
+master key re-issues every endpoint's secret.
+
+### Revoke a leaked API key
+
+1. Find the key: its `prefix` (the first twelve characters, `gw_...`) against
+   `merchant_api_keys.key_prefix`, as above.
+2. Revoke it at once; the next request with it is refused:
+
+   ```
+   gateway-worker admin api-key-revoke --actor <you> --key <key uuid> --reason '<what leaked, where>'
+   ```
+
+3. Issue the merchant a replacement with `api-key-issue` and hand it over a
+   trusted channel. For a planned rotation rather than a leak, issue the new
+   key first, let the merchant deploy it, then revoke the old one.
+4. Review what the leaked key did: every intent and quote it created is in
+   `audit_events` with `actor_type = 'api_key'` and `actor_id = <key uuid>`.
+
+A merchant key can create intents and quotes only for its own merchant; it
+cannot move money or change where money goes.
+
+### Register a merchant address with proof
+
+For a merchant on the `own` policy. The merchant proves control of the
+address by signing; you never see its key.
+
+1. Build the statement and send it to the merchant:
+
+   ```
+   gateway-worker admin collector-statement --merchant <uuid> --address <T...>
+   ```
+
+2. The merchant signs the `statement` text exactly in TronLink
+   (`signMessageV2`) with the wallet that holds the address and returns the
+   hex signature.
+3. Within 24 hours of `issued`, register it:
+
+   ```
+   gateway-worker admin collector-register --actor <you> --asset <asset uuid> \
+     --address <T...> --merchant <uuid> --issued <issued> --signature <hex>
+   ```
+
+A wrong signer, a stale or future-dated statement, a merchant on `shared`,
+an inactive asset, or an address already registered for the asset is
+refused. Only when the merchant genuinely cannot sign, replace
+`--issued`/`--signature` with `--manual-evidence '<who checked, and how>'`;
+it is recorded verbatim.
+
+The address is quoted for that merchant only, from the next quote on. Quote
+selection takes the merchant's oldest active address for the asset, so a
+second address is not used while the first is still active. It needs no
+change to `GATEWAY_EXPECTED_COLLECTORS`. An operator address (no
+`--merchant`, `--manual-evidence` only) does: add it to
+`GATEWAY_EXPECTED_COLLECTORS` for every process in the same deployment, or
+processes refuse to start and the API reports not ready.
+
+### Retire a collector
+
+`collector-retire` moves an address straight to `retired`. From then on it is
+not quoted, and observers refuse any transfer to it as `retired_collector`
+(logged as "a payment reached a retired collector address"), so money that
+arrives there later is outside the gateway's books. Retire only when nothing
+can still be paid there:
+
+1. Stop new quotes on it first. No command moves an address to
+   `receiving_only` yet; do it as the provisioner role
+   (`UPDATE collector_addresses SET state = 'receiving_only' WHERE id = '<uuid>'`)
+   and record it in your change log, because no audit row is written.
+   Receiving-only addresses are still watched and still pinned.
+2. Wait until no reservation remains on it:
+   `SELECT count(*) FROM amount_leases WHERE collector_address_id = '<uuid>'`
+   returns 0. A lease is archived only after its `late_payment_until`.
+3. Retire it:
+
+   ```
+   gateway-worker admin collector-retire --actor <you> --collector <uuid> --reason '<why>'
+   ```
+
+4. For an operator address, remove it from `GATEWAY_EXPECTED_COLLECTORS` in
+   the same deployment (`none` if no operator address is left). For a
+   merchant on `own`, register the replacement address before step 1, or
+   its quotes are `503 quote_unavailable` until you do.
+
+If the key of an address is compromised, skip the wait: retire at once and
+handle anything paid to it afterwards outside the gateway.
+
+### Where each action is recorded
+
+Every admin command writes one `audit_events` row with
+`actor_type = 'operator'`, the `--actor` name in `payload.actor`, and the
+reason in `reason` where the command takes one:
+
+| `action` | `resource_type` | Also in `payload` |
+|---|---|---|
+| `merchant.create` | `merchant` | `external_id`, `collector_policy` |
+| `api_key.issue` | `merchant_api_key` | `prefix`, `label` |
+| `api_key.revoke` | `merchant_api_key` | |
+| `webhook_endpoint.create` | `webhook_endpoint` | `url` |
+| `webhook_endpoint.rotate_secret` | `webhook_endpoint` | `from_version`, `to_version`, `previous_valid_until` |
+| `webhook_endpoint.disable` | `webhook_endpoint` | |
+| `webhook_endpoint.test` | `webhook_endpoint` | `event_id` |
+| `collector.register` | `collector_address` | `address`, `asset_id`, `ownership_evidence` |
+| `collector.retire` | `collector_address` | |
+
+```
+SELECT created_at, action, payload->>'actor' AS actor, resource_id, reason, payload
+  FROM audit_events
+ WHERE actor_type = 'operator' AND resource_type = 'webhook_endpoint'
+   AND resource_id = '<endpoint uuid>'
+ ORDER BY created_at;
+```
+
+A refused command writes nothing, neither the change nor an audit row. The
+expiry worker records `payment_intent.quote_window_closed` when a quote
+closes on an intent that already has money on it; that intent keeps its
+status for a person.
 
 ## When reconciliation says `hard_stop`
 
@@ -163,4 +365,6 @@ From `/metrics`, scraped with a `read` key:
 | Expiry sweep stuck | `time() - gateway_expiry_last_success_timestamp_seconds > 5 × interval` |
 
 Absent telemetry is not health: the scrape fails as a whole when storage
-cannot answer, so alert on the scrape failing too.
+cannot answer, so alert on the scrape failing too. Also alert on the observer
+log line "a payment reached a retired collector address": it is money outside
+the books.
