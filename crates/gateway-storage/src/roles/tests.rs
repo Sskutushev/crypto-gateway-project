@@ -79,10 +79,13 @@ async fn each_role_is_refused_the_writes_that_are_not_its_own() -> TestResult {
 
     // The roles are dropped whether or not the assertions hold, so a failed
     // run does not leave logins behind for the next one to trip over.
-    let outcome = match prove(&pool).await {
-        Ok(()) => prove_provisioner(&pool).await,
-        failed => failed,
-    };
+    let mut outcome = prove(&pool).await;
+    if outcome.is_ok() {
+        outcome = prove_provisioner(&pool).await;
+    }
+    if outcome.is_ok() {
+        outcome = prove_dual_control_honor(&pool).await;
+    }
     drop_logins(&pool).await?;
     outcome
 }
@@ -527,5 +530,99 @@ async fn prove_provisioner(owner: &PgPool) -> TestResult {
             .await,
         "provisioner rewriting an event",
     )?;
+    Ok(())
+}
+
+/// The two-operator honor runs end to end under the API's own login: the
+/// proposal, the approval and the money it writes need no privilege the API
+/// group does not hold.
+#[allow(clippy::too_many_lines)]
+async fn prove_dual_control_honor(owner: &PgPool) -> TestResult {
+    let merchant = Uuid::now_v7();
+    let (price, policy, health, intent, quote, attempt, transfer) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    sqlx::query("INSERT INTO merchants(id,external_id,display_name,status,collector_policy) VALUES($1,'roles-honor','Roles Honor','active','shared')")
+        .bind(merchant).execute(owner).await?;
+    sqlx::query("INSERT INTO price_snapshots(id,asset_id,fiat_currency,rate_numerator,rate_denominator,sources,observed_at) VALUES($1,$2,'USD',1,1,'[{},{}]'::jsonb,now())")
+        .bind(price).bind(ASSET_ID).execute(owner).await?;
+    sqlx::query("INSERT INTO quote_policies(id,asset_id,fiat_currency,version,status,quote_ttl_seconds,late_payment_window_seconds,amount_slot_count,max_price_age_seconds,max_policy_age_seconds,max_rail_health_age_seconds,observed_at) VALUES($1,$2,'USD','roles-v1','active',900,3600,10000,300,300,300,now())")
+        .bind(policy).bind(ASSET_ID).execute(owner).await?;
+    sqlx::query("INSERT INTO rail_health_snapshots(id,asset_id,health,observed_at) VALUES($1,$2,'healthy',now())")
+        .bind(health).bind(ASSET_ID).execute(owner).await?;
+    sqlx::query("INSERT INTO payment_intents(id,merchant_id,amount_minor,currency,status,reference,created_at,updated_at) VALUES($1,$2,100,'USD','awaiting_payment','roles-honor',now(),now())")
+        .bind(intent).bind(merchant).execute(owner).await?;
+    sqlx::query("INSERT INTO payment_quotes(id,merchant_id,payment_intent_id,asset_id,collector_address_id,fiat_currency,fiat_amount_minor,base_amount_raw,amount_raw,rate_numerator,rate_denominator,price_sources,price_observed_at,policy_version,rail_health_observed_at,created_at,expires_at,late_payment_until,price_snapshot_id,quote_policy_id,rail_health_snapshot_id) VALUES($1,$2,$3,$4,$5,'USD',100,5000,5000,1,1,'[{}]'::jsonb,now(),'roles-v1',now(),now(),now()+interval '1 hour',now()+interval '2 hours',$6,$7,$8)")
+        .bind(quote).bind(merchant).bind(intent).bind(ASSET_ID).bind(COLLECTOR_ID).bind(price).bind(policy).bind(health).execute(owner).await?;
+    sqlx::query("INSERT INTO payment_attempts(id,merchant_id,payment_intent_id,quote_id,collector_address_id,expected_amount_raw,status,quote_expires_at,late_payment_until,created_at,updated_at) VALUES($1,$2,$3,$4,$5,5000,'awaiting_payment',now()+interval '1 hour',now()+interval '2 hours',now(),now())")
+        .bind(attempt).bind(merchant).bind(intent).bind(quote).bind(COLLECTOR_ID).execute(owner).await?;
+    sqlx::query("INSERT INTO chain_transfers(id,asset_id,collector_address_id,chain,network,chain_environment,tx_hash,event_index,block_number,block_hash,block_time,token_key,from_address_key,from_address_text,to_address_key,to_address_text,amount_raw,decimals,canonicalization_policy,verifier_version,canonicalized_at) VALUES($1,$2,$3,'tron','nile','testnet','roles-honor-tx',0,5,'roles-block',now(),'\x07','\x09','TFrom','\x03','TCollector',5000,6,'test','test',now())")
+        .bind(transfer).bind(ASSET_ID).bind(COLLECTOR_ID).execute(owner).await?;
+    sqlx::query("INSERT INTO chain_transfer_state_current(transfer_id,state,state_version,updated_at) VALUES($1,'finalized',1,now())")
+        .bind(transfer).execute(owner).await?;
+    sqlx::query("INSERT INTO chain_transfer_processing(transfer_id,allocated_raw,processing_state,updated_at) VALUES($1,0,'unmatched',now())")
+        .bind(transfer).execute(owner).await?;
+    let mut keys = Vec::new();
+    for label in ["roles-proposer", "roles-approver"] {
+        let id = Uuid::now_v7();
+        sqlx::query("INSERT INTO operator_api_keys(id,key_prefix,secret_hash,label,scopes) VALUES($1,'cg_roles',$2,$3,$4)")
+            .bind(id)
+            .bind(id.as_bytes().repeat(2))
+            .bind(label)
+            .bind(vec!["read", "admin"])
+            .execute(owner)
+            .await?;
+        keys.push(gateway_application::OperatorCredential {
+            key_id: id,
+            label: label.to_owned(),
+            scopes: vec![
+                gateway_application::OperatorScope::Read,
+                gateway_application::OperatorScope::Admin,
+            ],
+        });
+    }
+
+    let api = connect_as("roles_scenario_api").await?;
+    let service = gateway_application::OperationsService::new(
+        std::sync::Arc::new(crate::PostgresRepository::new(api)),
+        gateway_application::SystemClock,
+    );
+    let honor = gateway_application::ManualResolution {
+        action: gateway_domain::ManualResolutionAction::Honor,
+        transfer_id: transfer,
+        payment_intent_id: Some(intent),
+        attempt_id: Some(attempt),
+        allocate_raw: Some("5000".parse()?),
+        remainder_raw: None,
+        disposition: None,
+        external_reference: None,
+        reason: "roles scenario".to_owned(),
+    };
+    let proposal = service
+        .propose_honor(&keys[0], "roles-honor-proposal-1", &honor)
+        .await?;
+    let paid = service
+        .approve_honor(
+            &keys[1],
+            proposal.id,
+            "roles-honor-approval-1",
+            "second pair of eyes",
+        )
+        .await?;
+    assert_eq!(
+        paid.allocated_raw.map(|raw| raw.to_string()).as_deref(),
+        Some("5000")
+    );
+    let status: String = sqlx::query_scalar("SELECT status FROM payment_intents WHERE id = $1")
+        .bind(intent)
+        .fetch_one(owner)
+        .await?;
+    assert_eq!(status, "paid");
     Ok(())
 }

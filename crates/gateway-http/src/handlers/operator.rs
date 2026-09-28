@@ -12,7 +12,8 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use gateway_application::{
-    ManualResolution, OperationsError, RedeliveryError, RiskSubmission, WebhookRedelivery,
+    ManualResolution, ManualResolutionResult, OperationsError, RedeliveryError, RiskSubmission,
+    WebhookRedelivery,
 };
 use gateway_domain::{
     CurrencyCode, ManualResolutionAction, PriceReading, RailHealth, RawAmount,
@@ -251,7 +252,7 @@ pub struct ManualResolutionBody {
 }
 
 #[derive(Debug, Serialize)]
-pub struct ManualResolutionResponse {
+pub(crate) struct ManualResolutionResponse {
     id: Uuid,
     action: ManualResolutionAction,
     transfer_id: Uuid,
@@ -302,9 +303,12 @@ pub async fn resolve_manual(
     } else {
         StatusCode::CREATED
     };
-    Ok((
-        status,
-        Json(ManualResolutionResponse {
+    Ok((status, Json(result.into())))
+}
+
+impl From<ManualResolutionResult> for ManualResolutionResponse {
+    fn from(result: ManualResolutionResult) -> Self {
+        Self {
             id: result.id,
             action: result.action,
             transfer_id: result.transfer_id,
@@ -314,8 +318,8 @@ pub async fn resolve_manual(
             allocated_raw: result.allocated_raw.map(|v| v.to_string()),
             remainder_raw: result.remainder_raw.map(|v| v.to_string()),
             replayed: result.replayed,
-        }),
-    ))
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -415,6 +419,15 @@ pub fn status_for(error: &OperationsError) -> (StatusCode, &'static str) {
         OperationsError::ManualResolutionConflict => {
             (StatusCode::CONFLICT, "manual_resolution_conflict")
         }
+        OperationsError::DualControlRequired => (StatusCode::CONFLICT, "dual_control_required"),
+        OperationsError::SameOperator => (StatusCode::FORBIDDEN, "dual_control_same_operator"),
+        OperationsError::HonorProposalNotFound => {
+            (StatusCode::NOT_FOUND, "honor_proposal_not_found")
+        }
+        OperationsError::HonorProposalNotPending => {
+            (StatusCode::CONFLICT, "honor_proposal_not_pending")
+        }
+        OperationsError::HonorProposalExpired => (StatusCode::CONFLICT, "honor_proposal_expired"),
         OperationsError::InvalidRiskEvaluation => {
             (StatusCode::UNPROCESSABLE_ENTITY, "invalid_risk_evaluation")
         }

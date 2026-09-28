@@ -141,6 +141,10 @@ TO gateway_api;
 -- The columns are the queue's own; the payload, type and merchant of an event
 -- cannot be rewritten through them.
 GRANT SELECT, INSERT ON webhook_redeliveries TO gateway_api, gateway_provisioner;
+
+-- Two-operator honors (honor_proposals.rs): a proposal is written, then closed
+-- once, by an approval, a rejection or its expiry.
+GRANT SELECT, INSERT, UPDATE ON manual_honor_proposals TO gateway_api;
 GRANT SELECT (id, merchant_id, status) ON webhook_endpoints TO gateway_api;
 GRANT SELECT (id, merchant_id, channel, attempts, delivered_at, dead_lettered_at)
     ON domain_events TO gateway_provisioner;
@@ -164,7 +168,7 @@ GRANT SELECT ON
     component_health, component_health_events, domain_events, webhook_deliveries,
     reconciliation_runs, reconciliation_discrepancies,
     manual_resolution_requests, overpayment_remainder_dispositions,
-    operator_risk_provider_bindings, webhook_redeliveries
+    operator_risk_provider_bindings, webhook_redeliveries, manual_honor_proposals
 TO gateway_readonly;
 
 -- A table the next migration creates is readable by the two roles that only

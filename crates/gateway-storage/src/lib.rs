@@ -1,5 +1,6 @@
 mod capacity;
 mod checkout;
+mod honor_proposals;
 mod observations;
 mod operations;
 mod operator_reads;

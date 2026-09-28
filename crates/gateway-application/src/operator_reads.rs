@@ -46,7 +46,7 @@ pub struct Page<T> {
 }
 
 impl<T: Identified> Page<T> {
-    fn from_items(mut items: Vec<T>, limit: u32) -> Self {
+    pub(crate) fn from_items(mut items: Vec<T>, limit: u32) -> Self {
         // Repositories read one sentinel row past the public limit. That makes
         // the cursor evidence of another page instead of a guess from fullness.
         let has_more = items.len() > limit as usize;

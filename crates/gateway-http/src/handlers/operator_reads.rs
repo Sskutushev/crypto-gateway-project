@@ -18,14 +18,14 @@ use crate::{AppState, auth::OperatorAuth, error::ApiError};
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PageQuery {
-    limit: Option<u32>,
-    before: Option<Uuid>,
+    pub(crate) limit: Option<u32>,
+    pub(crate) before: Option<Uuid>,
 }
 
 #[derive(Serialize)]
 pub(crate) struct ListResponse<T> {
-    items: Vec<T>,
-    next_before: Option<Uuid>,
+    pub(crate) items: Vec<T>,
+    pub(crate) next_before: Option<Uuid>,
 }
 #[derive(Serialize)]
 pub(crate) struct ConflictResponse {

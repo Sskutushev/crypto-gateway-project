@@ -1,5 +1,6 @@
 mod checkout;
 pub mod health;
+mod honor_proposals;
 mod operator;
 mod operator_reads;
 mod payment_intents;
@@ -32,6 +33,16 @@ pub const ROUTES: &[(&str, &str)] = &[
     ("POST", "/v1/operator/rail-stops/{asset_id}/clear"),
     ("POST", "/v1/operator/manual-resolutions"),
     ("POST", "/v1/operator/webhook-events/{event_id}/redeliver"),
+    ("POST", "/v1/operator/manual-honor-proposals"),
+    ("GET", "/v1/operator/manual-honor-proposals"),
+    (
+        "POST",
+        "/v1/operator/manual-honor-proposals/{proposal_id}/approve",
+    ),
+    (
+        "POST",
+        "/v1/operator/manual-honor-proposals/{proposal_id}/reject",
+    ),
     (
         "POST",
         "/v1/operator/transfers/{transfer_id}/risk-evaluations",
@@ -104,6 +115,18 @@ pub fn operator_routes() -> Router<AppState> {
         .route(
             "/v1/operator/webhook-events/{event_id}/redeliver",
             post(operator::redeliver_webhook),
+        )
+        .route(
+            "/v1/operator/manual-honor-proposals",
+            post(honor_proposals::propose).get(honor_proposals::pending),
+        )
+        .route(
+            "/v1/operator/manual-honor-proposals/{proposal_id}/approve",
+            post(honor_proposals::approve),
+        )
+        .route(
+            "/v1/operator/manual-honor-proposals/{proposal_id}/reject",
+            post(honor_proposals::reject),
         )
         .route("/v1/operator/overview", get(operator_reads::overview))
         .route("/v1/operator/conflicts", get(operator_reads::conflicts))

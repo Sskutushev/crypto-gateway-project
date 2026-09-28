@@ -1,5 +1,6 @@
 mod checkout;
 mod health;
+mod honor_approval;
 mod observations;
 mod operations;
 mod operator_reads;
@@ -21,6 +22,10 @@ pub use checkout::{
     is_checkout_token,
 };
 pub use health::{ComponentState, ComponentStatus, HealthError, HealthRepository, HealthService};
+pub use honor_approval::{
+    HONOR_PROPOSAL_TTL, HonorApprovalPolicy, HonorProposal, HonorProposalRepository,
+    InvalidHonorThreshold, ProposalStatus,
+};
 pub use observations::{
     ChainScanner, ChainSource, CollectorState, CollectorWatch, ComponentLease, CursorKind,
     CursorPosition, IntakeReport, ObservationError, ObservationRepository, ObservationService,

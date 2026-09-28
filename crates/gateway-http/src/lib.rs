@@ -8,8 +8,9 @@ use std::{sync::Arc, time::Duration};
 
 use axum::{Router, extract::DefaultBodyLimit, http::StatusCode, middleware, routing::get};
 use gateway_application::{
-    CheckoutService, OperationsService, OperatorReadService, PaymentIntentService, QuoteMetrics,
-    QuoteService, SelfCheckConfig, SelfCheckReport, SelfCheckService, SystemClock,
+    CheckoutService, HonorApprovalPolicy, OperationsService, OperatorReadService,
+    PaymentIntentService, QuoteMetrics, QuoteService, SelfCheckConfig, SelfCheckReport,
+    SelfCheckService, SystemClock,
 };
 use gateway_scheduler::RunMetrics;
 use gateway_storage::{PgPool, PostgresRepository};
@@ -73,6 +74,17 @@ impl AppState {
     #[must_use]
     pub fn with_expiry_metrics(mut self, metrics: Arc<RunMetrics>) -> Self {
         self.expiry_metrics = Some(metrics);
+        self
+    }
+
+    /// Sets which manual honors need a second operator. Without it every
+    /// honor does.
+    #[must_use]
+    pub fn with_honor_approval_policy(mut self, policy: HonorApprovalPolicy) -> Self {
+        self.operations = Arc::new(
+            OperationsService::new(Arc::clone(&self.repository), SystemClock)
+                .with_honor_approval_policy(policy),
+        );
         self
     }
 
