@@ -207,34 +207,62 @@ impl VerificationRepository for PostgresRepository {
     async fn events_awaiting_verdict(
         &self,
         limit: u32,
+        deepen_decided_before: OffsetDateTime,
     ) -> Result<Vec<ChainEventKey>, RepositoryError> {
-        // An event is decided again only when new evidence arrived after the
-        // last decision: a verdict is a checkpoint, not a silence.
+        // An event is decided again when new evidence arrived after the last
+        // decision (a verdict is a checkpoint, not a silence), or when it is
+        // verified but not yet finalized and its depth is due to be read again.
         let rows = sqlx::query_as::<_, EventRow>(
             r"
-            SELECT observation.chain,
-                   observation.network,
-                   observation.chain_environment,
-                   observation.tx_hash,
-                   observation.event_index
-              FROM chain_observations AS observation
-              LEFT JOIN chain_event_verdicts AS verdict
-                     ON verdict.chain = observation.chain
-                    AND verdict.network = observation.network
-                    AND verdict.chain_environment = observation.chain_environment
-                    AND verdict.tx_hash = observation.tx_hash
-                    AND verdict.event_index = observation.event_index
-             GROUP BY observation.chain, observation.network, observation.chain_environment,
-                      observation.tx_hash, observation.event_index,
-                      verdict.verdict, verdict.decided_at
-            HAVING verdict.verdict IS NULL
-                OR (verdict.verdict IN ('insufficient', 'verified')
-                    AND max(observation.observed_at) > verdict.decided_at)
-             ORDER BY min(observation.observed_at)
+            WITH fresh AS (
+                SELECT observation.chain,
+                       observation.network,
+                       observation.chain_environment,
+                       observation.tx_hash,
+                       observation.event_index,
+                       min(observation.observed_at) AS waiting_since
+                  FROM chain_observations AS observation
+                  LEFT JOIN chain_event_verdicts AS verdict
+                         ON verdict.chain = observation.chain
+                        AND verdict.network = observation.network
+                        AND verdict.chain_environment = observation.chain_environment
+                        AND verdict.tx_hash = observation.tx_hash
+                        AND verdict.event_index = observation.event_index
+                 GROUP BY observation.chain, observation.network,
+                          observation.chain_environment, observation.tx_hash,
+                          observation.event_index, verdict.verdict, verdict.decided_at
+                HAVING verdict.verdict IS NULL
+                    OR (verdict.verdict IN ('insufficient', 'verified')
+                        AND max(observation.observed_at) > verdict.decided_at)
+            ),
+            shallow AS (
+                SELECT verdict.chain,
+                       verdict.network,
+                       verdict.chain_environment,
+                       verdict.tx_hash,
+                       verdict.event_index,
+                       verdict.decided_at AS waiting_since
+                  FROM chain_event_verdicts AS verdict
+                  JOIN chain_transfer_state_current AS state
+                    ON state.transfer_id = verdict.transfer_id
+                 WHERE verdict.verdict = 'verified'
+                   AND state.state IN ('canonical', 'confirmed')
+                   AND verdict.decided_at < $2
+            ),
+            due AS (
+                SELECT * FROM fresh
+                UNION
+                SELECT * FROM shallow
+            )
+            SELECT chain, network, chain_environment, tx_hash, event_index
+              FROM due
+             GROUP BY chain, network, chain_environment, tx_hash, event_index
+             ORDER BY min(waiting_since)
              LIMIT $1
             ",
         )
         .bind(i64::from(limit))
+        .bind(deepen_decided_before)
         .fetch_all(self.pool())
         .await
         .map_err(unavailable)?;
