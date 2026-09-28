@@ -34,19 +34,24 @@ impl SelfCheckRepository for PostgresRepository {
 }
 
 impl PostgresRepository {
-    /// Every receiving collector re-hashes to its pin and is named by the
-    /// configuration, and every configured collector is receiving.
+    /// Every receiving collector re-hashes to its pin. Every receiving
+    /// operator collector is named by the configuration, and every configured
+    /// collector is receiving.
     ///
-    /// Both directions matter: a database-only address is money redirected
-    /// without review, and a configured address the database no longer serves
-    /// is a deployment that believes it collects where it does not.
+    /// Both directions matter for the operator's own addresses: a
+    /// database-only address is money redirected without review, and a
+    /// configured address the database no longer serves is a deployment that
+    /// believes it collects where it does not. A merchant's address receives
+    /// that merchant's money only and is registered through the audited
+    /// provisioning path, so it is not repeated in the deployment config.
     async fn pinned_collectors(
         &self,
         config: &SelfCheckConfig,
     ) -> Result<SelfCheckResult, RepositoryError> {
         let rows = sqlx::query(
             r"
-            SELECT address_key, address_text, pinned_sha256
+            SELECT address_key, address_text, pinned_sha256,
+                   merchant_id IS NOT NULL AS merchant_owned
               FROM collector_addresses
              WHERE state IN ('active', 'receiving_only')
              ORDER BY address_text
@@ -62,8 +67,12 @@ impl PostgresRepository {
             let key: Vec<u8> = row.try_get("address_key").map_err(unavailable)?;
             let text: String = row.try_get("address_text").map_err(unavailable)?;
             let pin: String = row.try_get("pinned_sha256").map_err(unavailable)?;
+            let merchant_owned: bool = row.try_get("merchant_owned").map_err(unavailable)?;
             if pin != sha256_hex(&key) {
                 problems.push(format!("collector {text} does not re-hash to its pin"));
+            }
+            if merchant_owned {
+                continue;
             }
             if !config
                 .collectors

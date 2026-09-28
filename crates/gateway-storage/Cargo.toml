@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 async-trait.workspace = true
 gateway-application.workspace = true
+gateway-tron.workspace = true
 gateway-domain.workspace = true
 serde_json.workspace = true
 serde.workspace = true

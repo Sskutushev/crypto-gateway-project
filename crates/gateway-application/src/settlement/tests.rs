@@ -203,6 +203,7 @@ fn candidate(attempt_id: Uuid, amount: &str) -> Result<AttemptCandidate, Box<dyn
         memo_reference: None,
         leased_from: now() - Duration::hours(1),
         leased_until: now() + Duration::days(30),
+        quote_expires_at: now() + Duration::minutes(15),
         status: AttemptStatus::AwaitingPayment,
     })
 }

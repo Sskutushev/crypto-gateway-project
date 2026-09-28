@@ -31,11 +31,12 @@ const SOURCE_B: Uuid = Uuid::from_u128(11_402);
 /// Login roles created for the scenario: (name, group). The observer role is
 /// named as `SOURCE_A`'s `db_principal`; `SOURCE_B` belongs to a principal that
 /// never logs in, which is what "another source" means to row level security.
-const LOGINS: [(&str, &str); 4] = [
+const LOGINS: [(&str, &str); 5] = [
     ("roles_scenario_api", "gateway_api"),
     ("roles_scenario_observer_a", "gateway_observer"),
     ("roles_scenario_verifier", "gateway_verifier"),
     ("roles_scenario_payment", "gateway_payment"),
+    ("roles_scenario_provisioner", "gateway_provisioner"),
 ];
 
 #[tokio::test]
@@ -78,7 +79,10 @@ async fn each_role_is_refused_the_writes_that_are_not_its_own() -> TestResult {
 
     // The roles are dropped whether or not the assertions hold, so a failed
     // run does not leave logins behind for the next one to trip over.
-    let outcome = prove(&pool).await;
+    let outcome = match prove(&pool).await {
+        Ok(()) => prove_provisioner().await,
+        failed => failed,
+    };
     drop_logins(&pool).await?;
     outcome
 }
@@ -368,5 +372,85 @@ async fn drop_logins(pool: &PgPool) -> TestResult {
         .execute(pool)
         .await?;
     }
+    Ok(())
+}
+
+struct FixedRandom;
+
+impl gateway_application::RandomBytes for FixedRandom {
+    fn fill(&self, buffer: &mut [u8]) -> Result<(), gateway_application::ProvisioningError> {
+        buffer.fill(0x5a);
+        Ok(())
+    }
+}
+
+/// The provisioner onboards through the service, under its own login, and is
+/// refused the money path and the columns it must not rewrite.
+async fn prove_provisioner() -> TestResult {
+    let provisioner = connect_as("roles_scenario_provisioner").await?;
+    let service = gateway_application::ProvisioningService::new(
+        std::sync::Arc::new(crate::PostgresRepository::new(provisioner.clone())),
+        gateway_application::SystemClock,
+        FixedRandom,
+        Some(vec![3_u8; 32]),
+    );
+    let merchant = service
+        .create_merchant(
+            "roles-scenario",
+            "roles-scenario-merchant",
+            "Roles Scenario",
+            gateway_application::CollectorPolicy::Own,
+        )
+        .await?;
+    let key = service
+        .issue_api_key("roles-scenario", merchant.id, "server")
+        .await?;
+    service
+        .revoke_api_key("roles-scenario", key.key_id, "scenario")
+        .await?;
+    let endpoint = service
+        .add_webhook_endpoint(
+            "roles-scenario",
+            merchant.id,
+            "https://roles.example/hook",
+            None,
+        )
+        .await?;
+    service
+        .rotate_webhook_secret(
+            "roles-scenario",
+            endpoint.endpoint_id,
+            time::Duration::hours(2),
+            "scenario",
+        )
+        .await?;
+    service
+        .send_test_event("roles-scenario", endpoint.endpoint_id)
+        .await?;
+
+    denied(
+        sqlx::query("INSERT INTO payment_allocations DEFAULT VALUES")
+            .execute(&provisioner)
+            .await,
+        "provisioner writing an allocation",
+    )?;
+    denied(
+        sqlx::query("UPDATE merchant_api_keys SET secret_hash = secret_hash")
+            .execute(&provisioner)
+            .await,
+        "provisioner rewriting a key hash",
+    )?;
+    denied(
+        sqlx::query("UPDATE merchants SET collector_policy = 'shared'")
+            .execute(&provisioner)
+            .await,
+        "provisioner moving a merchant between collector policies",
+    )?;
+    denied(
+        sqlx::query("SELECT count(*) FROM payment_intents")
+            .execute(&provisioner)
+            .await,
+        "provisioner reading payments",
+    )?;
     Ok(())
 }

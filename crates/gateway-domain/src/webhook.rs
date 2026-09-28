@@ -64,6 +64,25 @@ impl std::fmt::Debug for SigningSecret {
     }
 }
 
+/// The signature line signed with several secrets at once: the current one
+/// and, during a rotation's transition period, the previous one. A merchant
+/// accepts the delivery when any `v1` value verifies.
+#[must_use]
+pub fn sign_event_with_all(secrets: &[&SigningSecret], timestamp_unix: i64, body: &[u8]) -> String {
+    let mut line = format!("t={timestamp_unix}");
+    for secret in secrets {
+        let Ok(mut mac) = HmacSha256::new_from_slice(&secret.0) else {
+            continue;
+        };
+        mac.update(timestamp_unix.to_string().as_bytes());
+        mac.update(b".");
+        mac.update(body);
+        line.push_str(",v1=");
+        line.push_str(&hex(&mac.finalize().into_bytes()));
+    }
+    line
+}
+
 /// The signature line a merchant verifies.
 ///
 /// The timestamp is signed together with the body, so a captured delivery

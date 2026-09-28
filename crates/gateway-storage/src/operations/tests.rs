@@ -37,6 +37,7 @@ const MANUAL_ATTEMPT: Uuid = Uuid::from_u128(9_613);
 const MANUAL_TRANSFER: Uuid = Uuid::from_u128(9_614);
 const MANUAL_PRICE: Uuid = Uuid::from_u128(9_615);
 const MANUAL_HEALTH: Uuid = Uuid::from_u128(9_616);
+const RAIL_MERCHANT: Uuid = Uuid::from_u128(9_617);
 
 #[tokio::test]
 #[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
@@ -131,7 +132,13 @@ async fn a_closed_rail_stops_new_quotes_and_only_a_person_reopens_it() -> TestRe
         .await?;
 
     // With healthy evidence the quote context is complete and the rail is open.
-    let context = repository.load_quote_context(ASSET_ID, &currency).await?;
+    sqlx::query("INSERT INTO merchants(id,external_id,display_name,status,collector_policy) VALUES($1,'rail-merchant','Rail Merchant','active','shared')")
+        .bind(RAIL_MERCHANT)
+        .execute(&pool)
+        .await?;
+    let context = repository
+        .load_quote_context(RAIL_MERCHANT, ASSET_ID, &currency)
+        .await?;
     assert!(context.price.is_some());
     assert!(context.policy.is_some());
     assert!(context.rail_health.is_some());
@@ -167,7 +174,9 @@ async fn a_closed_rail_stops_new_quotes_and_only_a_person_reopens_it() -> TestRe
     assert_eq!(again.id, stop.id);
     assert_eq!(again.reason_code, "reconciliation_drift");
 
-    let closed = repository.load_quote_context(ASSET_ID, &currency).await?;
+    let closed = repository
+        .load_quote_context(RAIL_MERCHANT, ASSET_ID, &currency)
+        .await?;
     assert_eq!(
         closed.rail_stop_reason.as_deref(),
         Some("reconciliation_drift"),
@@ -177,7 +186,9 @@ async fn a_closed_rail_stops_new_quotes_and_only_a_person_reopens_it() -> TestRe
     service
         .clear_rail_stop(&admin, ASSET_ID, "counted twice, corrected")
         .await?;
-    let reopened = repository.load_quote_context(ASSET_ID, &currency).await?;
+    let reopened = repository
+        .load_quote_context(RAIL_MERCHANT, ASSET_ID, &currency)
+        .await?;
     assert_eq!(reopened.rail_stop_reason, None);
     let cleared_reason: Option<String> =
         sqlx::query_scalar("SELECT cleared_reason FROM rail_stops WHERE id = $1")
@@ -551,7 +562,7 @@ async fn seed(pool: &PgPool) -> TestResult {
 async fn seed_manual_payment(pool: &PgPool) -> TestResult {
     let now = OffsetDateTime::now_utc();
     sqlx::query(
-        "INSERT INTO merchants(id,external_id,display_name,status) VALUES($1,'manual-merchant','Manual Merchant','active')",
+        "INSERT INTO merchants(id,external_id,display_name,status,collector_policy) VALUES($1,'manual-merchant','Manual Merchant','active','shared')",
     )
     .bind(MANUAL_MERCHANT)
     .execute(pool)
@@ -879,7 +890,7 @@ async fn honor_refuses_an_attempt_paired_with_another_merchants_intent() -> Test
     seed(&pool).await?;
     seed_manual_payment(&pool).await?;
     let now = OffsetDateTime::now_utc();
-    sqlx::query("INSERT INTO merchants(id,external_id,display_name,status) VALUES($1,'other-merchant','Other Merchant','active')")
+    sqlx::query("INSERT INTO merchants(id,external_id,display_name,status,collector_policy) VALUES($1,'other-merchant','Other Merchant','active','shared')")
         .bind(OTHER_MERCHANT)
         .execute(&pool)
         .await?;

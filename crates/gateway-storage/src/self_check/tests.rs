@@ -38,6 +38,7 @@ fn config() -> Result<SelfCheckConfig, Box<dyn Error>> {
 
 #[tokio::test]
 #[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+#[allow(clippy::too_many_lines)]
 async fn startup_self_check_names_each_broken_invariant() -> Result<(), Box<dyn Error>> {
     let _guard = DATABASE.lock().await;
     let pool = connect().await?;
@@ -103,6 +104,41 @@ async fn startup_self_check_names_each_broken_invariant() -> Result<(), Box<dyn 
         );
         sqlx::query(restore_sql).execute(&pool).await?;
     }
+
+    // A merchant's own address is registered through provisioning, not the
+    // deployment config: it passes unconfigured, and its pin is still checked.
+    let merchant = Uuid::from_u128(9106);
+    let merchant_key = key(4)?;
+    sqlx::query("INSERT INTO merchants(id,external_id,display_name,status) VALUES($1,'self-check-merchant','Self-check merchant','active') ON CONFLICT (id) DO NOTHING")
+        .bind(merchant).execute(&pool).await?;
+    sqlx::query("INSERT INTO collector_addresses(id,asset_id,address_key,address_text,state,valid_from,pinned_sha256,approved_by,merchant_id) VALUES($1,$2,$3,'merchant-collector','active',now(),encode(sha256($3),'hex'),'test',$4)")
+        .bind(Uuid::from_u128(9107)).bind(ASSET).bind(merchant_key.as_bytes()).bind(merchant).execute(&pool).await?;
+    assert!(
+        SelfCheckService::new(Arc::clone(&repository), SystemClock, config()?)
+            .run()
+            .await?
+            .passed
+    );
+    sqlx::query(
+        "UPDATE collector_addresses SET pinned_sha256=repeat('0',64) WHERE merchant_id IS NOT NULL",
+    )
+    .execute(&pool)
+    .await?;
+    let report = SelfCheckService::new(Arc::clone(&repository), SystemClock, config()?)
+        .run()
+        .await?;
+    assert_eq!(
+        report
+            .checks
+            .iter()
+            .filter(|check| !check.passed)
+            .map(|check| check.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["pinned_collectors"]
+    );
+    sqlx::query("DELETE FROM collector_addresses WHERE merchant_id IS NOT NULL")
+        .execute(&pool)
+        .await?;
 
     sqlx::query("INSERT INTO chain_observations(id,source_id,asset_id,collector_address_id,chain,network,chain_environment,observation_kind,tx_hash,event_index,block_number,block_hash,block_time,token_key,token_display,from_address_key,from_address_text,to_address_key,to_address_text,amount_raw,decimals,execution_status,source_finality,source_head,evidence_sha256,observer_version,parser_version,fence_token,semantic_hash,observed_at) VALUES($1,$2,$3,$4,'tron','nile','testnet','cursor_scan','tx',0,100,'block',now(),$5,'USDT',$6,'from',$7,'to',1,6,'success','confirmed',100,repeat('1',64),'test','test',1,$8,now())")
         .bind(Uuid::from_u128(9105)).bind(SOURCE).bind(ASSET).bind(COLLECTOR)

@@ -65,6 +65,21 @@ pub trait PaymentIntentRepository: Send + Sync {
         merchant_id: Uuid,
         intent_id: Uuid,
     ) -> Result<Option<PaymentIntent>, RepositoryError>;
+
+    /// Cancels an order that has no money on it, under a merchant-scoped
+    /// idempotency key. `None` when the intent does not exist for this
+    /// merchant.
+    #[allow(clippy::too_many_arguments)]
+    async fn cancel_idempotently(
+        &self,
+        merchant_id: Uuid,
+        intent_id: Uuid,
+        actor_key_id: Uuid,
+        route: &str,
+        idempotency_key: &str,
+        request_hash: &[u8; 32],
+        reason: Option<&str>,
+    ) -> Result<Option<IdempotentCreate>, RepositoryError>;
 }
 
 #[async_trait]
@@ -77,8 +92,11 @@ pub trait QuoteRepository: Send + Sync {
         request_hash: &[u8; 32],
     ) -> Result<Option<IssuedQuote>, RepositoryError>;
 
+    /// The pricing, policy and rail state for a quote, on a collector that
+    /// receives money for this merchant under its collector policy.
     async fn load_quote_context(
         &self,
+        merchant_id: Uuid,
         asset_id: Uuid,
         currency: &CurrencyCode,
     ) -> Result<QuoteContext, RepositoryError>;
@@ -136,6 +154,10 @@ pub enum RepositoryError {
     DuplicateReference,
     #[error("the payment intent cannot receive a quote in its current state")]
     PaymentIntentNotQuotable,
+    /// Money, a hold or a manual decision already exists for the order, or it
+    /// is paid: cancelling now would hide money that has to be dealt with.
+    #[error("the payment intent cannot be cancelled in its current state")]
+    PaymentIntentNotCancellable,
     #[error("the requested asset or collector address is unavailable")]
     CollectorUnavailable,
     #[error("all exact-amount slots are currently leased")]

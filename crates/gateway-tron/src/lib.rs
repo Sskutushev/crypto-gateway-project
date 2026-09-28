@@ -11,12 +11,16 @@
 
 pub mod address;
 pub mod event;
+pub mod ownership;
 pub mod source;
 
 pub use address::{TronAddressError, from_base58, from_evm_bytes, from_hex, to_base58};
 pub use event::{
     BlockRef, ChainContext, HeadState, ParsedTransfer, TokenView, TransactionInfo, TronParseError,
     parse_transfers, to_observation,
+};
+pub use ownership::{
+    OWNERSHIP_PROOF_TTL, OwnershipError, ownership_statement, recover_signer, verify_ownership,
 };
 pub use source::{
     ReqwestTransport, ScanLane, TronHttpSource, TronSourceConfig, TronSourceError, TronTransport,

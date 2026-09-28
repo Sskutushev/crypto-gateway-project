@@ -1261,6 +1261,7 @@ dependencies = [
  "gateway-scheduler",
  "gateway-storage",
  "http",
+ "qrcode",
  "serde",
  "serde_json",
  "sha2",
@@ -1295,6 +1296,7 @@ dependencies = [
  "gateway-application",
  "gateway-domain",
  "gateway-scheduler",
+ "gateway-tron",
  "serde",
  "serde_json",
  "sha2",
@@ -1313,6 +1315,7 @@ dependencies = [
  "bs58",
  "gateway-application",
  "gateway-domain",
+ "k256",
  "reqwest",
  "serde",
  "serde_json",
@@ -1348,6 +1351,9 @@ dependencies = [
  "gateway-storage",
  "gateway-tron",
  "gateway-webhook",
+ "getrandom 0.3.4",
+ "serde_json",
+ "time",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1920,6 +1926,7 @@ dependencies = [
  "elliptic-curve",
  "once_cell",
  "sha2",
+ "signature",
 ]
 
 [[package]]
@@ -2387,6 +2394,12 @@ dependencies = [
  "regex-syntax",
  "unarray",
 ]
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 
 [[package]]
 name = "quinn"

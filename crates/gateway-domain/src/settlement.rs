@@ -19,6 +19,10 @@ pub struct AttemptCandidate {
     /// again for someone else, so the window is part of the identity.
     pub leased_from: OffsetDateTime,
     pub leased_until: OffsetDateTime,
+    /// When the quote stopped being the price. A payment is late when its
+    /// block came after this moment, whatever the attempt's status says by
+    /// the time settlement runs.
+    pub quote_expires_at: OffsetDateTime,
     pub status: AttemptStatus,
 }
 
@@ -226,8 +230,13 @@ fn matched(
         attempt_id: candidate.attempt_id,
         payment_intent_id: candidate.payment_intent_id,
         strategy,
-        late: candidate.status != AttemptStatus::AwaitingPayment
-            || transfer.block_time >= candidate.leased_until,
+        // Judged by the chain's clock, not by which worker ran first: a
+        // payment made before the quote ran out is on time even if the expiry
+        // sweep marked the attempt expired before settlement saw the money.
+        late: !matches!(
+            candidate.status,
+            AttemptStatus::AwaitingPayment | AttemptStatus::Expired
+        ) || transfer.block_time >= candidate.quote_expires_at,
     }
 }
 

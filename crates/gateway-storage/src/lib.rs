@@ -1,9 +1,11 @@
+mod checkout;
 mod observations;
 mod operations;
 mod operator_reads;
 mod outbox;
 mod oversight;
 mod postgres;
+mod provisioning;
 mod roles;
 mod self_check;
 mod settlement;

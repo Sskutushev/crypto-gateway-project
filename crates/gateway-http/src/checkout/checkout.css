@@ -1,0 +1,81 @@
+:root {
+  color-scheme: light dark;
+  --fg: #1a1a1a;
+  --muted: #5c5c5c;
+  --bg: #f4f4f2;
+  --card: #ffffff;
+  --line: #deded9;
+  --ok: #1d7a3a;
+  --warn: #9a5b00;
+  --bad: #a3261d;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #ececea;
+    --muted: #a3a39f;
+    --bg: #161615;
+    --card: #20201f;
+    --line: #34342f;
+    --ok: #5cc27f;
+    --warn: #e3a54a;
+    --bad: #ef7b6f;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 24px 16px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.card {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 24px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+header p { margin: 0 0 4px; }
+.merchant { font-weight: 600; font-size: 18px; }
+.description, .hint, footer { color: var(--muted); font-size: 14px; }
+.fiat { font-size: 22px; font-weight: 600; }
+
+.status { margin: 20px 0; padding: 12px 14px; border-radius: 8px; border: 1px solid var(--line); }
+.status-title { margin: 0; font-weight: 600; }
+.status-detail { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+.status[data-status="paid"] { border-color: var(--ok); }
+.status[data-status="paid"] .status-title { color: var(--ok); }
+.status[data-status="confirming"] .status-title,
+.status[data-status="underpaid"] .status-title,
+.status[data-status="needs_review"] .status-title { color: var(--warn); }
+.status[data-status="expired"] .status-title,
+.status[data-status="cancelled"] .status-title,
+.status[data-status="error"] .status-title { color: var(--bad); }
+
+.row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin: 12px 0 4px; }
+.label { flex: 0 0 120px; color: var(--muted); font-size: 14px; }
+.value { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.amount { font-size: 20px; font-weight: 600; }
+.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 14px; }
+
+button {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.qr { display: block; margin: 16px auto; background: #fff; padding: 8px; border-radius: 8px; }
+footer { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 12px; }
+a { color: inherit; }

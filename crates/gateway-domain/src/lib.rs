@@ -24,7 +24,7 @@ pub use price::{
     PriceReading, aggregate,
 };
 pub use quote::{
-    IssuedQuote, PriceSnapshot, QuoteError, QuotePlan, QuotePolicySnapshot, RailHealth,
+    IssuedQuote, PriceSnapshot, QuoteAsset, QuoteError, QuotePlan, QuotePolicySnapshot, RailHealth,
     RailHealthSnapshot,
 };
 pub use settlement::{
@@ -38,4 +38,4 @@ pub use verification::{
     EvidenceReading, FieldConflict, FinalityPolicy, InsufficientReason, RejectionReason, Verdict,
     VerificationError, VerifiedTransfer, verify,
 };
-pub use webhook::{SigningSecret, WebhookError, sign_event};
+pub use webhook::{SigningSecret, WebhookError, sign_event, sign_event_with_all};

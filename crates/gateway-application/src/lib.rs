@@ -1,3 +1,4 @@
+mod checkout;
 mod health;
 mod observations;
 mod operations;
@@ -5,12 +6,17 @@ mod operator_reads;
 mod outbox;
 mod payment_intents;
 mod ports;
+mod provisioning;
 mod quotes;
 mod reconciliation;
 mod self_check;
 mod settlement;
 mod verification;
 
+pub use checkout::{
+    CheckoutFacts, CheckoutRepository, CheckoutService, CheckoutStatus, CheckoutView,
+    is_checkout_token,
+};
 pub use health::{ComponentState, ComponentStatus, HealthError, HealthRepository, HealthService};
 pub use observations::{
     ChainScanner, ChainSource, CollectorState, CollectorWatch, ComponentLease, CursorKind,
@@ -33,14 +39,19 @@ pub use operator_reads::{
 };
 pub use outbox::{
     DeliveryAttempt, DeliveryResult, OutboxError, OutboxEvent, OutboxReport, OutboxRepository,
-    OutboxService, WebhookEndpoint, WebhookSender,
+    OutboxService, PreviousSecret, WebhookEndpoint, WebhookSender,
 };
 pub use payment_intents::{
-    CreatePaymentIntent, CreatePaymentIntentResult, PaymentIntentService, ServiceError,
+    CancelPaymentIntent, CreatePaymentIntent, CreatePaymentIntentResult, PaymentIntentService,
+    ServiceError,
 };
 pub use ports::{
     ApiCredential, Clock, ExpiryResult, IdempotentCreate, IdempotentQuote, LeaseRepository,
     PaymentIntentRepository, QuoteContext, QuoteRepository, RepositoryError, SystemClock,
+};
+pub use provisioning::{
+    CollectorPolicy, EndpointState, IssuedApiKey, MerchantRecord, NewCollector, ProvisioningError,
+    ProvisioningRepository, ProvisioningService, RandomBytes, WebhookRegistration,
 };
 pub use quotes::{ExpirySweeper, IssueQuote, IssueQuoteResult, QuoteService, QuoteServiceError};
 pub use reconciliation::{

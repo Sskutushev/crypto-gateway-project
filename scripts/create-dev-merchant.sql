@@ -11,8 +11,10 @@
 -- Hash the full random development key outside PostgreSQL. Never use this
 -- script or a deterministic key in production.
 
-INSERT INTO merchants (id, external_id, display_name, status)
-VALUES (:'merchant_id'::uuid, 'local-development', 'Local development', 'active')
+-- 'shared': the development rail seeds one operator collector for every
+-- local merchant. A production merchant is 'own' and registers its address.
+INSERT INTO merchants (id, external_id, display_name, status, collector_policy)
+VALUES (:'merchant_id'::uuid, 'local-development', 'Local development', 'active', 'shared')
 ON CONFLICT (external_id) DO NOTHING;
 
 INSERT INTO merchant_api_keys (

@@ -52,8 +52,16 @@ impl SelfCheckConfig {
         if max_clock_skew_seconds <= 0 {
             return Err(SelfCheckConfigError::ClockSkew);
         }
+        // Operator collectors only. `none` declares a deployment where every
+        // address belongs to a merchant; an empty value stays an error, so a
+        // variable that was simply forgotten is not read as that decision.
+        let no_operator_collectors = collectors.trim() == "none";
         let mut parsed_collectors = Vec::new();
-        for value in values(collectors) {
+        for value in values(if no_operator_collectors {
+            ""
+        } else {
+            collectors
+        }) {
             let key = parse_address(value)
                 .map_err(|_| SelfCheckConfigError::Address(value.to_owned()))?;
             if parsed_collectors.contains(&key) {
@@ -61,7 +69,7 @@ impl SelfCheckConfig {
             }
             parsed_collectors.push(key);
         }
-        if parsed_collectors.is_empty() {
+        if parsed_collectors.is_empty() && !no_operator_collectors {
             return Err(SelfCheckConfigError::Empty("GATEWAY_EXPECTED_COLLECTORS"));
         }
         let mut parsed_assets = Vec::new();
@@ -242,5 +250,18 @@ mod tests {
             SelfCheckConfig::parse("a", "tron:n:a", "staging", "5", address),
             Err(SelfCheckConfigError::Environment)
         ));
+    }
+
+    #[test]
+    fn none_declares_a_deployment_without_operator_collectors() -> Result<(), SelfCheckConfigError>
+    {
+        let config = SelfCheckConfig::parse(" none ", "tron:n:a", "testnet", "5", address)?;
+        assert!(config.collectors.is_empty());
+        // An empty value is still a forgotten variable, not that decision.
+        assert!(matches!(
+            SelfCheckConfig::parse("  ", "tron:n:a", "testnet", "5", address),
+            Err(SelfCheckConfigError::Empty(_))
+        ));
+        Ok(())
     }
 }

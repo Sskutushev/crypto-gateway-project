@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use gateway_application::{
-    DeliveryAttempt, OutboxEvent, OutboxRepository, RepositoryError, WebhookEndpoint,
+    DeliveryAttempt, OutboxEvent, OutboxRepository, PreviousSecret, RepositoryError,
+    WebhookEndpoint,
 };
 use serde_json::Value;
 use sqlx::FromRow;
@@ -43,6 +44,8 @@ struct WebhookEndpointRow {
     url: String,
     secret_version: i32,
     secret_fingerprint: Vec<u8>,
+    previous_secret_version: Option<i32>,
+    previous_secret_fingerprint: Option<Vec<u8>>,
 }
 
 impl TryFrom<WebhookEndpointRow> for WebhookEndpoint {
@@ -53,12 +56,22 @@ impl TryFrom<WebhookEndpointRow> for WebhookEndpoint {
             .secret_fingerprint
             .try_into()
             .map_err(|_| corrupt("a webhook endpoint fingerprint is not 32 bytes"))?;
+        let previous_secret = match (row.previous_secret_version, row.previous_secret_fingerprint) {
+            (Some(version), Some(fingerprint)) => Some(PreviousSecret {
+                version,
+                fingerprint: fingerprint.try_into().map_err(|_| {
+                    corrupt("a previous webhook secret fingerprint is not 32 bytes")
+                })?,
+            }),
+            _ => None,
+        };
         Ok(Self {
             id: row.id,
             merchant_id: row.merchant_id,
             url: row.url,
             secret_version: row.secret_version,
             secret_fingerprint: fingerprint,
+            previous_secret,
         })
     }
 }
@@ -122,7 +135,11 @@ impl OutboxRepository for PostgresRepository {
     ) -> Result<Vec<WebhookEndpoint>, RepositoryError> {
         let rows = sqlx::query_as::<_, WebhookEndpointRow>(
             r"
-            SELECT id, merchant_id, url, secret_version, secret_fingerprint
+            SELECT id, merchant_id, url, secret_version, secret_fingerprint,
+                   CASE WHEN previous_valid_until > now() THEN previous_secret_version END
+                       AS previous_secret_version,
+                   CASE WHEN previous_valid_until > now() THEN previous_secret_fingerprint END
+                       AS previous_secret_fingerprint
               FROM webhook_endpoints
              WHERE merchant_id = $1 AND status = 'active'
              ORDER BY created_at

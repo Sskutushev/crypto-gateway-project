@@ -461,8 +461,8 @@ pub(crate) async fn seed(pool: &PgPool) -> TestResult {
     .execute(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO merchants (id, external_id, display_name, status) \
-         VALUES ($1, 'settlement-merchant', 'Settlement Merchant', 'active')",
+        "INSERT INTO merchants (id, external_id, display_name, status, collector_policy) \
+         VALUES ($1, 'settlement-merchant', 'Settlement Merchant', 'active', 'shared')",
     )
     .bind(MERCHANT)
     .execute(pool)

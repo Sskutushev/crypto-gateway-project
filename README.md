@@ -24,37 +24,51 @@ one container image.
 - **A reconcilable audit trail.** Every state change is a row; a reconciler
   re-adds the books and closes the rail by itself when money stops adding up.
 
-Supported rail: **USDT TRC20** (TRON). ERC20 and TON follow through the same
-observer and verifier interface.
+Supported rail: **USDT TRC20** (TRON). ERC20 and TON are planned behind the
+same observer and verifier interface; neither exists yet.
 
 ## Quickstart (about ten minutes)
 
-Prerequisites: Docker with Compose, `psql`, `curl` and `jq`. Rust is not
-needed to run the image.
+Prerequisites: Docker with Compose, `psql`, `curl`, `jq` and `openssl`. Rust
+is not needed to run the image.
+
+Merchants, their API keys, webhook endpoints and collector addresses are
+created with the admin CLI, `gateway-worker admin <command>`, which ships in
+the same image. Every command names the person who runs it (`--actor`), is
+written to `audit_events` in the same transaction as its change, and prints
+one JSON object. A secret is printed exactly once; the database keeps only a
+hash or a fingerprint. Operator keys, assets, policies and chain sources have
+no command yet and are still seeded with SQL.
 
 ```sh
-# 1. PostgreSQL, then the schema, then the development rail
+# 1. PostgreSQL, then the schema, then the development rail (asset, operator
+#    collector, policies, chain sources)
 docker compose up -d postgres
 docker compose run --rm -e GATEWAY_MIGRATE_ONLY=true gateway-api
 export DB=postgres://gateway:gateway@127.0.0.1:54329/gateway
 psql "$DB" -f scripts/seed-dev-rail.sql
 
-# 2. A merchant key and an operator key (hashes only reach the database)
-MERCHANT_KEY=$(openssl rand -hex 24); OPERATOR_KEY=$(openssl rand -hex 24)
-psql "$DB" -v merchant_id=00000000-0000-7000-8000-000000000001 \
-  -v key_id=00000000-0000-7000-8000-000000000002 -v api_key_prefix=cg_dev \
-  -v api_key_sha256_hex=$(printf '%s' "$MERCHANT_KEY" | sha256sum | cut -d' ' -f1) \
-  -f scripts/create-dev-merchant.sql
+# 2. An operator key (no admin command issues one yet; only its hash is stored)
+OPERATOR_KEY=$(openssl rand -hex 24)
 psql "$DB" -v key_id=00000000-0000-7000-8000-000000000003 -v api_key_prefix=cgop_dev \
   -v api_key_sha256_hex=$(printf '%s' "$OPERATOR_KEY" | sha256sum | cut -d' ' -f1) \
   -f scripts/create-dev-operator.sql
 
-# 3. The API. It refuses to start until the database describes the rail it
+# 3. A merchant and its API key, through the admin CLI. 'shared' puts this
+#    merchant on the operator collector the development rail seeded.
+admin() { docker compose run --rm -T --no-deps --entrypoint /usr/local/bin/gateway-worker \
+  ${GATEWAY_WEBHOOK_MASTER_KEY:+-e GATEWAY_WEBHOOK_MASTER_KEY} gateway-api admin "$@"; }
+MERCHANT=$(admin merchant-create --actor "$USER" --external-id demo-shop \
+  --name 'Demo shop' --collector-policy shared | jq -r .merchant_id)
+MERCHANT_KEY=$(admin api-key-issue --actor "$USER" --merchant "$MERCHANT" \
+  --label quickstart | jq -r .secret)
+
+# 4. The API. It refuses to start until the database describes the rail it
 #    was configured for, so this step is a test of the self-check too.
 docker compose up -d gateway-api
 curl -s localhost:8080/health/ready
 
-# 4. Price evidence and rail health, from two independent groups. A rate is
+# 5. Price evidence and rail health, from two independent groups. A rate is
 #    raw token units per fiat minor unit: 1 cent = 10 000 units of a 6-decimal
 #    stablecoin at 1:1, so numerator 10000 over denominator 1.
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ); ASSET=00000000-0000-7000-8000-000000000101
@@ -67,7 +81,7 @@ curl -s -X POST localhost:8080/v1/operator/rail-health \
   -H "Authorization: Bearer $OPERATOR_KEY" -H 'Content-Type: application/json' \
   -d "{\"asset_id\":\"$ASSET\",\"health\":\"healthy\"}"
 
-# 5. An order, and a quote for it
+# 6. An order, and a quote for it
 INTENT=$(curl -s -X POST localhost:8080/v1/payment-intents \
   -H "Authorization: Bearer $MERCHANT_KEY" -H 'Idempotency-Key: order-0001-attempt-1' \
   -H 'Content-Type: application/json' \
@@ -76,26 +90,72 @@ curl -s -X POST localhost:8080/v1/payment-intents/$INTENT/quotes \
   -H "Authorization: Bearer $MERCHANT_KEY" -H 'Idempotency-Key: quote-0001-attempt-1' \
   -H 'Content-Type: application/json' -d "{\"asset_id\":\"$ASSET\"}"
 
-# 6. What the operator sees
+# 7. What the operator sees
 curl -s localhost:8080/v1/operator/overview -H "Authorization: Bearer $OPERATOR_KEY"
 curl -s localhost:8080/metrics -H "Authorization: Bearer $OPERATOR_KEY" | head
 ```
 
-The quote names a collector address and an exact `amount_raw`. To watch a
-real Nile testnet payment settle, put a TronGrid API key and a webhook master
-key into `.env` (see `.env.example`), replace the placeholder collector with
-an address you control in `.env` and `scripts/seed-dev-rail.sql`, and start
-the workers:
+The quote names a collector address and an exact `amount_raw`. The seeded
+operator collector is a placeholder nobody holds a key for, so do not pay it.
+
+### A real Nile testnet payment, on your own address
+
+Put a TronGrid API key and a webhook master key into `.env` (see
+`.env.example`). Then create a merchant on the default collector policy,
+`own`, and register a Nile address you control for it. The address is
+accepted only on a signature from the wallet that holds it:
 
 ```sh
+export GATEWAY_WEBHOOK_MASTER_KEY=$(sed -n 's/^GATEWAY_WEBHOOK_MASTER_KEY=//p' .env)
+SHOP=$(admin merchant-create --actor "$USER" --external-id my-shop --name 'My shop' \
+  | jq -r .merchant_id)
+SHOP_KEY=$(admin api-key-issue --actor "$USER" --merchant "$SHOP" --label testnet | jq -r .secret)
+
+# The statement to sign. Sign its "statement" text exactly, in TronLink
+# (signMessageV2), with the wallet that holds the address; it stays valid 24 hours.
+admin collector-statement --merchant "$SHOP" --address <your Nile address>
+admin collector-register --actor "$USER" --asset "$ASSET" --address <your Nile address> \
+  --merchant "$SHOP" --issued <"issued" from the statement> --signature <hex signature>
+
+# A webhook endpoint: a public https URL on port 443 (a tunnel works). The
+# signing secret is printed once; send yourself a signed test event.
+ENDPOINT=$(admin webhook-add --actor "$USER" --merchant "$SHOP" \
+  --url https://<your receiver>/webhooks | jq -r .endpoint_id)
+admin webhook-test --actor "$USER" --endpoint "$ENDPOINT"
+
 docker compose --profile workers up -d
 ```
 
+A merchant-owned address is pinned by the self-check but is not listed in
+`GATEWAY_EXPECTED_COLLECTORS`; that variable names operator collectors only.
 Two observers read TronGrid and the public Nile node, the verifier re-reads
 through the node, and paying the exact `amount_raw` of test USDT to the
-collector settles the intent and delivers `payment_intent.paid` to the
-merchant's endpoint. Evidence and queues: `GET /v1/operator/payment-intents/{id}`
-and the routes in [`docs/operator-runbook.md`](docs/operator-runbook.md).
+quoted address settles the intent and delivers `payment_intent.paid` to the
+merchant's endpoint. Evidence and queues:
+`GET /v1/operator/payment-intents/{id}` and the routes in
+[`docs/operator-runbook.md`](docs/operator-runbook.md).
+
+## Integrate
+
+A merchant integration is two HTTP calls, a status read and one signed
+webhook: [`docs/merchant-integration.md`](docs/merchant-integration.md).
+[`examples/`](examples/) has working code to start from:
+
+- [`examples/create-payment`](examples/create-payment): intent, quote and
+  polling, in shell and in TypeScript;
+- [`examples/webhook-receiver-typescript`](examples/webhook-receiver-typescript)
+  and [`examples/webhook-receiver-python`](examples/webhook-receiver-python):
+  signature verification over the raw body with several `v1` values during a
+  secret rotation, timestamp tolerance and deduplication, with tests;
+- [`examples/postman`](examples/postman): a collection for every route.
+
+## Scope
+
+What is supported, what is not, and what happens to an underpayment, an
+overpayment, a late payment, the wrong token or the wrong network:
+[`docs/scope-and-limits.md`](docs/scope-and-limits.md). In short: incoming
+USDT TRC20 only, no payouts or refunds from the gateway, one quote per intent,
+and no API route to cancel an intent yet.
 
 ## How it works
 
@@ -111,27 +171,40 @@ chain provider B ──► observer B ──┼──► verifier ──► cano
                                reconciler: does it still add up? ──► rail stop
 ```
 
-Seven processes from one image: the API and one worker per role. Each has
-its own PostgreSQL role with only the privileges its code uses, and row level
-security binds every observer to the chain source it speaks for. Full design:
-[`docs/architecture.md`](docs/architecture.md).
+Seven processes from one image: the API and one worker per role, plus the
+one-shot admin CLI. Each has its own PostgreSQL role with only the privileges
+its code uses, and row level security binds every observer to the chain
+source it speaks for. Full design: [`docs/architecture.md`](docs/architecture.md).
 
 ## Security model
 
 - **Non-custodial.** No private keys, no signing, no withdrawals, no balances.
   A stolen host can lie about receipts and nothing else.
+- **A merchant is paid on its own address.** New merchants default to the
+  `own` collector policy: quotes use only addresses registered to that
+  merchant, each proven by a signature from the wallet that holds it. The
+  database refuses a quote on another merchant's address, and there is no
+  fallback between the `own` and `shared` policies.
 - **Two-layer chain facts.** Observations are append-only and never trusted
   alone; the verifier alone writes canonical transfers, from independent
   agreement plus its own re-read.
+- **Money is tied to its own attempt.** A transfer is allocated only at its
+  attempt's collector, in its quote's asset and rail; payment states move
+  only from an explicit set of states, and a refused move rolls the whole
+  settlement back and parks the transfer for a person.
 - **Integer money end to end.** `NUMERIC(78,0)`, `U256`, decimal strings;
   parsers refuse signs, decimals, zero and overflow; fuzzed.
 - **Signed webhooks.** HMAC-SHA256 over timestamp and body under a derived
-  per-endpoint secret; fingerprints only in the database; no redirects.
+  per-endpoint secret; fingerprints only in the database; no redirects, no
+  system proxies, public addresses only. A secret rotates per endpoint with a
+  transition period in which both secrets sign.
 - **Fail closed.** Missing or stale evidence refuses a quote; a process whose
   database disagrees with its configuration refuses to start; money that does
   not add up closes the rail until a person clears it.
 
 Details and the attacks each layer refuses: [`docs/threat-model.md`](docs/threat-model.md).
+Each money invariant with the tests that exercise it:
+[`docs/money-invariants.md`](docs/money-invariants.md).
 
 ## How it fails, on purpose
 
@@ -139,6 +212,7 @@ Details and the attacks each layer refuses: [`docs/threat-model.md`](docs/threat
 |---|---|
 | fewer than two independent price groups agree, or they disagree beyond policy | a rate nobody corroborated is a guess about someone's money |
 | price, policy or rail-health evidence is missing or stale | an issued quote must rest on evidence that existed when it was issued |
+| a merchant on the `own` policy has no active address of its own | a quote on someone else's address would pay a stranger |
 | a rail is closed by an operator or by reconciliation | new obligations must not pile onto a rail under investigation |
 | a transfer matches two reservations, or none | ambiguity is a decision for a person; money nobody can explain is queued, not absorbed |
 | observers disagree about a chain event | the disagreement is the finding; no fact is made from it |
@@ -148,8 +222,11 @@ Details and the attacks each layer refuses: [`docs/threat-model.md`](docs/threat
 
 - [Architecture](docs/architecture.md) and [decisions](docs/decisions/)
 - [Merchant integration](docs/merchant-integration.md): intents, quotes, statuses, webhook verification
+- [Examples](examples/): webhook receivers, a create-payment script, a Postman collection
+- [Scope and limits](docs/scope-and-limits.md): what is supported and every exceptional payment case
+- [Money invariants](docs/money-invariants.md): each invariant and the tests that falsify it
 - [OpenAPI 3.1](docs/openapi.json): every route the router serves, checked by a test
-- [Operator runbook](docs/operator-runbook.md): feeding evidence, reading queues, clearing a hard stop, alerts
+- [Operator runbook](docs/operator-runbook.md): feeding evidence, reading queues, onboarding and rotation procedures, clearing a hard stop, alerts
 - [Deployment](docs/deployment.md): roles, Compose, Kubernetes, the TLS and network boundary
 - [Threat model](docs/threat-model.md)
 - [Owner setup](docs/owner-setup.md): every account, key and secret, in order
@@ -178,9 +255,11 @@ exists today.
 ## Status
 
 Every layer from payment intent to signed webhook exists and is verified by
-unit tests, PostgreSQL scenarios and seeded property tests. No rail is
-declared production-ready until it has run on a testnet with two real
-providers; the steps are in [`docs/owner-setup.md`](docs/owner-setup.md).
+unit tests, PostgreSQL scenarios and seeded property tests. That is not
+production readiness: no release has been tagged, no rail has run a sustained
+testnet soak with two genuinely independent providers, and no external audit
+has been done. Do not put real money through it until those steps in
+[`docs/owner-setup.md`](docs/owner-setup.md) are complete.
 
 ## License
 

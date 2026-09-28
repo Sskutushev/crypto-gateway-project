@@ -7,8 +7,8 @@ use std::{sync::Arc, time::Duration};
 
 use axum::{Router, http::StatusCode, middleware, routing::get};
 use gateway_application::{
-    OperationsService, OperatorReadService, PaymentIntentService, QuoteService, SelfCheckConfig,
-    SelfCheckReport, SelfCheckService, SystemClock,
+    CheckoutService, OperationsService, OperatorReadService, PaymentIntentService, QuoteService,
+    SelfCheckConfig, SelfCheckReport, SelfCheckService, SystemClock,
 };
 use gateway_scheduler::RunMetrics;
 use gateway_storage::{PgPool, PostgresRepository};
@@ -30,6 +30,7 @@ pub struct AppState {
     pub quotes: Arc<QuoteService<PostgresRepository, SystemClock>>,
     pub operations: Arc<OperationsService<PostgresRepository, SystemClock>>,
     pub operator_reads: Arc<OperatorReadService<PostgresRepository>>,
+    pub checkout: Arc<CheckoutService<PostgresRepository>>,
     pub expiry_metrics: Option<Arc<RunMetrics>>,
     pub pool: PgPool,
     pub self_check: Option<Arc<SelfCheckService<PostgresRepository, SystemClock>>>,
@@ -47,12 +48,14 @@ impl AppState {
         let quotes = Arc::new(QuoteService::new(Arc::clone(&repository), SystemClock));
         let operations = Arc::new(OperationsService::new(Arc::clone(&repository), SystemClock));
         let operator_reads = Arc::new(OperatorReadService::new(Arc::clone(&repository)));
+        let checkout = Arc::new(CheckoutService::new(Arc::clone(&repository)));
         Self {
             repository,
             payment_intents,
             quotes,
             operations,
             operator_reads,
+            checkout,
             expiry_metrics: None,
             pool,
             self_check: None,
@@ -90,6 +93,7 @@ pub fn router(state: AppState) -> Router {
         .route("/health/ready", get(health::ready))
         .merge(protected)
         .merge(operator)
+        .merge(handlers::checkout_routes())
         .with_state(state)
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -130,7 +134,8 @@ mod tests {
             let concrete = path
                 .replace("{intent_id}", "00000000-0000-7000-8000-000000000001")
                 .replace("{asset_id}", "00000000-0000-7000-8000-000000000002")
-                .replace("{transfer_id}", "00000000-0000-7000-8000-000000000003");
+                .replace("{transfer_id}", "00000000-0000-7000-8000-000000000003")
+                .replace("{checkout_token}", &"c".repeat(64));
             let response = app
                 .clone()
                 .oneshot(
@@ -179,7 +184,7 @@ mod tests {
         Ok(())
     }
 
-    use std::{collections::BTreeSet, env, error::Error};
+    use std::{collections::BTreeSet, env, error::Error, str::FromStr};
 
     use axum::{
         body::{Body, to_bytes},
@@ -359,12 +364,34 @@ mod tests {
         assert_eq!(quote["amount_raw"], "1235");
         assert_eq!(quote["collector_address"], "TContractCollector");
         assert_eq!(quote["price_snapshot_id"], PRICE_SNAPSHOT_ID.to_string());
+        // What a buyer's wallet needs, exact: the token by contract, its
+        // precision, and the same amount in whole tokens.
+        let decimals = quote["asset"]["decimals"]
+            .as_u64()
+            .ok_or("the quote names no decimals")?;
+        assert_eq!(
+            quote["amount"],
+            gateway_domain::RawAmount::from_str("1235")?.to_decimal_string(u8::try_from(decimals)?)
+        );
+        assert!(
+            quote["asset"]["contract_address"]
+                .as_str()
+                .is_some_and(|address| address.starts_with('T'))
+        );
+        assert!(
+            quote["checkout_token"].as_str().is_some_and(
+                |token| token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit())
+            )
+        );
         assert_eq!(
             object_keys(&quote),
             BTreeSet::from([
+                "amount",
                 "amount_raw",
+                "asset",
                 "asset_id",
                 "attempt_id",
+                "checkout_token",
                 "collector_address",
                 "collector_address_id",
                 "created_at",
@@ -846,8 +873,8 @@ mod tests {
             (MERCHANT_TWO, KEY_TWO, "merchant-two", SECRET_TWO),
         ] {
             sqlx::query(
-                "INSERT INTO merchants (id, external_id, display_name, status) \
-                 VALUES ($1, $2, $2, 'active')",
+                "INSERT INTO merchants (id, external_id, display_name, status, collector_policy) \
+                 VALUES ($1, $2, $2, 'active', 'shared')",
             )
             .bind(merchant_id)
             .bind(external_id)

@@ -1,0 +1,728 @@
+{
+  "info": {
+    "name": "Crypto Gateway API",
+    "description": "Every route in docs/openapi.json. Set baseUrl, merchantKey, operatorKey and assetId. Writes to /v1/payment-intents, /v1/payment-intents/{id}/quotes and /v1/operator/manual-resolutions send a generated Idempotency-Key (16 to 128 characters of A-Z a-z 0-9 _ -). Amounts are decimal strings, never JSON numbers.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Writes that send Idempotency-Key: {{idempotencyKey}} get a fresh key per send.",
+          "// To repeat a request as a safe retry, set the collection variable",
+          "// pinnedIdempotencyKey to the key of the first send and send it again",
+          "// with the same body; clear it afterwards.",
+          "const pinned = pm.collectionVariables.get('pinnedIdempotencyKey');",
+          "if (pinned) {",
+          "  pm.variables.set('idempotencyKey', pinned);",
+          "} else {",
+          "  const guid = pm.variables.replaceIn('{{$guid}}').replace(/-/g, '');",
+          "  pm.variables.set('idempotencyKey', 'pm_' + guid);",
+          "}"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "merchantKey",
+      "value": ""
+    },
+    {
+      "key": "operatorKey",
+      "value": ""
+    },
+    {
+      "key": "assetId",
+      "value": "00000000-0000-7000-8000-000000000101"
+    },
+    {
+      "key": "intentId",
+      "value": ""
+    },
+    {
+      "key": "attemptId",
+      "value": ""
+    },
+    {
+      "key": "transferId",
+      "value": ""
+    },
+    {
+      "key": "pinnedIdempotencyKey",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "health",
+      "auth": {
+        "type": "noauth"
+      },
+      "item": [
+        {
+          "name": "Liveness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/live",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health",
+                "live"
+              ]
+            },
+            "description": "Process liveness."
+          },
+          "response": []
+        },
+        {
+          "name": "Readiness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/ready",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health",
+                "ready"
+              ]
+            },
+            "description": "The start-up self-check, re-evaluated. 503 names the failed check."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "merchant",
+      "description": "Merchant API key as bearer. Every amount is a decimal string.",
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{merchantKey}}",
+            "type": "string"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "Create a payment intent",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/payment-intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "description": "201 created, 200 replay (Idempotent-Replayed: true), 409 idempotency_conflict or payment_intent_reference_conflict. The reference is unique per merchant.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount_minor\": \"4999\",\n  \"currency\": \"USD\",\n  \"reference\": \"order-1042\",\n  \"metadata\": {}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "  pm.collectionVariables.set('intentId', pm.response.json().id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Read a payment intent",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/payment-intents/{{intentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "payment-intents",
+                "{{intentId}}"
+              ]
+            },
+            "description": "Another merchant's intent is a 404."
+          },
+          "response": []
+        },
+        {
+          "name": "Quote an intent in an asset",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/payment-intents/{{intentId}}/quotes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "payment-intents",
+                "{{intentId}}",
+                "quotes"
+              ]
+            },
+            "description": "Reserves an exact amount_raw at collector_address until expires_at. There is no route to read a quote back: replay this request with the same key (pinnedIdempotencyKey) to get it again. 409 payment_intent_not_quotable, 503 quote_unavailable or rail_stopped.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"asset_id\": \"{{assetId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "operator",
+      "description": "Operator API key as bearer, with the scope each request names.",
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{operatorKey}}",
+            "type": "string"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "Submit price readings",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/operator/price-snapshots",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "operator",
+                "price-snapshots"
+              ]
+            },
+            "description": "Scope: ingest. Rate is raw token units per fiat minor unit. observed_at must be fresh.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"asset_id\": \"{{assetId}}\",\n  \"fiat_currency\": \"USD\",\n  \"readings\": [\n    {\n      \"source_key\": \"a\",\n      \"provider_group\": \"a\",\n      \"rate_numerator\": \"10000\",\n      \"rate_denominator\": \"1\",\n      \"observed_at\": \"{{$isoTimestamp}}\"\n    },\n    {\n      \"source_key\": \"b\",\n      \"provider_group\": \"b\",\n      \"rate_numerator\": \"10000\",\n      \"rate_denominator\": \"1\",\n      \"observed_at\": \"{{$isoTimestamp}}\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Submit a rail-health observation",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/operator/rail-health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "operator",
+                "rail-health"
+              ]
+            },
+            "description": "Scope: ingest.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"asset_id\": \"{{assetId}}\",\n  \"health\": \"healthy\",\n  \"detail\": null\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Close a rail",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/operator/rail-stops",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "operator",
+                "rail-stops"
+              ]
+            },
+            "description": "Scope: admin. New quotes are refused with rail_stopped; issued quotes stay payable.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"asset_id\": \"{{assetId}}\",\n  \"reason_code\": \"manual_investigation\",\n  \"detail\": null\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Reopen a rail",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/operator/rail-stops/{{assetId}}/clear",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "operator",
+                "rail-stops",
+                "{{assetId}}",
+                "clear"
+              ]
+            },
+            "description": "Scope: admin. 204 cleared, 409 no_open_rail_stop.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"discrepancy explained\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Record a screening decision for a transfer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/operator/transfers/{{transferId}}/risk-evaluations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "operator",
+                "transfers",
+                "{{transferId}}",
+                "risk-evaluations"
+              ]
+            },
+            "description": "Scope: risk_ingest, from the provider bound to this key. Stale or future-dated evidence is a 422.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"example-kyt\",\n  \"decision\": \"allow\",\n  \"score\": null,\n  \"reasons\": null,\n  \"evaluated_at\": \"{{$isoTimestamp}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Resolve parked inbound money",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/operator/manual-resolutions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "operator",
+                "manual-resolutions"
+              ]
+            },
+            "description": "Scope: admin, with an Idempotency-Key. action is honor, reject or record_remainder_disposition. honor requires payment_intent_id, attempt_id and allocate_raw equal to min(outstanding, unallocated transfer amount). record_remainder_disposition records an action taken outside the gateway; it never sends funds.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"action\": \"honor\",\n  \"transfer_id\": \"{{transferId}}\",\n  \"payment_intent_id\": \"{{intentId}}\",\n  \"attempt_id\": \"{{attemptId}}\",\n  \"allocate_raw\": \"49990000\",\n  \"remainder_raw\": null,\n  \"disposition\": null,\n  \"external_reference\": null,\n  \"reason\": \"operator verified the evidence\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Overview",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/operator/overview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "operator",
+                "overview"
+              ]
+            },
+            "description": "Scope: read."
+          },
+          "response": []
+        },
+        {
+          "name": "Open observation conflicts",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/operator/conflicts?limit=50&before=",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "operator",
+                "conflicts"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "disabled": true,
+                  "description": "1 to 200. Omitted means the service default."
+                },
+                {
+                  "key": "before",
+                  "value": "",
+                  "disabled": true,
+                  "description": "Keyset cursor: the next_before of the previous page."
+                }
+              ]
+            },
+            "description": "Scope: read. Keyset page."
+          },
+          "response": []
+        },
+        {
+          "name": "Unmatched transfers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/operator/unmatched-transfers?limit=50&before=",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "operator",
+                "unmatched-transfers"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "disabled": true,
+                  "description": "1 to 200. Omitted means the service default."
+                },
+                {
+                  "key": "before",
+                  "value": "",
+                  "disabled": true,
+                  "description": "Keyset cursor: the next_before of the previous page."
+                }
+              ]
+            },
+            "description": "Scope: read. Keyset page."
+          },
+          "response": []
+        },
+        {
+          "name": "Held payments",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/operator/held-payments?limit=50&before=",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "operator",
+                "held-payments"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "disabled": true,
+                  "description": "1 to 200. Omitted means the service default."
+                },
+                {
+                  "key": "before",
+                  "value": "",
+                  "disabled": true,
+                  "description": "Keyset cursor: the next_before of the previous page."
+                }
+              ]
+            },
+            "description": "Scope: read. Keyset page."
+          },
+          "response": []
+        },
+        {
+          "name": "Dead letters",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/operator/dead-letters?limit=50&before=",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "operator",
+                "dead-letters"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "disabled": true,
+                  "description": "1 to 200. Omitted means the service default."
+                },
+                {
+                  "key": "before",
+                  "value": "",
+                  "disabled": true,
+                  "description": "Keyset cursor: the next_before of the previous page."
+                }
+              ]
+            },
+            "description": "Scope: read. Keyset page with delivery history."
+          },
+          "response": []
+        },
+        {
+          "name": "Reconciliation runs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/operator/reconciliation/runs?limit=50&before=",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "operator",
+                "reconciliation",
+                "runs"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "disabled": true,
+                  "description": "1 to 200. Omitted means the service default."
+                },
+                {
+                  "key": "before",
+                  "value": "",
+                  "disabled": true,
+                  "description": "Keyset cursor: the next_before of the previous page."
+                }
+              ]
+            },
+            "description": "Scope: read. Keyset page, newest first."
+          },
+          "response": []
+        },
+        {
+          "name": "Open discrepancies",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/operator/reconciliation/discrepancies?limit=50&before=",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "operator",
+                "reconciliation",
+                "discrepancies"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "disabled": true,
+                  "description": "1 to 200. Omitted means the service default."
+                },
+                {
+                  "key": "before",
+                  "value": "",
+                  "disabled": true,
+                  "description": "Keyset cursor: the next_before of the previous page."
+                }
+              ]
+            },
+            "description": "Scope: read. Keyset page."
+          },
+          "response": []
+        },
+        {
+          "name": "Evidence bundle of one payment",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/operator/payment-intents/{{intentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "operator",
+                "payment-intents",
+                "{{intentId}}"
+              ]
+            },
+            "description": "Scope: read. Cross-merchant."
+          },
+          "response": []
+        },
+        {
+          "name": "Prometheus metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/metrics",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "metrics"
+              ]
+            },
+            "description": "Scope: read. text/plain exposition; fails as a whole when storage cannot answer."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
