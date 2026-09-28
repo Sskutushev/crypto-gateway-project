@@ -60,6 +60,16 @@ before them, by the slice that added it.
   on hold, `cancelled` cancels an unpaid order, `OVERPAID` adds a note.
   PHPUnit tests and a CI job cover signature verification, minor-unit
   conversion and the order-state mapping.
+- **Chain simulator for integration tests.** `tools/chain-simulator` is a
+  deterministic, in-memory TRON node (Python standard library) serving the
+  calls the TRON source makes, with a control API (loopback or token only)
+  that mines a transfer, a wrong amount or a reverted transaction; it refuses
+  to mint the real USDT contracts. `scripts/seed-simulator-rail.sql` seeds a
+  `simulator`/`testnet` rail, the Compose profile `simulator` runs it on its
+  own database, `scripts/simulate-payment.py` pays a quote and follows the
+  intent, and `tools/chain-simulator/e2e.sh` runs the whole unmodified
+  pipeline end to end; CI runs the simulator's tests and that run. Testing
+  only: it proves nothing about the real chain. No gateway code changed.
 - **Collector retirement without SQL.** `collector-stop-quoting` moves an
   address to `receiving_only` (never quoted again, still watched), audited.
   `collector-retire` refuses while any amount reservation on the address

@@ -98,6 +98,26 @@ curl -s localhost:8080/metrics -H "Authorization: Bearer $OPERATOR_KEY" | head
 The quote names a collector address and an exact `amount_raw`. The seeded
 operator collector is a placeholder nobody holds a key for, so do not pay it.
 
+### Try it without a chain
+
+[`tools/chain-simulator`](tools/chain-simulator) is a simulated TRON node
+(Python, standard library only) that answers exactly the calls the gateway
+makes. With it the unmodified pipeline runs end to end on one machine, with no
+money and no testnet: quote, payment, two observers, the verifier's re-read,
+settlement and the signed webhook in the outbox.
+
+```sh
+cargo build --locked -p gateway-api -p gateway-worker
+GATEWAY_DATABASE_URL=postgres://gateway:gateway@127.0.0.1:54329/gateway_sim   E2E_RESET_DATABASE=yes tools/chain-simulator/e2e.sh
+```
+
+or `docker compose --profile simulator up -d ...` with
+[`scripts/simulate-payment.py`](scripts/simulate-payment.py) to pay an intent
+(exact, wrong amount, or a reverted transaction). **It tests your integration
+only and proves nothing about the real chain; never point a mainnet deployment
+at it.** The webhook still goes only to a public `https` URL on port 443.
+Details: [`tools/chain-simulator/README.md`](tools/chain-simulator/README.md).
+
 ### A real Nile testnet payment, on your own address
 
 Put a TronGrid API key and a webhook master key into `.env` (see

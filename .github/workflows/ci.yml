@@ -104,6 +104,57 @@ jobs:
         working-directory: examples/webhook-receiver-typescript
         run: npm test
 
+  # The chain simulator is a test double for integrators; its own tests pin
+  # the address codec, the event-log encoding and the control API's access.
+  simulator:
+    name: chain simulator unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: unittest
+        working-directory: tools/chain-simulator
+        run: python3 -m unittest -v
+
+  # The unmodified gateway, end to end, on the simulated chain: an exact
+  # payment settles, a wrong amount is queued as unmatched, a reverted
+  # transaction pays nothing. It proves the wiring, not anything about TRON.
+  simulator-e2e:
+    name: end to end on the chain simulator
+    runs-on: ubuntu-24.04
+    needs: [simulator]
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16.4-bookworm
+        env:
+          POSTGRES_DB: gateway_e2e
+          POSTGRES_USER: gateway
+          POSTGRES_PASSWORD: gateway
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U gateway -d gateway_e2e"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.90.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked -p gateway-api -p gateway-worker
+      - name: e2e
+        env:
+          GATEWAY_DATABASE_URL: "postgres://gateway:gateway@localhost:5432/gateway_e2e"
+          E2E_RESET_DATABASE: "yes"
+          E2E_WORKDIR: ${{ runner.temp }}/simulator-e2e
+        run: |
+          mkdir -p "$E2E_WORKDIR"
+          bash tools/chain-simulator/e2e.sh
+      - name: logs
+        if: failure()
+        run: tail -n 50 "${{ runner.temp }}"/simulator-e2e/*.log
+
   # Dependency policy is release-blocking. A payment service must not publish
   # an image when its direct/runtime dependency graph has a known advisory or
   # when the advisory database cannot be checked.
@@ -144,6 +195,7 @@ jobs:
         run: |
           for example in deploy/env/*.env.example; do cp "$example" "${example%.example}"; done
           docker compose -f deploy/compose.production.yaml config --quiet
+          docker compose -f compose.yaml --profile workers --profile simulator config --quiet
       - name: kustomize build
         run: kubectl kustomize deploy/k8s > /dev/null
 
