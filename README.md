@@ -147,7 +147,9 @@ webhook: [`docs/merchant-integration.md`](docs/merchant-integration.md).
   and [`examples/webhook-receiver-python`](examples/webhook-receiver-python):
   signature verification over the raw body with several `v1` values during a
   secret rotation, timestamp tolerance and deduplication, with tests;
-- [`examples/postman`](examples/postman): a collection for every route.
+- [`examples/postman`](examples/postman): a collection for every route;
+- [`integrations/woocommerce/crypto-gateway-usdt`](integrations/woocommerce/crypto-gateway-usdt):
+  a WooCommerce payment method built on the same merchant routes and webhook.
 
 ## Scope
 
@@ -229,6 +231,7 @@ The documentation is published as a site:
 - [Merchant integration](docs/merchant-integration.md): intents, quotes, statuses, webhook verification
 - [Examples](examples/): webhook receivers, a create-payment script, a Postman collection
 - [TypeScript SDK](sdk/typescript/): typed client, webhook verification and exact amount helpers (`@crypto-gateway/sdk`)
+- [WooCommerce plugin](integrations/woocommerce/crypto-gateway-usdt/): USDT checkout for WooCommerce, hosted page, signed webhook, status reconciliation
 - [Scope and limits](docs/scope-and-limits.md): what is supported and every exceptional payment case
 - [Money invariants](docs/money-invariants.md): each invariant and the tests that falsify it
 - [OpenAPI 3.1](docs/openapi.json): every route the router serves, checked by a test
