@@ -6,15 +6,15 @@ use std::{
 
 use async_trait::async_trait;
 use gateway_domain::{
-    CurrencyCode, PriceAggregationError, PriceAggregationPolicy, PriceReading, RailHealth,
-    RawAmount, RiskDecision,
+    CurrencyCode, ManualResolutionAction, PriceAggregationError, PriceAggregationPolicy,
+    PriceReading, RailHealth, RawAmount, RemainderDisposition, RiskDecision,
 };
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use super::{
-    OperationsError, OperationsRepository, OperationsService, OperatorCredential, OperatorScope,
-    PriceIngestion, PriceOutcome, RailStop, RecordedPrice, RiskSubmission,
+    ManualResolution, OperationsError, OperationsRepository, OperationsService, OperatorCredential,
+    OperatorScope, PriceIngestion, PriceOutcome, RailStop, RecordedPrice, RiskSubmission,
 };
 use crate::{Clock, RepositoryError};
 
@@ -164,6 +164,25 @@ impl OperationsRepository for StubRepository {
         _submitted_by: Uuid,
     ) -> Result<Uuid, RepositoryError> {
         Ok(Uuid::from_u128(88))
+    }
+
+    async fn risk_provider_allowed(
+        &self,
+        _operator_key_id: Uuid,
+        provider: &str,
+    ) -> Result<bool, RepositoryError> {
+        Ok(provider != "unbound-kyt")
+    }
+
+    async fn resolve_manual(
+        &self,
+        _credential: &OperatorCredential,
+        _idempotency_key: &str,
+        _request_hash: &[u8; 32],
+        _resolution: &super::ManualResolution,
+        _decided_at: OffsetDateTime,
+    ) -> Result<super::ManualResolutionResult, OperationsError> {
+        Err(OperationsError::ManualResolutionConflict)
     }
 }
 
@@ -323,7 +342,7 @@ async fn a_screening_decision_is_attributable() -> TestResult {
 
     let id = service
         .submit_risk_evaluation(
-            &credential(&[OperatorScope::Ingest]),
+            &credential(&[OperatorScope::RiskIngest]),
             &RiskSubmission {
                 transfer_id: Uuid::from_u128(4),
                 provider: "example-kyt".to_owned(),
@@ -336,5 +355,142 @@ async fn a_screening_decision_is_attributable() -> TestResult {
         .await?;
 
     assert_eq!(id, Uuid::from_u128(88));
+    Ok(())
+}
+
+#[tokio::test]
+async fn screening_requires_a_bound_risk_key_and_current_evidence() -> TestResult {
+    let service = service(StubRepository::with_policy());
+    let mut submission = RiskSubmission {
+        transfer_id: Uuid::from_u128(4),
+        provider: "example-kyt".to_owned(),
+        decision: RiskDecision::Allow,
+        score: Some(12),
+        reasons: serde_json::json!({"lists": []}),
+        evaluated_at: now(),
+    };
+
+    assert!(matches!(
+        service
+            .submit_risk_evaluation(&credential(&[OperatorScope::Ingest]), &submission)
+            .await,
+        Err(OperationsError::MissingScope(OperatorScope::RiskIngest))
+    ));
+    submission.evaluated_at = now() + Duration::minutes(5);
+    assert!(matches!(
+        service
+            .submit_risk_evaluation(&credential(&[OperatorScope::RiskIngest]), &submission)
+            .await,
+        Err(OperationsError::InvalidRiskEvaluation)
+    ));
+    submission.evaluated_at = now();
+    submission.provider = "unbound-kyt".to_owned();
+    assert!(matches!(
+        service
+            .submit_risk_evaluation(&credential(&[OperatorScope::RiskIngest]), &submission)
+            .await,
+        Err(OperationsError::RiskProviderNotAllowed)
+    ));
+    Ok(())
+}
+
+fn manual_resolution(action: ManualResolutionAction) -> Result<ManualResolution, Box<dyn Error>> {
+    Ok(ManualResolution {
+        action,
+        transfer_id: Uuid::from_u128(40),
+        payment_intent_id: Some(Uuid::from_u128(41)),
+        attempt_id: Some(Uuid::from_u128(42)),
+        allocate_raw: Some(RawAmount::from_str("1000000")?),
+        remainder_raw: None,
+        disposition: None,
+        external_reference: None,
+        reason: "evidence reviewed".to_owned(),
+    })
+}
+
+#[tokio::test]
+async fn manual_money_decisions_require_admin_and_well_formed_commands() -> TestResult {
+    let service = service(StubRepository::default());
+    let honor = manual_resolution(ManualResolutionAction::Honor)?;
+
+    assert!(matches!(
+        service
+            .resolve_manual(
+                &credential(&[OperatorScope::Read]),
+                "manual-resolution-0001",
+                &honor,
+            )
+            .await,
+        Err(OperationsError::MissingScope(OperatorScope::Admin))
+    ));
+    assert!(matches!(
+        service
+            .resolve_manual(&credential(&[OperatorScope::Admin]), "short", &honor)
+            .await,
+        Err(OperationsError::InvalidIdempotencyKey)
+    ));
+    assert!(matches!(
+        service
+            .resolve_manual(
+                &credential(&[OperatorScope::Admin]),
+                "manual resolution 0001",
+                &honor,
+            )
+            .await,
+        Err(OperationsError::InvalidIdempotencyKey)
+    ));
+
+    let mut zero_honor = honor.clone();
+    zero_honor.allocate_raw = Some(RawAmount::ZERO);
+    assert!(matches!(
+        service
+            .resolve_manual(
+                &credential(&[OperatorScope::Admin]),
+                "manual-resolution-zero",
+                &zero_honor,
+            )
+            .await,
+        Err(OperationsError::InvalidManualResolution)
+    ));
+
+    let mut long_reason = honor.clone();
+    long_reason.reason = "x".repeat(1001);
+    assert!(matches!(
+        service
+            .resolve_manual(
+                &credential(&[OperatorScope::Admin]),
+                "manual-resolution-long-reason",
+                &long_reason,
+            )
+            .await,
+        Err(OperationsError::ReasonRequired)
+    ));
+
+    let mut disposition = manual_resolution(ManualResolutionAction::RecordRemainderDisposition)?;
+    disposition.attempt_id = None;
+    disposition.allocate_raw = None;
+    disposition.remainder_raw = Some(RawAmount::from_str("100")?);
+    disposition.disposition = Some(RemainderDisposition::RefundedExternally);
+    assert!(matches!(
+        service
+            .resolve_manual(
+                &credential(&[OperatorScope::Admin]),
+                "manual-resolution-0002",
+                &disposition,
+            )
+            .await,
+        Err(OperationsError::InvalidManualResolution)
+    ));
+    disposition.external_reference = Some("provider-ref-17".to_owned());
+    assert!(matches!(
+        service
+            .resolve_manual(
+                &credential(&[OperatorScope::Admin]),
+                "manual-resolution-0002",
+                &disposition,
+            )
+            .await,
+        Err(OperationsError::ManualResolutionConflict)
+    ));
     Ok(())
 }

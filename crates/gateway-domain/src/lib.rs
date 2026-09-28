@@ -28,9 +28,10 @@ pub use quote::{
     RailHealthSnapshot,
 };
 pub use settlement::{
-    AttemptCandidate, AttemptStatus, HoldReason, ManualReason, MatchOutcome, MatchStrategy,
-    RiskDecision, SettlementError, SettlementEvidence, SettlementOutcome, SettlementPolicy,
-    SettlementTier, TransferFacts, decide_settlement, match_transfer,
+    AttemptCandidate, AttemptStatus, HoldReason, ManualReason, ManualResolutionAction,
+    MatchOutcome, MatchStrategy, RemainderDisposition, RiskDecision, SettlementError,
+    SettlementEvidence, SettlementOutcome, SettlementPolicy, SettlementTier, TransferFacts,
+    decide_settlement, match_transfer,
 };
 pub use verification::{
     AttestationRole, CanonicalTransfer, ConflictField, DiscardReason, DiscardedReading,

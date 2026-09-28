@@ -342,6 +342,8 @@ impl SettlementRepository for PostgresRepository {
             SELECT id, decision
               FROM payment_risk_evaluations
              WHERE transfer_id = $1
+               AND evaluated_at >= now() - interval '1 hour'
+               AND evaluated_at <= now() + interval '30 seconds'
              ORDER BY evaluated_at DESC
              LIMIT 1
             ",
@@ -351,7 +353,8 @@ impl SettlementRepository for PostgresRepository {
         .await
         .map_err(unavailable)?;
 
-        // An absent screening is recorded as skipped. It is never an allow.
+        // An absent or expired screening is skipped. It is never an allow:
+        // provider evidence is current evidence, not a permanent reputation.
         let Some((id, decision)) = row else {
             return Ok((RiskDecision::Skipped, None));
         };
@@ -390,67 +393,17 @@ impl SettlementRepository for PostgresRepository {
         }
 
         let now = OffsetDateTime::now_utc();
-        let record = match &command.outcome {
-            SettlementOutcome::Hold { reason } => {
-                finish_without_money(
-                    &mut transaction,
-                    command,
-                    "held",
-                    "held",
-                    reason.as_str(),
-                    now,
-                )
-                .await?;
-                SettlementRecord::Held
+        let record = match apply_outcome(&mut transaction, command, now).await {
+            Ok(record) => record,
+            Err(RepositoryError::TransitionRefused(reason)) => {
+                // The intent or attempt stopped being payable after the match
+                // was decided (cancelled, or paid through another attempt).
+                // The money is real and stays visible: roll everything back and
+                // hand the transfer to an operator instead of retrying forever.
+                transaction.rollback().await.map_err(unavailable)?;
+                return park_refused(self.pool(), lease, command, &reason).await;
             }
-            SettlementOutcome::ManualRequired { reason } => {
-                finish_without_money(
-                    &mut transaction,
-                    command,
-                    "held",
-                    "manual_required",
-                    reason.as_str(),
-                    now,
-                )
-                .await?;
-                SettlementRecord::ManualRequired
-            }
-            SettlementOutcome::Settle { allocate_raw } => {
-                allocate_and_finish(
-                    &mut transaction,
-                    command,
-                    *allocate_raw,
-                    RawAmount::ZERO,
-                    "settled",
-                    now,
-                )
-                .await?
-            }
-            SettlementOutcome::Partial { allocate_raw } => {
-                allocate_and_finish(
-                    &mut transaction,
-                    command,
-                    *allocate_raw,
-                    RawAmount::ZERO,
-                    "partial",
-                    now,
-                )
-                .await?
-            }
-            SettlementOutcome::Overpaid {
-                allocate_raw,
-                remainder_raw,
-            } => {
-                allocate_and_finish(
-                    &mut transaction,
-                    command,
-                    *allocate_raw,
-                    *remainder_raw,
-                    "overpaid",
-                    now,
-                )
-                .await?
-            }
+            Err(error) => return Err(error),
         };
 
         transaction.commit().await.map_err(unavailable)?;
@@ -560,6 +513,109 @@ async fn hold_lease(
 }
 
 /// Records a decision that moves no money, and parks the transfer.
+/// Hands a matched transfer to an operator when its payment could not take
+/// the money, in a fresh transaction after the refused one rolled back.
+///
+/// The processing row is locked again and must still be pending: if another
+/// worker finished the transfer in between, that decision stands.
+async fn park_refused(
+    pool: &sqlx::PgPool,
+    lease: &ComponentLease,
+    command: &SettlementCommand,
+    refusal: &str,
+) -> Result<SettlementRecord, RepositoryError> {
+    let mut transaction = pool.begin().await.map_err(unavailable)?;
+    hold_lease(&mut transaction, lease).await?;
+    let state = sqlx::query_scalar::<_, String>(
+        "SELECT processing_state FROM chain_transfer_processing WHERE transfer_id = $1 FOR UPDATE",
+    )
+    .bind(command.transfer_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(unavailable)?
+    .ok_or_else(|| corrupt("a canonical transfer has no processing row"))?;
+    if state != "pending" {
+        transaction.commit().await.map_err(unavailable)?;
+        return Ok(SettlementRecord::AlreadyProcessed);
+    }
+    let reason = format!("payment_not_payable: {refusal}");
+    finish_without_money(
+        &mut transaction,
+        command,
+        "held",
+        "manual_required",
+        &reason,
+        OffsetDateTime::now_utc(),
+    )
+    .await?;
+    transaction.commit().await.map_err(unavailable)?;
+    Ok(SettlementRecord::ManualRequired)
+}
+
+/// Writes one decided outcome inside the caller's transaction.
+async fn apply_outcome(
+    transaction: &mut Transaction<'_, Postgres>,
+    command: &SettlementCommand,
+    now: OffsetDateTime,
+) -> Result<SettlementRecord, RepositoryError> {
+    let record = match &command.outcome {
+        SettlementOutcome::Hold { reason } => {
+            finish_without_money(transaction, command, "held", "held", reason.as_str(), now)
+                .await?;
+            SettlementRecord::Held
+        }
+        SettlementOutcome::ManualRequired { reason } => {
+            finish_without_money(
+                transaction,
+                command,
+                "held",
+                "manual_required",
+                reason.as_str(),
+                now,
+            )
+            .await?;
+            SettlementRecord::ManualRequired
+        }
+        SettlementOutcome::Settle { allocate_raw } => {
+            allocate_and_finish(
+                transaction,
+                command,
+                *allocate_raw,
+                RawAmount::ZERO,
+                "settled",
+                now,
+            )
+            .await?
+        }
+        SettlementOutcome::Partial { allocate_raw } => {
+            allocate_and_finish(
+                transaction,
+                command,
+                *allocate_raw,
+                RawAmount::ZERO,
+                "partial",
+                now,
+            )
+            .await?
+        }
+        SettlementOutcome::Overpaid {
+            allocate_raw,
+            remainder_raw,
+        } => {
+            allocate_and_finish(
+                transaction,
+                command,
+                *allocate_raw,
+                *remainder_raw,
+                "overpaid",
+                now,
+            )
+            .await?
+        }
+    };
+    Ok(record)
+}
+
 async fn finish_without_money(
     transaction: &mut Transaction<'_, Postgres>,
     command: &SettlementCommand,
@@ -664,8 +720,11 @@ async fn allocate_and_finish(
         r"
         INSERT INTO payment_allocations (
             id, attempt_id, payment_intent_id, merchant_id, transfer_id, allocated_raw,
-            allocated_by, reason, created_at
-        ) VALUES ($1, $2, $3, $4, $5, CAST($6 AS NUMERIC), $7, $8, $9)
+            allocated_by, reason, created_at, collector_address_id
+        )
+        SELECT $1, $2, $3, $4, $5, CAST($6 AS NUMERIC), $7, $8, $9, attempt.collector_address_id
+          FROM payment_attempts AS attempt
+         WHERE attempt.id = $2
         ON CONFLICT (attempt_id, transfer_id) DO NOTHING
         ",
     )
@@ -684,7 +743,7 @@ async fn allocate_and_finish(
     .bind(now)
     .execute(&mut **transaction)
     .await
-    .map_err(unavailable)?;
+    .map_err(binding_refused)?;
 
     if inserted.rows_affected() == 0 {
         // The same transfer and attempt were already allocated: a replay.
@@ -722,6 +781,56 @@ async fn allocate_and_finish(
     }
 
     Ok(record)
+}
+
+/// Reuses the automatic money transaction for an operator-approved match.
+/// The caller owns the surrounding transaction and has already locked and
+/// checked the exceptional case.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn manual_allocate_and_finish(
+    transaction: &mut Transaction<'_, Postgres>,
+    command: &SettlementCommand,
+    allocate_raw: RawAmount,
+    remainder_raw: RawAmount,
+    outcome: &str,
+    actor: &str,
+    reason: &str,
+    now: OffsetDateTime,
+) -> Result<SettlementRecord, RepositoryError> {
+    let result = allocate_and_finish(
+        transaction,
+        command,
+        allocate_raw,
+        remainder_raw,
+        outcome,
+        now,
+    )
+    .await?;
+    if !matches!(
+        result,
+        SettlementRecord::ForeignClaim | SettlementRecord::AlreadyProcessed
+    ) {
+        sqlx::query(
+            "UPDATE payment_allocations SET allocated_by=$3, reason='manual' WHERE attempt_id=$1 AND transfer_id=$2",
+        )
+        .bind(command.attempt_id)
+        .bind(command.transfer_id)
+        .bind(actor)
+        .execute(&mut **transaction)
+        .await
+        .map_err(unavailable)?;
+        sqlx::query(
+            "UPDATE payment_settlement_decisions SET decided_by=$3, decided_reason=$4 WHERE payment_intent_id=$1 AND transfer_id=$2",
+        )
+        .bind(command.payment_intent_id)
+        .bind(command.transfer_id)
+        .bind(actor)
+        .bind(reason)
+        .execute(&mut **transaction)
+        .await
+        .map_err(unavailable)?;
+    }
+    Ok(result)
 }
 
 /// Records an overpayment remainder. It is never absorbed into a product, and
@@ -775,8 +884,12 @@ async fn claim_transfer(
     sqlx::query(
         r"
         INSERT INTO chain_transfer_intent_claims (
-            transfer_id, payment_intent_id, attempt_id, merchant_id, match_strategy, claimed_at
-        ) VALUES ($1, $2, $3, $4, $5, $6)
+            transfer_id, payment_intent_id, attempt_id, merchant_id, match_strategy, claimed_at,
+            collector_address_id
+        )
+        SELECT $1, $2, $3, $4, $5, $6, attempt.collector_address_id
+          FROM payment_attempts AS attempt
+         WHERE attempt.id = $3
         ON CONFLICT (transfer_id) DO NOTHING
         ",
     )
@@ -788,7 +901,7 @@ async fn claim_transfer(
     .bind(now)
     .execute(&mut **transaction)
     .await
-    .map_err(unavailable)?;
+    .map_err(binding_refused)?;
 
     let owner = sqlx::query_scalar::<_, Uuid>(
         "SELECT payment_intent_id FROM chain_transfer_intent_claims WHERE transfer_id = $1",
@@ -828,37 +941,83 @@ async fn claim_transfer(
     Ok(false)
 }
 
+/// Intent states from which money may still move the obligation forward.
+///
+/// `requires_quote` has no attempt to pay; `paid` is done; `cancelled` is a
+/// merchant's final word and stays final. An `expired` intent is payable only
+/// through an attempt still inside its late-payment window, which the caller
+/// establishes before it gets here.
+const PAYABLE_INTENT_STATES: &[&str] =
+    &["awaiting_payment", "partially_paid", "risk_hold", "expired"];
+
+/// Attempt states that may receive an allocation.
+const ALLOCATABLE_ATTEMPT_STATES: &[&str] = &["awaiting_payment", "expired"];
+
+/// A foreign-key refusal on an allocation or a claim means the transfer is
+/// not at the attempt's collector (migration 0014). That is a decision the
+/// money cannot take, not a storage outage: it must not be retried.
+fn binding_refused(error: sqlx::Error) -> RepositoryError {
+    if let sqlx::Error::Database(database) = &error
+        && database.code().as_deref() == Some("23503")
+    {
+        return RepositoryError::TransitionRefused(
+            "the transfer is not at the attempt's collector".to_owned(),
+        );
+    }
+    unavailable(error)
+}
+
+/// Refuses unless exactly one row moved: zero means the row was not in a state
+/// that allows the change, and the whole transaction must be abandoned before
+/// a fulfilment claim, an event or a webhook is written.
+fn require_one_row(rows: u64, what: &str) -> Result<(), RepositoryError> {
+    if rows == 1 {
+        Ok(())
+    } else {
+        Err(RepositoryError::TransitionRefused(what.to_owned()))
+    }
+}
+
 /// Marks the obligation paid and takes the single claim to fulfil it.
 async fn advance_to_paid(
     transaction: &mut Transaction<'_, Postgres>,
     command: &SettlementCommand,
     now: OffsetDateTime,
 ) -> Result<(), RepositoryError> {
-    sqlx::query(
+    let attempt = sqlx::query(
         r"
         UPDATE payment_attempts
            SET status = 'settled', updated_at = $2
-         WHERE id = $1 AND status IN ('awaiting_payment', 'expired')
+         WHERE id = $1 AND payment_intent_id = $3 AND status = ANY($4)
         ",
     )
     .bind(command.attempt_id)
     .bind(now)
+    .bind(command.payment_intent_id)
+    .bind(ALLOCATABLE_ATTEMPT_STATES)
     .execute(&mut **transaction)
     .await
     .map_err(unavailable)?;
+    require_one_row(
+        attempt.rows_affected(),
+        "the attempt is not open for payment",
+    )?;
 
-    sqlx::query(
+    let intent = sqlx::query(
         r"
         UPDATE payment_intents
            SET status = 'paid', version = version + 1, updated_at = $2
-         WHERE id = $1 AND status <> 'paid'
+         WHERE id = $1 AND merchant_id = $3 AND status = ANY($4)
         ",
     )
     .bind(command.payment_intent_id)
     .bind(now)
+    .bind(command.merchant_id)
+    .bind(PAYABLE_INTENT_STATES)
     .execute(&mut **transaction)
     .await
     .map_err(unavailable)?;
+    require_one_row(intent.rows_affected(), "the payment intent is not payable")?;
 
     // The fulfilment row is the claim. If it already exists, this is a replay
     // and the merchant must not be told twice.
@@ -920,18 +1079,44 @@ async fn advance_to_partially_paid(
     command: &SettlementCommand,
     now: OffsetDateTime,
 ) -> Result<(), RepositoryError> {
-    sqlx::query(
+    // The attempt is not closed by a partial payment, but it must still be one
+    // that may receive money: a settled or cancelled attempt takes none.
+    let attempt = sqlx::query(
+        r"
+        UPDATE payment_attempts
+           SET updated_at = $2
+         WHERE id = $1 AND payment_intent_id = $3 AND status = ANY($4)
+        ",
+    )
+    .bind(command.attempt_id)
+    .bind(now)
+    .bind(command.payment_intent_id)
+    .bind(ALLOCATABLE_ATTEMPT_STATES)
+    .execute(&mut **transaction)
+    .await
+    .map_err(unavailable)?;
+    require_one_row(
+        attempt.rows_affected(),
+        "the attempt is not open for payment",
+    )?;
+
+    // A second partial transfer keeps the intent partially paid: one row
+    // still moves, and it is a real new fact the merchant is told about.
+    let intent = sqlx::query(
         r"
         UPDATE payment_intents
            SET status = 'partially_paid', version = version + 1, updated_at = $2
-         WHERE id = $1 AND status IN ('awaiting_payment', 'requires_quote')
+         WHERE id = $1 AND merchant_id = $3 AND status = ANY($4)
         ",
     )
     .bind(command.payment_intent_id)
     .bind(now)
+    .bind(command.merchant_id)
+    .bind(PAYABLE_INTENT_STATES)
     .execute(&mut **transaction)
     .await
     .map_err(unavailable)?;
+    require_one_row(intent.rows_affected(), "the payment intent is not payable")?;
 
     insert_payment_event(
         transaction,

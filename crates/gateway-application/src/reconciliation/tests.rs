@@ -15,8 +15,9 @@ use super::{
     ScanFindings,
 };
 use crate::{
-    Clock, ComponentState, ComponentStatus, HealthRepository, OperationsRepository,
-    OperatorCredential, PriceIngestion, RailStop, RecordedPrice, RepositoryError, RiskSubmission,
+    Clock, ComponentState, ComponentStatus, HealthRepository, ManualResolution,
+    ManualResolutionResult, OperationsError, OperationsRepository, OperatorCredential,
+    PriceIngestion, RailStop, RecordedPrice, RepositoryError, RiskSubmission,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -191,6 +192,25 @@ impl OperationsRepository for StubRepository {
         _submitted_by: Uuid,
     ) -> Result<Uuid, RepositoryError> {
         Ok(Uuid::nil())
+    }
+
+    async fn risk_provider_allowed(
+        &self,
+        _operator_key_id: Uuid,
+        _provider: &str,
+    ) -> Result<bool, RepositoryError> {
+        Ok(false)
+    }
+
+    async fn resolve_manual(
+        &self,
+        _credential: &OperatorCredential,
+        _idempotency_key: &str,
+        _request_hash: &[u8; 32],
+        _resolution: &ManualResolution,
+        _decided_at: OffsetDateTime,
+    ) -> Result<ManualResolutionResult, OperationsError> {
+        Err(OperationsError::ManualResolutionConflict)
     }
 }
 

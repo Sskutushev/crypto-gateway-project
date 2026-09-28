@@ -608,3 +608,106 @@ pub(crate) async fn seed(pool: &PgPool) -> TestResult {
 pub(crate) async fn count(pool: &PgPool, query: &str) -> Result<i64, Box<dyn Error>> {
     Ok(sqlx::query_scalar(query).fetch_one(pool).await?)
 }
+
+#[tokio::test]
+#[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+async fn money_for_an_intent_cancelled_before_settlement_goes_to_a_person() -> TestResult {
+    let _fixture = DATABASE.lock().await;
+    let pool = connect().await?;
+    seed(&pool).await?;
+    let repository = Arc::new(PostgresRepository::new(pool.clone()));
+    let clock = TestClock::at(OffsetDateTime::now_utc());
+
+    let intents = PaymentIntentService::new(Arc::clone(&repository), clock.clone());
+    let intent = intents
+        .create(
+            MERCHANT,
+            ACTOR_KEY,
+            "settlement_cancel_intent_01",
+            CreatePaymentIntent {
+                amount_minor: "40000".to_owned(),
+                currency: "USD".to_owned(),
+                reference: "order-cancelled-before-settle".to_owned(),
+                description: None,
+                metadata: json!({}),
+            },
+        )
+        .await?;
+    let quotes = gateway_application::QuoteService::new(Arc::clone(&repository), clock.clone());
+    let quote = quotes
+        .issue(
+            MERCHANT,
+            ACTOR_KEY,
+            "settlement_cancel_quote_001",
+            IssueQuote {
+                payment_intent_id: intent.intent.id,
+                asset_id: ASSET_ID,
+            },
+        )
+        .await?;
+    let lease = repository
+        .acquire_component_lease("payments:tron", "pod-payments:boot-1", 300, clock.now())
+        .await?
+        .ok_or("the payment worker could not take its lease")?;
+    let paid = transfer(quote.quote.amount_raw.to_string().as_str(), clock.now())?;
+    record_evidence(&repository, &lease, &paid, clock.now()).await?;
+    let verifier = VerificationService::new(
+        Arc::clone(&repository),
+        Arc::new(ChainDouble(Mutex::new(paid))),
+        clock.clone(),
+        source(VERIFIER_SOURCE, "verifier"),
+        "verifier-test",
+        "parser-test",
+    );
+    clock.advance(Duration::seconds(5));
+    assert_eq!(verifier.verify_pending(&lease, 50).await?.verified, 1);
+
+    // The merchant cancels the order while the verified money waits for settlement.
+    sqlx::query("UPDATE payment_intents SET status = 'cancelled' WHERE id = $1")
+        .bind(intent.intent.id)
+        .execute(&pool)
+        .await?;
+
+    let settlement = SettlementService::new(Arc::clone(&repository), clock.clone());
+    let report = settlement.settle_pending(&lease, 50).await?;
+
+    assert_eq!(report.settled, 0);
+    assert_eq!(report.manual_required, 1);
+    for table in [
+        "payment_allocations",
+        "payment_fulfillments",
+        "chain_transfer_intent_claims",
+    ] {
+        assert_eq!(
+            count(&pool, &format!("SELECT count(*) FROM {table}")).await?,
+            0,
+            "a refused settlement wrote to {table}"
+        );
+    }
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT count(*) FROM domain_events WHERE event_type LIKE 'payment_intent.%'"
+        )
+        .await?,
+        0
+    );
+    let status: String = sqlx::query_scalar("SELECT status FROM payment_intents WHERE id = $1")
+        .bind(intent.intent.id)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(status, "cancelled");
+    let (state, reason): (String, String) = sqlx::query_as(
+        "SELECT p.processing_state, d.decided_reason FROM chain_transfer_processing p \
+         JOIN payment_settlement_decisions d ON d.transfer_id = p.transfer_id",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(state, "held");
+    assert!(reason.starts_with("payment_not_payable"), "{reason}");
+
+    // Nothing is retried on the next pass: the money waits for a person.
+    clock.advance(Duration::seconds(5));
+    assert_eq!(settlement.settle_pending(&lease, 50).await?.examined, 0);
+    Ok(())
+}

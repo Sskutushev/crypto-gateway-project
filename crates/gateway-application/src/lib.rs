@@ -19,8 +19,9 @@ pub use observations::{
     parse_raw_amount, parse_tx_hash,
 };
 pub use operations::{
-    OperationsError, OperationsRepository, OperationsService, OperatorCredential, OperatorScope,
-    PriceIngestion, PriceOutcome, RailStop, RecordedPrice, RiskSubmission, discard_code,
+    ManualResolution, ManualResolutionResult, OperationsError, OperationsRepository,
+    OperationsService, OperatorCredential, OperatorScope, PriceIngestion, PriceOutcome, RailStop,
+    RecordedPrice, RiskSubmission, discard_code,
 };
 pub use operator_reads::{
     ConflictItem, DeadLetter, DiscrepancyAggregate, EvidenceAllocation, EvidenceAttempt,

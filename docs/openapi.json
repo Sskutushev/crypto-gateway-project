@@ -11,12 +11,12 @@
   "tags": [
     { "name": "health", "description": "Process liveness and the start-up self-check, re-evaluated as readiness." },
     { "name": "merchant", "description": "Authenticated by a merchant API key. Isolated per merchant." },
-    { "name": "operator", "description": "Authenticated by an operator API key carrying ingest, read or admin scopes." }
+    { "name": "operator", "description": "Authenticated by an operator API key carrying ingest, risk_ingest, read or admin scopes." }
   ],
   "components": {
     "securitySchemes": {
       "merchantKey": { "type": "http", "scheme": "bearer", "description": "A merchant API key of 32 to 256 characters. Stored hashed; never recoverable from the database." },
-      "operatorKey": { "type": "http", "scheme": "bearer", "description": "An operator API key of 32 to 256 characters with a subset of the scopes ingest, read and admin. Never a merchant key." }
+      "operatorKey": { "type": "http", "scheme": "bearer", "description": "An operator API key of 32 to 256 characters with a least-privilege subset of ingest, risk_ingest, read and admin. A risk_ingest key is additionally bound in the database to its KYT provider. Never a merchant key." }
     },
     "parameters": {
       "IdempotencyKey": { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+$" }, "description": "Scoped to the merchant, the route and the key. A replay returns the first result with Idempotent-Replayed: true; the same key with a different body is a 409." },
@@ -119,6 +119,37 @@
       "RiskEvaluation": {
         "type": "object", "required": ["provider", "decision", "evaluated_at"], "additionalProperties": false,
         "properties": { "provider": { "type": "string" }, "decision": { "type": "string", "enum": ["allow", "review", "deny"] }, "score": { "type": ["integer", "null"] }, "reasons": { "type": ["object", "null"], "description": "A document, never a list or a bare string." }, "evaluated_at": { "$ref": "#/components/schemas/Timestamp" } }
+      },
+      "ManualResolution": {
+        "type": "object",
+        "required": ["action", "transfer_id", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "action": { "type": "string", "enum": ["honor", "reject", "record_remainder_disposition"] },
+          "transfer_id": { "type": "string", "format": "uuid" },
+          "payment_intent_id": { "type": ["string", "null"], "format": "uuid" },
+          "attempt_id": { "type": ["string", "null"], "format": "uuid" },
+          "allocate_raw": { "oneOf": [{ "$ref": "#/components/schemas/IntegerString" }, { "type": "null" }] },
+          "remainder_raw": { "oneOf": [{ "$ref": "#/components/schemas/IntegerString" }, { "type": "null" }] },
+          "disposition": { "type": ["string", "null"], "enum": ["refunded_externally", "credited_externally", "donated_externally", "retained_by_agreement", null] },
+          "external_reference": { "type": ["string", "null"], "minLength": 1, "maxLength": 200 },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 1000 }
+        }
+      },
+      "ManualResolutionResult": {
+        "type": "object",
+        "required": ["id", "action", "transfer_id", "payment_intent_id", "attempt_id", "merchant_id", "allocated_raw", "remainder_raw", "replayed"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "action": { "type": "string", "enum": ["honor", "reject", "record_remainder_disposition"] },
+          "transfer_id": { "type": "string", "format": "uuid" },
+          "payment_intent_id": { "type": ["string", "null"], "format": "uuid" },
+          "attempt_id": { "type": ["string", "null"], "format": "uuid" },
+          "merchant_id": { "type": ["string", "null"], "format": "uuid" },
+          "allocated_raw": { "oneOf": [{ "$ref": "#/components/schemas/IntegerString" }, { "type": "null" }] },
+          "remainder_raw": { "oneOf": [{ "$ref": "#/components/schemas/IntegerString" }, { "type": "null" }] },
+          "replayed": { "type": "boolean" }
+        }
       },
       "ComponentState": { "type": "string", "enum": ["ok", "degraded", "unavailable", "diverged", "stopped"] },
       "Overview": {
@@ -237,9 +268,21 @@
         "responses": { "204": { "description": "Cleared." }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "409": { "description": "no_open_rail_stop.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }, "503": { "$ref": "#/components/responses/StorageUnavailable" } } }
     },
     "/v1/operator/transfers/{transfer_id}/risk-evaluations": {
-      "post": { "tags": ["operator"], "summary": "Record a screening decision for a transfer", "description": "Requires the ingest scope. A transfer nobody screened reads as skipped, which the settlement bands treat as not screened, never as clean.", "security": [{ "operatorKey": ["ingest"] }], "parameters": [{ "$ref": "#/components/parameters/TransferId" }],
+      "post": { "tags": ["operator"], "summary": "Record a screening decision for a transfer", "description": "Requires the risk_ingest scope and a current, non-future evaluation from the provider bound to that key. A transfer nobody screened reads as skipped, which the settlement bands treat as not screened, never as clean.", "security": [{ "operatorKey": ["risk_ingest"] }], "parameters": [{ "$ref": "#/components/parameters/TransferId" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RiskEvaluation" } } } },
-        "responses": { "201": { "description": "Recorded.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Accepted" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "503": { "$ref": "#/components/responses/StorageUnavailable" } } }
+        "responses": { "201": { "description": "Recorded.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Accepted" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "description": "missing_scope or risk_provider_not_allowed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }, "422": { "description": "invalid_risk_evaluation: stale, future-dated or malformed evidence.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }, "503": { "$ref": "#/components/responses/StorageUnavailable" } } }
+    },
+    "/v1/operator/manual-resolutions": {
+      "post": { "tags": ["operator"], "summary": "Resolve parked inbound money", "description": "Requires the admin scope and an Idempotency-Key. Honor allocates a finalized held or unmatched transfer through the normal settlement transaction; reject closes an unallocated held or unmatched transfer; record_remainder_disposition records an externally completed overpayment action and never claims this gateway sent funds.", "security": [{ "operatorKey": ["admin"] }], "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ManualResolution" } } } },
+        "responses": {
+          "201": { "description": "Decision committed atomically.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ManualResolutionResult" } } } },
+          "200": { "description": "The result of an identical idempotent replay.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ManualResolutionResult" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "description": "manual_resolution_not_found: the transfer, intent, attempt or overpayment decision does not exist.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "manual_resolution_conflict or idempotency_conflict: the requested transition is no longer eligible, would violate a money invariant, or reuses a key with a different command.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "503": { "$ref": "#/components/responses/StorageUnavailable" }
+        } }
     },
     "/v1/operator/overview": {
       "get": { "tags": ["operator"], "summary": "One page of the gateway's state", "security": [{ "operatorKey": ["read"] }],

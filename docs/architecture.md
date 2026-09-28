@@ -35,9 +35,9 @@ entries, state changes, and webhook events in one database transaction.
 
 ## Deployable services
 
-- `gateway-api`: merchant authentication, payment intents, status reads,
-  webhook configuration, and, until the workers exist, the bounded quote-expiry
-  scheduler.
+- `gateway-api`: merchant authentication, payment intents, status reads and
+  operator endpoints. Production expiry work runs in the dedicated worker;
+  the API does not own background scheduling.
 - `chain-observer-*`: one process per chain and source identity. Writes only
   append-only observations.
 - `chain-verifier`: canonicalizes independently attested observations and

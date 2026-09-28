@@ -8,11 +8,15 @@ an operator key; the scope each one needs is in [`openapi.json`](openapi.json).
 
 | Scope | Lets a key | Give it to |
 |---|---|---|
-| `ingest` | submit price readings, rail health, screening decisions | the pricing feeder, the screening integration |
+| `ingest` | submit price readings and rail health | pricing and rail-health feeders |
+| `risk_ingest` | submit current screening decisions for one DB-bound provider | one KYT integration credential per provider |
 | `read` | read the overview, every queue, evidence bundles, `/metrics` | people, dashboards, Prometheus |
 | `admin` | close and reopen a rail | a person, never a job |
 
 A key carries only the scopes its holder needs. Prometheus gets a `read` key.
+An `ingest` key cannot submit screening decisions. A `risk_ingest` key must
+also have an active row in `operator_risk_provider_bindings`; the provider in
+the request must match that row, and stale or future-dated evidence is refused.
 
 ## Feeding prices
 
@@ -98,6 +102,27 @@ settlement decision with its policy, groups and risk verdict, the fulfilment
 claim, payment events and the canonical transfers with their attestation
 counts. It is what you read during a dispute.
 
+## Resolving parked money
+
+`POST /v1/operator/manual-resolutions` requires `admin`, a 16–128 character
+`Idempotency-Key`, and a recorded reason. The accepted actions are deliberately
+narrow:
+
+- `honor` assigns one finalized `held`/`unmatched` transfer to an existing
+  intent and attempt. `allocate_raw` must equal the exact safe allocation
+  `min(outstanding obligation, unallocated transfer)`; the normal claim,
+  allocation, fulfilment, event and outbox transaction is reused.
+- `reject` closes a finalized held/unmatched transfer only when no allocation
+  exists.
+- `record_remainder_disposition` records how an overpayment remainder was
+  handled outside the gateway. It requires the exact remainder and an external
+  reference; it never claims the gateway sent a refund because the gateway has
+  no wallet key.
+
+An identical replay returns the first result. Reusing the key for a different
+command returns `idempotency_conflict`. Never repair these states with direct
+SQL updates.
+
 ## When reconciliation says `hard_stop`
 
 The reconciler runs on its interval, re-reads what was observed, canonical,
@@ -117,8 +142,10 @@ the rail of every asset it can name is closed on the spot, and the component
 4. The next run reports `ok`. The rail stays closed.
 5. Clear the rail stop with the explanation. Only a person does this.
 
-A `fulfilled_not_settled` finding names no asset, so it closes no rail; the
-run status and the component state carry the alarm instead.
+A `fulfilled_not_settled` finding recovers the asset from the intent's
+immutable quote and closes that rail. If a future corruption cannot be mapped
+to an asset, the run still hard-stops and must be treated as a system-wide
+incident until a dedicated global stop exists.
 
 ## Alerts worth setting
 

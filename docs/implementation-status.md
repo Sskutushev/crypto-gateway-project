@@ -4,11 +4,15 @@ Last updated: 2026-09-24
 
 ## Repository state
 
-- Branch: `feat/standalone-gateway-foundation`
+- Current `main` baseline:
+  `c19028965e93f4d3731d67fec5c219d4fbd0b5e2`.
+- Active hardening branch at this handoff: `feat/production-readiness-p0`.
 - Remote: `https://github.com/Sskutushev/crypto-gateway-project.git`
-- Working tree: clean after the open-source packaging slice.
-- This tree is the repository's initial history; there is no earlier product
-  implementation to preserve or migrate.
+- `main` exists. Do not recreate it or commit directly to it; verify the remote
+  branch-protection settings before release work.
+- This file distinguishes implemented repository capabilities from external
+  production readiness. It does not certify providers, KYT, secrets, backups,
+  disaster recovery, capacity, legal approval or a mainnet deployment.
 
 ## Product decisions
 
@@ -86,7 +90,8 @@ Last updated: 2026-09-24
   under a source row that describes another chain or environment. The chain
   environment has no default.
 - The operator surface. Operator keys are their own credential with `ingest`,
-  `read` and `admin` scopes. Prices are submitted as readings and aggregated by
+  `risk_ingest`, `read` and `admin` scopes. Risk keys are bound to one named
+  provider and stale/future evaluations are refused. Prices are submitted as readings and aggregated by
   policy: independence counted by provider group, the exact rational mean of
   the two middle readings, a deviation ceiling, and a refusal that still stores
   every reading with the reason it did not count. A snapshot is only as fresh
@@ -144,7 +149,7 @@ Last updated: 2026-09-24
   property tests over the money parser, the TRON address codec and the
   event-log decoder at two hundred thousand iterations (a stand-in for
   cargo-fuzz, which needs a nightly toolchain); cargo deny for licences, bans
-  and sources with advisories and cargo audit reported but not blocking;
+  and sources, with both RustSec advisories and cargo audit blocking the job;
   compose and kustomize validation; the image with an SPDX SBOM and a Trivy
   scan; publication to GHCR from a version tag. Dependabot watches Cargo,
   Actions and the base images.
@@ -171,17 +176,30 @@ Last updated: 2026-09-24
 - Risk screening has an attributable push path and no provider behind it: a
   transfer nobody screened reads as skipped, which the settlement bands treat
   as not screened, never as clean.
+- Admin-only manual resolution now honors a finalized held/unmatched transfer
+  through the existing atomic settlement transaction, rejects an unallocated
+  transfer, or records an externally completed overpayment disposition. Every
+  command is idempotent and audited; the gateway still does not send refunds.
 
 ## Next slices
 
-1. The owner's steps in `docs/owner-setup.md`: repository identity, `main`
-   with branch protection, providers, collector, master key, then a testnet
-   run with two real providers.
-2. A second independent TRON provider group, then the ERC20 adapter.
-3. Risk screening provider port and the operator decision path for
-   overpayment and late payment.
+1. The owner's remaining steps in `docs/owner-setup.md`: verify repository and
+   branch-protection settings, provision providers, collector, master key and
+   scoped credentials, approve policies, then run a sustained testnet soak
+   with genuinely independent providers.
+2. Integrate a real KYT provider and exercise the implemented operator decision
+   paths for held, unmatched, overpaid and late payments in the testnet soak.
+3. Prove PostgreSQL backup, point-in-time recovery and restore procedures, and
+   establish measured capacity and failure-recovery evidence before mainnet.
+4. Add another rail only after the first TRON rail meets those production
+   gates; an additional adapter does not substitute for hardening.
 
-## Verification
+## Historical verification evidence
+
+The entries below record what passed for the named tree and date. They are
+evidence for those revisions, not a claim that the current working tree, a
+GitHub workflow, external providers or a deployed mainnet environment is
+healthy. Run the relevant checks again after every change.
 
 - Open-source packaging (2026-09-24), in `crypto-gateway-dev`: fmt clean;
   clippy with `-D warnings` clean; `cargo test --workspace --locked` passed
@@ -192,7 +210,32 @@ Last updated: 2026-09-24
   method, and matches the list against `docs/openapi.json` in both
   directions; all 27 PostgreSQL scenarios passed. A link check over the
   README and every document found every relative link resolving; external
-  links were listed, not fetched.
+links were listed, not fetched.
+
+- P0 production-readiness hardening (2026-09-24), on the uncommitted
+  `feat/production-readiness-p0` working tree: `cargo fmt --all -- --check`,
+  `cargo check --workspace --all-targets --locked` and
+  `cargo clippy --workspace --all-targets --locked -- -D warnings` passed;
+  `cargo test --workspace --locked` passed 174 ordinary tests with 31 database
+  tests ignored; a final `cargo test --workspace --locked -- --ignored` passed
+  all 31 PostgreSQL scenarios (3 HTTP and 28 storage), including concurrent
+  manual-resolution idempotency, reject and external remainder-disposition
+  paths, provider-bound KYT intake, least-privilege roles and every
+  reconciliation invariant. `docs/openapi.json` parsed
+  successfully, actionlint accepted the workflow, production Compose validated
+  and `kubectl kustomize deploy/k8s` rendered without error. One held-payment
+  ageing scenario failed once in an earlier parallel full ignored run, then
+  passed in isolation, in the repeated 26-scenario storage run and in the final
+  31-scenario workspace run; no code was changed to conceal it. This is local
+  verification, not CI, provider independence,
+  testnet soak, disaster-recovery, capacity or mainnet evidence.
+  The workspace-level `python .agents/gate.py --tag pre-push` remained blocked
+  outside this repository: 8 checks passed, 3 failed and 1 was unavailable.
+  It reported missing product receipts for `unit-detect` and this repository,
+  the known Windows certificate-store failure in Semgrep, and root hook/audit
+  packaging test setup errors. A direct product-receipt attempt for this repo
+  was refused because no complete product-gate configuration exists; the
+  standalone checks above are therefore the evidence for this working tree.
 
 - Roles, deployment and CI (2026-09-24), in `crypto-gateway-dev`: fmt clean;
   clippy with `-D warnings` clean; `cargo test --workspace --locked` passed
@@ -205,9 +248,10 @@ Last updated: 2026-09-24
   `docker compose -f deploy/compose.production.yaml config --quiet` passed
   with env files copied from the examples; `kubectl kustomize deploy/k8s`
   rendered 17 objects; `docker build` produced an image carrying both
-  `gateway-api` and `gateway-worker`. Not run: `cargo deny` and `cargo audit`
-  (not installed in the container; CI runs them), and the workflow itself,
-  which runs on the first push to GitHub.
+  `gateway-api` and `gateway-worker`. Not run in this local verification:
+  `cargo deny`, `cargo audit`, or the GitHub Actions workflow. Consult the
+  workflow result for the exact commit instead of inferring CI health from
+  this local record.
 
 - Reconciliation scenarios and start-up self-check (2026-09-24), in
   `crypto-gateway-dev`: `cargo fmt --all -- --check` clean;
@@ -279,8 +323,10 @@ Last updated: 2026-09-24
   generation, unrelated root hook and audit-packaging test setup errors, and the
   known Windows certificate-store failure in Semgrep. It was not rerun for this
   slice. The standalone repository checks above are authoritative.
-- No blockchain adapter, verifier, matching, ledger, webhook delivery, or
-  reconciliation exists yet; do not treat the gateway as deployable.
+- The TRON adapter, independent-evidence verifier, matching and settlement,
+  webhook delivery, and reconciliation are implemented. Their presence does
+  not by itself make the gateway safe for real-money mainnet operation; the
+  external and operational gates above remain required.
 
 ## External inputs still required
 

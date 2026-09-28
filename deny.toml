@@ -1,5 +1,11 @@
 [advisories]
 yanked = "deny"
+# Each ignore names why the advisory does not reach the shipped binaries. The
+# CI job "ignored advisories stay out of the build" fails the moment a crate
+# ignored as not compiled starts being compiled.
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained, not vulnerable: a compile-time proc-macro pulled in by alloy-primitives, with no maintained replacement upstream yet" },
+]
 
 [licenses]
 confidence-threshold = 0.93

@@ -28,6 +28,7 @@ pub const ROUTES: &[(&str, &str)] = &[
     ("POST", "/v1/operator/rail-health"),
     ("POST", "/v1/operator/rail-stops"),
     ("POST", "/v1/operator/rail-stops/{asset_id}/clear"),
+    ("POST", "/v1/operator/manual-resolutions"),
     (
         "POST",
         "/v1/operator/transfers/{transfer_id}/risk-evaluations",
@@ -72,6 +73,10 @@ pub fn operator_routes() -> Router<AppState> {
         .route(
             "/v1/operator/transfers/{transfer_id}/risk-evaluations",
             post(operator::submit_risk_evaluation),
+        )
+        .route(
+            "/v1/operator/manual-resolutions",
+            post(operator::resolve_manual),
         )
         .route("/v1/operator/overview", get(operator_reads::overview))
         .route("/v1/operator/conflicts", get(operator_reads::conflicts))

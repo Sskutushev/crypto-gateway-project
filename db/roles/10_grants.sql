@@ -115,6 +115,8 @@ GRANT SELECT ON
     chain_transfers, chain_transfer_attestations, chain_transfer_intent_claims,
     chain_transfer_processing, chain_transfer_state_current,
     payment_allocations, payment_events, payment_fulfillments, payment_settlement_decisions,
+    manual_resolution_requests, overpayment_remainder_dispositions,
+    operator_risk_provider_bindings,
     component_health, domain_events, webhook_deliveries,
     reconciliation_runs, reconciliation_discrepancies
 TO gateway_api;
@@ -122,11 +124,15 @@ GRANT INSERT ON
     payment_intents, payment_attempts, payment_quotes,
     amount_leases, amount_lease_history, api_idempotency_records, audit_events,
     price_readings, price_snapshots, rail_health_snapshots, rail_stops,
-    payment_risk_evaluations
+    payment_risk_evaluations, manual_resolution_requests,
+    overpayment_remainder_dispositions, chain_transfer_intent_claims,
+    payment_allocations, payment_fulfillments, payment_settlement_decisions,
+    payment_events, domain_events
 TO gateway_api;
 GRANT UPDATE ON
     payment_intents, payment_attempts, api_idempotency_records,
-    merchant_api_keys, operator_api_keys, rail_stops
+    merchant_api_keys, operator_api_keys, rail_stops, chain_transfer_processing,
+    payment_allocations, payment_settlement_decisions
 TO gateway_api;
 
 -- Read-only: the operator views, for a person or a dashboard. No credentials,
@@ -142,7 +148,9 @@ GRANT SELECT ON
     payment_risk_evaluations, payment_settlement_policies, payment_settlement_policy_tiers,
     price_snapshots, price_readings, quote_policies, rail_health_snapshots, rail_stops,
     component_health, component_health_events, domain_events, webhook_deliveries,
-    reconciliation_runs, reconciliation_discrepancies
+    reconciliation_runs, reconciliation_discrepancies,
+    manual_resolution_requests, overpayment_remainder_dispositions,
+    operator_risk_provider_bindings
 TO gateway_readonly;
 
 -- A table the next migration creates is readable by the two roles that only

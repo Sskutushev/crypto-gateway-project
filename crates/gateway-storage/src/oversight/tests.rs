@@ -409,14 +409,13 @@ async fn a_fulfilment_with_no_settlement_behind_it_is_a_hard_stop() -> TestResul
         DiscrepancyKind::FulfilledNotSettled,
         None,
         Some(settled.unpaid_intent_id),
-        None,
+        Some(ASSET_ID),
     )
     .await?;
-    // A fulfilment names no transfer and therefore no asset: the run is a
-    // hard stop that a person must read, but there is no rail it can name
-    // to close. The status and the component state carry the alarm.
-    assert!(report.stopped_assets.is_empty());
-    assert!(open_rail_stops(&pool).await?.is_empty());
+    // A fulfilment names no transfer, but the intent's immutable quote names
+    // the asset. Reconciliation recovers it and closes that rail fail-closed.
+    assert_eq!(report.stopped_assets, vec![ASSET_ID]);
+    assert_rail_closed_by(&pool, DiscrepancyKind::FulfilledNotSettled).await?;
     assert_eq!(reconciler_state(&pool).await?, "stopped");
 
     sqlx::query("DELETE FROM payment_fulfillments WHERE payment_intent_id = $1")
@@ -425,6 +424,7 @@ async fn a_fulfilment_with_no_settlement_behind_it_is_a_hard_stop() -> TestResul
         .await?;
     let again = reconcile(&repository, &clock, ReconciliationWindow::default()).await?;
     assert_quiet(&pool, &again).await?;
+    assert_rail_closed_by(&pool, DiscrepancyKind::FulfilledNotSettled).await?;
     Ok(())
 }
 

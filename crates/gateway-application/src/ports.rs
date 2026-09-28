@@ -144,6 +144,11 @@ pub enum RepositoryError {
     CorruptData(String),
     #[error("this component no longer holds its lease")]
     LeaseLost,
+    /// A payment state change was asked for from a state that does not allow
+    /// it — a cancelled or already paid intent, a settled attempt. Nothing was
+    /// written: the transaction that asked must roll back.
+    #[error("the payment cannot make this state change: {0}")]
+    TransitionRefused(String),
     #[error("storage is unavailable: {0}")]
     Unavailable(String),
 }

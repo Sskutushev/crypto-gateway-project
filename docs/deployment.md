@@ -48,8 +48,12 @@ hosts and reached only over TLS.
   policy); it is not exposed through the edge.
 - Egress: observers and the verifier reach HTTPS providers; the outbox reaches
   HTTPS merchant endpoints; everything reaches the database; nothing reaches
-  anything else. Private ranges are excluded from the internet egress so a
-  provider URL cannot be pointed at a cluster service.
+  anything else. IPv4 private, loopback, link-local, carrier-grade NAT,
+  benchmark, documentation, multicast and reserved ranges are excluded from
+  the internet egress. This is defense in depth rather than the primary SSRF
+  control: destination validation and DNS pinning happen in the webhook
+  sender, and the chosen CNI must be verified to enforce `ipBlock` rules after
+  service translation.
 
 ## Order of operations, first deployment
 
@@ -94,6 +98,13 @@ Every container runs read-only, as UID 10001, with all capabilities dropped
 and `no-new-privileges`. The API's healthcheck is `/health/ready`, so a
 container whose database stopped describing its configuration is reported
 unhealthy rather than serving.
+
+Compose cannot express a portable destination-aware egress policy. A
+production Compose host must therefore enforce outbound firewall policy (or
+route the outbox through a dedicated HTTPS egress proxy) in addition to the
+sender's application-level destination checks. Permit public TCP/443 and the
+explicit managed PostgreSQL destination; deny local, link-local, private,
+metadata and other special-use networks.
 
 ## Kubernetes
 
