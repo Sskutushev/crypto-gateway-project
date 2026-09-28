@@ -250,6 +250,25 @@ The gateway never follows one. A `3xx` from your endpoint is a refused
 delivery, because a redirect would send a signed event to an address you never
 registered.
 
+## Test your integration
+
+Two environments, for two different questions:
+
+- **The chain simulator** ([`tools/chain-simulator`](../tools/chain-simulator))
+  answers "does my integration work?". It is a simulated TRON node: an
+  operator runs the gateway against it, you create intents and quotes as in
+  production, and `scripts/simulate-payment.py` pays a quote exactly, with a
+  wrong amount, or in a reverted transaction. Intents move to `paid`, the
+  unmatched queue fills, the webhook is written and signed. No money, no
+  testnet, no waiting for a faucet. It proves nothing about the real chain,
+  and its "independent" sources all read one process.
+- **The Nile testnet** answers "does the real chain path work?". Real TRC20
+  transfers of test USDT, read through real providers, on an address you
+  registered by signature (see the main README).
+
+Both deliver the webhook only to a public `https` URL on port 443, so your
+receiver needs such an address (a tunnel works) in either case.
+
 ## Idempotency
 
 Every write carries `Idempotency-Key`: 16 to 128 URL-safe characters

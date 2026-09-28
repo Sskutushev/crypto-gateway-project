@@ -60,6 +60,25 @@ created.
   the drill reports that as a FAIL, which is correct. No production backup or
   point-in-time restore has been exercised.
 
+## Session 2026-09-28: chain simulator
+
+- Branch `feat/chain-simulator` from `main` `2dc7ff7`. No Rust changed: the
+  TRON source already accepts `http://` base URLs.
+- `tools/chain-simulator` (simulator, unit tests, `e2e.sh`, README),
+  `scripts/seed-simulator-rail.sql`, `scripts/simulate-payment.py`, the
+  Compose profile `simulator`, and CI jobs `simulator` and `simulator-e2e`.
+- Verified end to end against a disposable database: an exact payment settled
+  (`awaiting_payment` to `paid`), an underpayment was listed as unmatched, a
+  reverted transfer was rejected as `failed_execution`.
+- Found, not fixed: confirmations are counted from the solidified head a
+  reading reports, lanes read a block once, and the verifier re-reads once, so
+  a finality policy with `min_confirmations` above what the first readings
+  show leaves a transfer at `confirmed` with nothing to advance it. The Nile
+  seed asks for 19 on top of `finalized`; the simulator rail asks for 0.
+- Not verified: webhook delivery to a local receiver. The sender allows only
+  public `https` on port 443, so the run shows the outbox attempting delivery
+  to an unresolvable reserved name; a public tunnel completes the leg.
+
 ## Session 2026-09-27: money binding, merchant-owned collectors, onboarding
 
 Branch `feat/merchant-owned-collectors`, stacked on
