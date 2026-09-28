@@ -340,5 +340,10 @@ async fn retention_deletes_only_what_no_evidence_still_needs() -> TestResult {
     .fetch_one(&pool)
     .await?;
     assert_eq!(attested, 1);
+    // Conflicts hang off no table other scenarios truncate; leaving this one
+    // behind would change what their conflict counts see.
+    sqlx::query("TRUNCATE chain_observation_conflicts CASCADE")
+        .execute(&pool)
+        .await?;
     Ok(())
 }
