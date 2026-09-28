@@ -1,3 +1,4 @@
+mod accounting;
 mod checkout;
 pub mod health;
 mod honor_proposals;
@@ -55,6 +56,7 @@ pub const ROUTES: &[(&str, &str)] = &[
     ("GET", "/v1/operator/reconciliation/runs"),
     ("GET", "/v1/operator/reconciliation/discrepancies"),
     ("GET", "/v1/operator/payment-intents/{intent_id}"),
+    ("GET", "/v1/operator/accounting/settlements"),
     ("GET", "/metrics"),
     ("GET", "/v1/checkout/{checkout_token}"),
     ("GET", "/v1/checkout/{checkout_token}/qr.svg"),
@@ -147,6 +149,10 @@ pub fn operator_routes() -> Router<AppState> {
         .route(
             "/v1/operator/payment-intents/{intent_id}",
             get(operator_reads::evidence),
+        )
+        .route(
+            "/v1/operator/accounting/settlements",
+            get(accounting::settlements),
         )
         .route("/metrics", get(crate::metrics::metrics))
 }

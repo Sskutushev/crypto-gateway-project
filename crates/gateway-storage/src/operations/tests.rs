@@ -1420,3 +1420,134 @@ async fn a_rejected_proposal_cannot_be_approved_and_below_the_threshold_one_oper
     assert_eq!(paid.allocated_raw, command.allocate_raw);
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+#[allow(clippy::too_many_lines)]
+async fn the_settlement_export_adds_up_to_the_money_that_was_allocated() -> TestResult {
+    let _fixture = DATABASE.lock().await;
+    let pool = connect().await?;
+    seed(&pool).await?;
+    seed_manual_payment(&pool).await?;
+    sqlx::query("UPDATE chain_transfers SET amount_raw=1200000 WHERE id=$1")
+        .bind(MANUAL_TRANSFER)
+        .execute(&pool)
+        .await?;
+    let repository = Arc::new(PostgresRepository::new(pool.clone()));
+    let (operations, admin) = admin_service(&pool).await?;
+    operations
+        .resolve_manual(
+            &admin,
+            "export-honor-overpaid-1",
+            &honor(MANUAL_TRANSFER, MANUAL_INTENT, MANUAL_ATTEMPT)?,
+        )
+        .await?;
+    // A decision that moved no money is not settled money.
+    seed_transfer(
+        &pool,
+        FOREIGN_TRANSFER,
+        ASSET_ID,
+        COLLECTOR_ID,
+        [11_u8; 20],
+        [12_u8; 21],
+        OffsetDateTime::now_utc(),
+    )
+    .await?;
+    sqlx::query(
+        r"INSERT INTO payment_settlement_decisions(id,payment_intent_id,attempt_id,transfer_id,merchant_id,
+              fiat_amount_minor,required_policy,distinct_groups,had_own_node,finality_state,risk_decision,
+              attestation_ids,match_strategy,allocated_raw,remainder_raw,outcome,decided_by,decided_at)
+          VALUES($1,$2,$3,$4,$5,100,'test',2,false,'finalized','review','{}','exact_amount',0,0,'held','test',now())",
+    )
+    .bind(Uuid::now_v7())
+    .bind(MANUAL_INTENT)
+    .bind(MANUAL_ATTEMPT)
+    .bind(FOREIGN_TRANSFER)
+    .bind(MANUAL_MERCHANT)
+    .execute(&pool)
+    .await?;
+
+    let reads = gateway_application::OperatorReadService::new(Arc::clone(&repository));
+    let today = OffsetDateTime::now_utc().date();
+    let yesterday = today.previous_day().ok_or("no yesterday")?;
+    let export = reads
+        .settlement_export(&admin, &today.to_string(), &today.to_string(), None)
+        .await?;
+
+    assert_eq!(export.days.len(), 1, "{export:?}");
+    let row = &export.days[0];
+    assert_eq!(
+        (row.merchant_id, row.asset_id, row.fiat_currency.as_str()),
+        (MANUAL_MERCHANT, ASSET_ID, "AED")
+    );
+    assert_eq!(row.merchant_external_id, "manual-merchant");
+    assert_eq!(
+        (row.payments, row.partial_payments, row.overpaid_payments),
+        (1, 0, 1)
+    );
+    assert_eq!(row.allocated_raw.to_string(), "1000000");
+    assert_eq!(row.fiat_minor, 100);
+    assert_eq!(row.remainder_raw.to_string(), "200000");
+    assert_eq!(export.totals.len(), 1);
+    assert_eq!(export.totals[0].allocated_raw, row.allocated_raw);
+    // The control sum is the allocation table's own, and it agrees.
+    let allocated: String =
+        sqlx::query_scalar("SELECT sum(allocated_raw)::text FROM payment_allocations")
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(export.control.allocations.len(), 1);
+    assert_eq!(
+        export.control.allocations[0].allocated_raw.to_string(),
+        allocated
+    );
+    assert_eq!(export.control.allocations[0].allocation_rows, 1);
+    assert!(export.control.balanced);
+
+    // Nothing was settled yesterday, and nothing for another merchant.
+    assert!(
+        reads
+            .settlement_export(&admin, &yesterday.to_string(), &yesterday.to_string(), None)
+            .await?
+            .days
+            .is_empty()
+    );
+    assert!(
+        reads
+            .settlement_export(
+                &admin,
+                &today.to_string(),
+                &today.to_string(),
+                Some(OTHER_MERCHANT)
+            )
+            .await?
+            .days
+            .is_empty()
+    );
+    // A key without read, and a range past the ceiling, are refused.
+    let ingester = repository
+        .authenticate_operator_key(&digest(INGEST_SECRET))
+        .await?
+        .ok_or("the seeded ingest key did not authenticate")?;
+    assert!(matches!(
+        reads
+            .settlement_export(&ingester, &today.to_string(), &today.to_string(), None)
+            .await,
+        Err(OperationsError::MissingScope(OperatorScope::Read))
+    ));
+    assert!(matches!(
+        reads
+            .settlement_export(&admin, "2026-01-01", "2026-06-01", None)
+            .await,
+        Err(OperationsError::ExportRangeInvalid)
+    ));
+
+    // An allocation row that disagrees with its decision is shown, not hidden.
+    sqlx::query("UPDATE payment_allocations SET allocated_raw = allocated_raw - 1")
+        .execute(&pool)
+        .await?;
+    let drifted = reads
+        .settlement_export(&admin, &today.to_string(), &today.to_string(), None)
+        .await?;
+    assert!(!drifted.control.balanced);
+    Ok(())
+}

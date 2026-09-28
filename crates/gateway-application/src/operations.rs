@@ -724,6 +724,10 @@ pub enum OperationsError {
     HonorProposalExpired,
     #[error("the operator key that proposed an honor cannot approve it")]
     SameOperator,
+    #[error("the export range must be YYYY-MM-DD dates, from not after to, at most 92 days")]
+    ExportRangeInvalid,
+    #[error("the export would exceed its row ceiling; narrow the range or name one merchant")]
+    ExportTooLarge,
     #[error("this operator key is not bound to the named risk provider")]
     RiskProviderNotAllowed,
     #[error(transparent)]

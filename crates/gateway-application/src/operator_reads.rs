@@ -446,6 +446,9 @@ impl<R: OperatorReadRepository> OperatorReadService<R> {
     pub const fn new(repository: Arc<R>) -> Self {
         Self { repository }
     }
+    pub(crate) fn repository(&self) -> &R {
+        &self.repository
+    }
     fn require(credential: &OperatorCredential) -> Result<(), OperationsError> {
         if credential.allows(OperatorScope::Read) {
             Ok(())

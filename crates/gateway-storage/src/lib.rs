@@ -1,3 +1,4 @@
+mod accounting;
 mod capacity;
 mod checkout;
 mod honor_proposals;

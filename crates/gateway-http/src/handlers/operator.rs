@@ -428,6 +428,8 @@ pub fn status_for(error: &OperationsError) -> (StatusCode, &'static str) {
             (StatusCode::CONFLICT, "honor_proposal_not_pending")
         }
         OperationsError::HonorProposalExpired => (StatusCode::CONFLICT, "honor_proposal_expired"),
+        OperationsError::ExportRangeInvalid => (StatusCode::BAD_REQUEST, "export_range_invalid"),
+        OperationsError::ExportTooLarge => (StatusCode::UNPROCESSABLE_ENTITY, "export_too_large"),
         OperationsError::InvalidRiskEvaluation => {
             (StatusCode::UNPROCESSABLE_ENTITY, "invalid_risk_evaluation")
         }

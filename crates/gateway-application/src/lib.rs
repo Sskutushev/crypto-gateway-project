@@ -1,3 +1,4 @@
+mod accounting;
 mod checkout;
 mod health;
 mod honor_approval;
@@ -17,6 +18,11 @@ mod self_check;
 mod settlement;
 mod verification;
 
+pub use accounting::{
+    AccountingExport, AccountingPeriod, AccountingRepository, AllocationControl, CSV_HEADER,
+    ControlSum, MAX_EXPORT_DAYS, MAX_EXPORT_ROWS, SettlementDay, SettlementLedger, SettlementTotal,
+    build_export, csv_field, csv_file_name, to_csv,
+};
 pub use checkout::{
     CheckoutFacts, CheckoutRepository, CheckoutService, CheckoutStatus, CheckoutView,
     is_checkout_token,

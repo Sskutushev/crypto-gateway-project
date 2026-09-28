@@ -173,6 +173,26 @@
           "replayed": { "type": "boolean" }
         }
       },
+      "SettlementExport": {
+        "type": "object", "required": ["from", "to", "merchant_id", "basis", "days", "totals", "control"],
+        "properties": {
+          "from": { "type": "string", "format": "date" },
+          "to": { "type": "string", "format": "date" },
+          "merchant_id": { "type": ["string", "null"], "format": "uuid" },
+          "basis": { "type": "string", "description": "What the numbers count, in words." },
+          "days": { "type": "array", "items": { "type": "object", "required": ["day", "merchant_id", "merchant_external_id", "asset_id", "fiat_currency", "payments", "partial_payments", "overpaid_payments", "allocated_raw", "fiat_minor", "remainder_raw"], "properties": {
+            "day": { "type": "string", "format": "date" }, "merchant_id": { "type": "string", "format": "uuid" }, "merchant_external_id": { "type": "string" }, "asset_id": { "type": "string", "format": "uuid" }, "fiat_currency": { "type": "string" },
+            "payments": { "type": "integer", "minimum": 0 }, "partial_payments": { "type": "integer", "minimum": 0 }, "overpaid_payments": { "type": "integer", "minimum": 0 },
+            "allocated_raw": { "$ref": "#/components/schemas/IntegerString" }, "fiat_minor": { "$ref": "#/components/schemas/IntegerString" }, "remainder_raw": { "$ref": "#/components/schemas/IntegerString" } } } },
+          "totals": { "type": "array", "items": { "type": "object", "required": ["asset_id", "fiat_currency", "payments", "partial_payments", "overpaid_payments", "allocated_raw", "fiat_minor", "remainder_raw"], "properties": {
+            "asset_id": { "type": "string", "format": "uuid" }, "fiat_currency": { "type": "string" },
+            "payments": { "type": "integer", "minimum": 0 }, "partial_payments": { "type": "integer", "minimum": 0 }, "overpaid_payments": { "type": "integer", "minimum": 0 },
+            "allocated_raw": { "$ref": "#/components/schemas/IntegerString" }, "fiat_minor": { "$ref": "#/components/schemas/IntegerString" }, "remainder_raw": { "$ref": "#/components/schemas/IntegerString" } } } },
+          "control": { "type": "object", "required": ["balanced", "allocations"], "properties": {
+            "balanced": { "type": "boolean", "description": "false when the allocation rows and the decisions disagree for any asset: a finding, not a rounding." },
+            "allocations": { "type": "array", "items": { "type": "object", "required": ["asset_id", "allocation_rows", "allocated_raw"], "properties": { "asset_id": { "type": "string", "format": "uuid" }, "allocation_rows": { "type": "integer", "minimum": 0 }, "allocated_raw": { "$ref": "#/components/schemas/IntegerString" } } } } } }
+        }
+      },
       "HonorProposalRequest": {
         "type": "object", "additionalProperties": false, "required": ["transfer_id", "payment_intent_id", "attempt_id", "allocate_raw", "reason"],
         "properties": {
@@ -401,6 +421,25 @@
           "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" },
           "404": { "description": "manual_resolution_not_found: the transfer, intent, attempt or overpayment decision does not exist.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "409": { "description": "manual_resolution_conflict or idempotency_conflict: the requested transition is no longer eligible, would violate a money invariant, or reuses a key with a different command. dual_control_required: an honor at or above GATEWAY_MANUAL_HONOR_DUAL_CONTROL_MIN_RAW (every honor when it is unset) must be proposed at /v1/operator/manual-honor-proposals and approved by a second key.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "503": { "$ref": "#/components/responses/StorageUnavailable" }
+        } }
+    },
+    "/v1/operator/accounting/settlements": {
+      "get": { "tags": ["operator"], "summary": "Settled money per merchant, asset and UTC day", "description": "Requires the read scope. The basis is the settlement decision, the row reconciliation compares with fulfilment: decisions with outcome settled, overpaid or partial count on the UTC day of decided_at. payments and fiat_minor count completed obligations (settled, overpaid) once each; partial allocations add raw units only. remainder_raw is the overpayment recorded, never absorbed. totals add the days per asset and fiat currency; control sums the payment_allocations rows behind the same decisions per asset and reports whether they agree. Rows are ordered by day, merchant, asset and currency. JSON by default; CSV (RFC 4180, formula-leading cells prefixed with a quote) with format=csv or an Accept header naming text/csv. At most 92 days and 20000 rows; a larger answer is refused, never truncated.", "security": [{ "operatorKey": ["read"] }],
+        "parameters": [
+          { "name": "from", "in": "query", "required": true, "schema": { "type": "string", "format": "date" }, "description": "First UTC day, inclusive." },
+          { "name": "to", "in": "query", "required": true, "schema": { "type": "string", "format": "date" }, "description": "Last UTC day, inclusive; at most 91 days after from." },
+          { "name": "merchant_id", "in": "query", "schema": { "type": "string", "format": "uuid" } },
+          { "name": "format", "in": "query", "schema": { "type": "string", "enum": ["json", "csv"] } }
+        ],
+        "responses": {
+          "200": { "description": "The export.", "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/SettlementExport" } },
+            "text/csv": { "schema": { "type": "string" }, "example": "row_type,day,merchant_id,merchant_external_id,asset_id,fiat_currency,payments,partial_payments,overpaid_payments,allocated_raw,fiat_minor,remainder_raw,control_balanced" }
+          } },
+          "400": { "description": "invalid_request, or export_range_invalid: the dates are not YYYY-MM-DD, from is after to, or the range is longer than 92 days.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" },
+          "422": { "description": "export_too_large: more than 20000 rows; narrow the range or name one merchant.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "503": { "$ref": "#/components/responses/StorageUnavailable" }
         } }
     },
