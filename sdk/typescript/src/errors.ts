@@ -12,7 +12,9 @@ export type GatewayErrorCode =
   | "payment_intent_not_cancellable"
   | "payment_intent_not_quotable"
   | "quote_unavailable"
+  | "quote_capacity_exhausted"
   | "rail_stopped"
+  | "rate_limited"
   | "checkout_not_found"
   | "storage_unavailable"
   | "internal_error";
@@ -27,7 +29,9 @@ export const GATEWAY_ERROR_CODES: readonly GatewayErrorCode[] = [
   "payment_intent_not_cancellable",
   "payment_intent_not_quotable",
   "quote_unavailable",
+  "quote_capacity_exhausted",
   "rail_stopped",
+  "rate_limited",
   "checkout_not_found",
   "storage_unavailable",
   "internal_error",
