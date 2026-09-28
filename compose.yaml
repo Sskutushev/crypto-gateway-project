@@ -20,6 +20,13 @@
 # public Nile node); the verifier re-reads through the public node under its
 # own source. That is enough independence for a testnet run and is not what
 # a mainnet deployment uses; see docs/deployment.md.
+#
+# The `simulator` profile runs the same pipeline with no chain at all: a
+# simulated TRON node (tools/chain-simulator) on its own database,
+# gateway_sim, with its own API on port 8081. Testing only; it proves nothing
+# about a real chain. See tools/chain-simulator/README.md:
+#
+#   docker compose --profile simulator up -d chain-simulator gateway-api-sim #     sim-observer-a sim-observer-b sim-verifier sim-payment
 
 x-rail: &rail
   GATEWAY_CHAIN: tron
@@ -40,6 +47,28 @@ x-worker: &worker
   restart: unless-stopped
   depends_on:
     postgres:
+      condition: service_healthy
+
+# The simulator rail: what scripts/seed-simulator-rail.sql inserts, on a
+# database of its own so it never shares a self-check with the Nile rail.
+x-sim-rail: &sim-rail
+  GATEWAY_CHAIN: tron
+  GATEWAY_NETWORK: simulator
+  GATEWAY_CHAIN_ENVIRONMENT: testnet
+  GATEWAY_EXPECTED_COLLECTORS: TELhoqbrn7hQiiBMkLAfn63dX7SsPLyfTe
+  GATEWAY_EXPECTED_ASSETS: tron:simulator:TRjounaPuqUPZa1mN7yseWTZbqNpSUfXsN
+  GATEWAY_DATABASE_URL: postgres://gateway:gateway@postgres:5432/gateway_sim
+
+x-sim-worker: &sim-worker
+  build:
+    context: .
+  entrypoint: ["/usr/local/bin/gateway-worker"]
+  profiles: ["simulator"]
+  restart: unless-stopped
+  depends_on:
+    sim-seed:
+      condition: service_completed_successfully
+    chain-simulator:
       condition: service_healthy
 
 services:
@@ -143,6 +172,137 @@ services:
       GATEWAY_RECONCILER_BATCH_LIMIT: "1"
       GATEWAY_RECONCILER_MAX_BATCHES_PER_TICK: "1"
       RUST_LOG: gateway_worker=info,gateway_scheduler=info
+
+  # --- the `simulator` profile ---------------------------------------------
+
+  sim-database:
+    image: postgres:16.4-bookworm
+    profiles: ["simulator"]
+    environment:
+      PGPASSWORD: gateway
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        psql -h postgres -U gateway -d gateway -Atc
+        "SELECT 1 FROM pg_database WHERE datname = 'gateway_sim'" | grep -q 1
+        || psql -h postgres -U gateway -d gateway -c "CREATE DATABASE gateway_sim"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  sim-migrate:
+    build:
+      context: .
+    profiles: ["simulator"]
+    environment:
+      GATEWAY_DATABASE_URL: postgres://gateway:gateway@postgres:5432/gateway_sim
+      GATEWAY_RUN_MIGRATIONS: "true"
+      GATEWAY_MIGRATE_ONLY: "true"
+    depends_on:
+      sim-database:
+        condition: service_completed_successfully
+
+  sim-seed:
+    image: postgres:16.4-bookworm
+    profiles: ["simulator"]
+    environment:
+      PGPASSWORD: gateway
+    volumes:
+      - ./scripts:/scripts:ro
+    entrypoint: ["psql", "-h", "postgres", "-U", "gateway", "-d", "gateway_sim", "-q",
+                 "-f", "/scripts/seed-simulator-rail.sql"]
+    depends_on:
+      sim-migrate:
+        condition: service_completed_successfully
+
+  # A simulated TRON node. The control API (/simulator/...) answers loopback
+  # callers or the token; a request from the host arrives through the Docker
+  # network, so scripts/simulate-payment.py needs SIMULATOR_CONTROL_TOKEN.
+  chain-simulator:
+    image: python:3.12-slim-bookworm
+    profiles: ["simulator"]
+    volumes:
+      - ./tools/chain-simulator:/simulator:ro
+    command: ["python", "/simulator/simulator.py", "--host", "0.0.0.0", "--port", "8090"]
+    environment:
+      SIMULATOR_CONTROL_TOKEN: ${SIMULATOR_CONTROL_TOKEN:-}
+      SIMULATOR_BLOCK_INTERVAL_SECONDS: ${SIMULATOR_BLOCK_INTERVAL_SECONDS:-3}
+      SIMULATOR_SOLID_LAG: ${SIMULATOR_SOLID_LAG:-19}
+    ports:
+      - "127.0.0.1:8090:8090"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/simulator/state', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  gateway-api-sim:
+    build:
+      context: .
+    profiles: ["simulator"]
+    environment:
+      <<: *sim-rail
+      GATEWAY_BIND_ADDRESS: 0.0.0.0:8080
+      # sim-payment runs the expiry sweep.
+      GATEWAY_EXPIRY_ENABLED: "false"
+      RUST_LOG: gateway_api=info,gateway_http=info,tower_http=info
+    ports:
+      - "127.0.0.1:8081:8080"
+    depends_on:
+      sim-seed:
+        condition: service_completed_successfully
+
+  # Two observers in different provider groups, one per lane, and the
+  # verifier under its own source. All three read the one simulator, so their
+  # independence is simulated.
+  sim-observer-a:
+    <<: *sim-worker
+    environment:
+      <<: *sim-rail
+      GATEWAY_WORKER_ROLES: observer
+      GATEWAY_INSTANCE_NAME: sim-observer-a
+      GATEWAY_OBSERVER_SOURCE_KEY: sim-index
+      GATEWAY_TRON_BASE_URL: http://chain-simulator:8090
+      GATEWAY_TRON_LANE: address_index
+      GATEWAY_OBSERVER_INTERVAL_SECONDS: "2"
+      RUST_LOG: gateway_worker=info,gateway_scheduler=info,gateway_tron=info
+
+  sim-observer-b:
+    <<: *sim-worker
+    environment:
+      <<: *sim-rail
+      GATEWAY_WORKER_ROLES: observer
+      GATEWAY_INSTANCE_NAME: sim-observer-b
+      GATEWAY_OBSERVER_SOURCE_KEY: sim-node
+      GATEWAY_TRON_BASE_URL: http://chain-simulator:8090
+      GATEWAY_TRON_LANE: block_range
+      GATEWAY_TRON_BOOTSTRAP_LOOKBACK_BLOCKS: "20"
+      GATEWAY_OBSERVER_INTERVAL_SECONDS: "2"
+      RUST_LOG: gateway_worker=info,gateway_scheduler=info,gateway_tron=info
+
+  sim-verifier:
+    <<: *sim-worker
+    environment:
+      <<: *sim-rail
+      GATEWAY_WORKER_ROLES: verifier
+      GATEWAY_INSTANCE_NAME: sim-verifier
+      GATEWAY_VERIFIER_SOURCE_KEY: sim-verifier
+      GATEWAY_VERIFIER_TRON_BASE_URL: http://chain-simulator:8090
+      GATEWAY_VERIFIER_INTERVAL_SECONDS: "2"
+      RUST_LOG: gateway_worker=info,gateway_scheduler=info,gateway_tron=info
+
+  sim-payment:
+    <<: *sim-worker
+    environment:
+      <<: *sim-rail
+      GATEWAY_WORKER_ROLES: expiry,settlement,outbox
+      GATEWAY_INSTANCE_NAME: sim-payment
+      GATEWAY_WEBHOOK_MASTER_KEY: ${GATEWAY_WEBHOOK_MASTER_KEY:-}
+      GATEWAY_SETTLEMENT_INTERVAL_SECONDS: "2"
+      GATEWAY_OUTBOX_INTERVAL_SECONDS: "2"
+      GATEWAY_EXPIRY_INTERVAL_SECONDS: "30"
+      RUST_LOG: gateway_worker=info,gateway_scheduler=info,gateway_webhook=info
 
 volumes:
   gateway-postgres:
