@@ -17,3 +17,4 @@ CLAUDE.md
 compose.yaml
 deny.toml
 rustfmt.toml
+sdk

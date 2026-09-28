@@ -80,6 +80,30 @@ jobs:
         env:
           GATEWAY_FUZZ_ITERATIONS: "200000"
 
+  # The TypeScript SDK on every Node version it supports, and the TypeScript
+  # webhook receiver example, which needs Node 22's type stripping.
+  typescript:
+    name: TypeScript SDK (Node ${{ matrix.node }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["18", "20", "22"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: sdk/typescript/package-lock.json
+      - name: build and test the SDK
+        working-directory: sdk/typescript
+        run: npm ci && npm run build && npm test
+      - name: webhook receiver example
+        if: matrix.node == '22'
+        working-directory: examples/webhook-receiver-typescript
+        run: npm test
+
   # Dependency policy is release-blocking. A payment service must not publish
   # an image when its direct/runtime dependency graph has a known advisory or
   # when the advisory database cannot be checked.
