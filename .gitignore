@@ -13,3 +13,4 @@ deploy/env/*.env
 
 # The generated documentation site.
 /site/_build/
+__pycache__/
