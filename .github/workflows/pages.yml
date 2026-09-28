@@ -1,0 +1,61 @@
+name: pages
+
+# The documentation site: docs/*.md and docs/openapi.json rendered by
+# site/build.py (Python standard library only). A pull request builds it and
+# fails on a broken internal link; a push to main also deploys it.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "site/**"
+      - "README.md"
+      - ".github/workflows/pages.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "site/**"
+      - "README.md"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build site, check links
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - id: pages
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
+      - name: build
+        env:
+          SITE_BASE_URL: ${{ steps.pages.outputs.base_url }}
+        run: python3 site/build.py --check-links --out site/_build
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site/_build
+
+  deploy:
+    name: deploy
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
