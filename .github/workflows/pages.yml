@@ -41,7 +41,7 @@ jobs:
           SITE_BASE_URL: ${{ steps.pages.outputs.base_url }}
         run: python3 site/build.py --check-links --out site/_build
       - if: github.event_name != 'pull_request'
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v5
         with:
           path: site/_build
 
