@@ -13,8 +13,8 @@ database role.
 |---|---|---|
 | `ingest` | submit price readings and rail health | pricing and rail-health feeders |
 | `risk_ingest` | submit current screening decisions for one DB-bound provider | one KYT integration credential per provider |
-| `read` | read the overview, every queue, evidence bundles, `/metrics` | people, dashboards, Prometheus |
-| `admin` | close and reopen a rail, resolve parked money | a person, never a job |
+| `read` | read the overview, every queue, evidence bundles, pending honor proposals, the accounting export, `/metrics` | people, dashboards, Prometheus, bookkeeping |
+| `admin` | close and reopen a rail, resolve parked money, propose, approve or reject an honor, redeliver a webhook | a person, never a job; two people for honors above the threshold |
 
 A key carries only the scopes its holder needs. Prometheus gets a `read` key.
 An `ingest` key cannot submit screening decisions. A `risk_ingest` key must
@@ -98,12 +98,42 @@ The queues, each a keyset page (`limit`, `before`, `next_before`):
 | `/v1/operator/dead-letters` | Events no endpoint accepted after every retry, with the delivery history. |
 | `/v1/operator/reconciliation/runs` | Every run, clean or not. |
 | `/v1/operator/reconciliation/discrepancies` | Findings nobody has resolved. |
+| `/v1/operator/manual-honor-proposals` | Honors one operator proposed and a second has not yet approved or rejected (see "Two operators for an honor"). Expired proposals are not listed. |
 
 `GET /v1/operator/payment-intents/{id}` is the evidence bundle for one payment,
 across merchants: the obligation, quotes and reservations, allocations, the
 settlement decision with its policy, groups and risk verdict, the fulfilment
 claim, payment events and the canonical transfers with their attestation
 counts. It is what you read during a dispute.
+
+### Accounting export
+
+`GET /v1/operator/accounting/settlements?from=YYYY-MM-DD&to=YYYY-MM-DD`
+(`read` scope; optional `merchant_id`) returns settled money per merchant,
+asset, fiat currency and UTC day, a total per asset and currency, and a
+control sum. Add `format=csv` or send `Accept: text/csv` for a CSV download.
+The range is inclusive, at most 92 days; an answer over 20000 rows is refused
+with `export_too_large` rather than cut short.
+
+What the numbers are:
+
+- The basis is `payment_settlement_decisions` with outcome `settled`,
+  `overpaid` or `partial`, on the UTC day of `decided_at`: the same rows
+  reconciliation checks against fulfilment. `held`, `manual_required`,
+  `rejected` and the others moved no money and are not counted.
+- `payments` counts obligations completed (`settled` or `overpaid`), and
+  `fiat_minor` sums their invoiced amounts, once each. A `partial` allocation
+  adds raw units to `allocated_raw` and one to `partial_payments`, no fiat.
+- `remainder_raw` is the overpayment recorded on `overpaid` decisions. It was
+  never absorbed; its disposition is a separate, external record.
+- `control` sums the `payment_allocations` rows behind the same decisions per
+  asset, independently. `balanced: false` means the allocation rows and the
+  decisions disagree: treat it as a reconciliation finding, not rounding.
+
+Rows are ordered by day, merchant, asset and currency. In CSV every row has a
+`row_type` (`day`, `total`, `control`); a text cell that begins with `=`, `+`,
+`-` or `@` is prefixed with `'` so a spreadsheet shows it instead of running
+it.
 
 ## Resolving parked money
 
@@ -132,6 +162,46 @@ narrow:
 An identical replay returns the first result. Reusing the key for a different
 command returns `idempotency_conflict`. Never repair these states with direct
 SQL updates.
+
+### Two operators for an honor
+
+An honor pays an intent and tells the merchant. The API reads
+`GATEWAY_MANUAL_HONOR_DUAL_CONTROL_MIN_RAW` at start-up: an honor allocating at
+least that many raw units of the transfer's asset needs two different operator
+keys. **Unset means every honor needs two keys**; a value that is not a whole
+number stops the API. To let one person honor small amounts, set the
+threshold, for example `5000000` (5 USDT at 6 decimals). The threshold is in
+raw units of whichever asset the transfer is in; a deployment with assets of
+different precision should choose it for the most valuable raw unit.
+
+A direct `honor` at or above the threshold answers `409 dual_control_required`
+and writes nothing. Instead:
+
+1. The first operator proposes:
+   `POST /v1/operator/manual-honor-proposals` with `transfer_id`,
+   `payment_intent_id`, `attempt_id`, `allocate_raw`, `reason` and an
+   `Idempotency-Key`. Every honor check runs against locked rows; a proposal
+   that would be refused is refused now. The proposal stores the command, a
+   snapshot of the rows (`evidence`), the threshold and the proposing key. No
+   money is written. A transfer has at most one pending proposal.
+2. A second operator reads `GET /v1/operator/manual-honor-proposals` and the
+   evidence bundle, then approves:
+   `POST /v1/operator/manual-honor-proposals/{id}/approve` with a `reason` and
+   its own `Idempotency-Key`. The proposing key gets `403
+   dual_control_same_operator`. The approval locks and re-reads the transfer,
+   attempt and intent and runs every check again: if the intent was cancelled
+   or paid, money was allocated elsewhere, or the window closed, it answers
+   `409 manual_resolution_conflict` and nothing is written. Otherwise the
+   honor runs under the approving key, in the transaction that closes the
+   proposal, and exactly one `payment_intent.paid` is queued.
+3. Either operator can refuse instead:
+   `POST /v1/operator/manual-honor-proposals/{id}/reject` with a `reason`.
+
+A proposal expires 24 hours after it is made (`409 honor_proposal_expired`);
+propose it again, with fresh eyes on the evidence. Both identities stay on
+record: `manual_honor_proposals` holds the proposer, the decider, both reasons
+and the resolution it produced; `manual_resolution_requests` names the
+approving key as the one that executed the honor.
 
 Automatic settlement follows the same rules: a payment state moves only from
 an explicit set of states and must change exactly one row. When the intent or
@@ -168,9 +238,21 @@ terminal.
 | `collector-stop-quoting` | `--collector`, `--reason` | `collector_id`, `state` |
 | `collector-retire` | `--collector`, `--reason`, `[--compromised yes]` | `collector_id`, `retired`, `compromised` |
 
-The CLI has no list commands. Read identifiers with the `gateway_readonly`
-role, for example
-`SELECT id, key_prefix, label, created_at, revoked_at FROM merchant_api_keys WHERE merchant_id = '<uuid>'`.
+| `webhook-redeliver` | `--event`, `--reason`, `--idempotency-key`, `[--endpoint]` | `redelivery_id`, `event_id`, `previous_state`, `previous_attempts`, `replayed` |
+
+Read-only commands take no `--actor` and print `{ "items": [...],
+"next_cursor": ... }`. Pass `--cursor <next_cursor>` for the next page;
+`--limit` is 1 to 200 (default 50), and a value outside that is refused, not
+clamped. Nothing they print is a secret: a key appears as its prefix, an
+endpoint without its fingerprint. The provisioner role cannot read a key hash
+at all.
+
+| Command | Flags | Prints per item |
+|---|---|---|
+| `merchant-list` | `[--limit] [--cursor]` | `merchant_id`, `external_id`, `display_name`, `status`, `collector_policy`, `created_at` |
+| `api-key-list` | `--merchant`, `[--limit] [--cursor]` | `key_id`, `prefix`, `label`, `created_at`, `last_used_at`, `revoked_at` |
+| `webhook-list` | `--merchant`, `[--limit] [--cursor]` | `endpoint_id`, `url`, `description`, `status`, `secret_version`, `previous_secret_signs_until`, `created_at`, `disabled_at` |
+| `collector-list` | `[--merchant]`, `[--limit] [--cursor]` | `collector_id`, `asset_id`, `merchant_id`, `address`, `state`, `open_reservations`, `valid_from`, `retired_at` |
 
 ### Rotate a webhook secret
 
@@ -320,6 +402,14 @@ reason in `reason` where the command takes one:
 | `webhook_endpoint.test` | `webhook_endpoint` | `event_id` |
 | `collector.register` | `collector_address` | `address`, `asset_id`, `ownership_evidence` |
 | `collector.retire` | `collector_address` | |
+| `webhook_event.redeliver` | `domain_event` | `principal`, `endpoint_id`, `previous_state`, `previous_attempts`, `redelivery_id` |
+
+Operator API writes are recorded the same way with the key in `actor_id`:
+`webhook_event.redeliver` as above, `honor.propose`, `honor.approve` and
+`honor.reject` on `manual_honor_proposal`, and `honor`, `reject` and
+`record_remainder_disposition` on `manual_resolution`. Retention records
+`retention.purge` with `actor_type = 'system'`, the table as `resource_type`
+and the number of rows and the cutoff in `payload`.
 
 ```
 SELECT created_at, action, payload->>'actor' AS actor, resource_id, reason, payload
@@ -333,6 +423,59 @@ A refused command writes nothing, neither the change nor an audit row. The
 expiry worker records `payment_intent.quote_window_closed` when a quote
 closes on an intent that already has money on it; that intent keeps its
 status for a person.
+
+## Sending a webhook again
+
+A merchant lost an event, or its endpoint was down until the event was
+dead-lettered. Re-queue the event itself:
+
+```
+POST /v1/operator/webhook-events/{event_id}/redeliver      (admin, Idempotency-Key)
+{ "reason": "merchant restored its endpoint after the outage", "endpoint_id": "<optional>" }
+
+gateway-worker admin webhook-redeliver --actor <you> --event <uuid> \
+    --reason "<why>" --idempotency-key <16-128 chars> [--endpoint <uuid>]
+```
+
+The event keeps its id, payload and `created_at`, so the envelope is the one
+the merchant may already have and deduplicates by id; no second event is
+created. `endpoint_id` sends it to that one active endpoint of the event's
+merchant; without it, every active endpoint gets it. The retry budget starts
+again, while attempt numbers continue, so the earlier delivery history stays.
+Refused, with nothing written: an unknown event (`404
+webhook_event_not_found`), an endpoint that is not an active endpoint of the
+event's merchant or a merchant with none (`404 webhook_endpoint_not_found`),
+an event still queued (`409 webhook_event_still_queued`), an operator-channel
+event (`409 not_a_webhook_event`). Every redelivery is a row in
+`webhook_redeliveries` with who asked and why.
+
+Delivery is shared fairly: one batch takes at most
+`GATEWAY_WEBHOOK_MAX_EVENTS_PER_MERCHANT` (default 20) events of one merchant,
+and delivers up to `GATEWAY_WEBHOOK_DELIVERY_CONCURRENCY` (default 8)
+merchants at the same time, each merchant's events in order. An endpoint that
+answers slowly holds back its own merchant, not everyone else's.
+
+## Retention
+
+The `retention` worker role deletes old rows from three append-only
+operational tables, in bounded batches, as `gateway_retention`: the only role
+that can delete, and only there. Nothing is deleted unless an age is set, and
+an age under 30 days is refused.
+
+| Setting | Deletes | Always keeps |
+|---|---|---|
+| `GATEWAY_RETENTION_WEBHOOK_DELIVERIES_DAYS` | delivery attempts older than the age, of events delivered before the age | the newest `GATEWAY_RETENTION_KEEP_DELIVERY_ATTEMPTS` (default 3) attempts per event and endpoint; every attempt of a pending or dead-lettered event |
+| `GATEWAY_RETENTION_OBSERVATIONS_DAYS` | observations older than the age of a chain event whose canonical transfer is `finalized` or `invalidated` | every observation an attestation or a conflict references; every observation of an event with an open conflict or without a final canonical transfer |
+| `GATEWAY_RETENTION_HEALTH_EVENTS_DAYS` | health transitions older than the age | the newest transition of every component |
+
+Evidence bundles and reconciliation read attestations, conflicts, canonical
+transfers and settlement rows, none of which retention touches, and the
+attested observations stay by rule. The database repeats the observation rule
+as a row policy on `chain_observations`, so a statement that asked for more
+would still delete only what the rule allows. Each batch that deleted rows
+writes a `retention.purge` audit row. A good starting point is in
+`deploy/env/worker-retention.env.example`; choose ages longer than any dispute
+or chargeback window you are bound by.
 
 ## When reconciliation says `hard_stop`
 

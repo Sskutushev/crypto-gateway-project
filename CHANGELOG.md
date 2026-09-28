@@ -81,6 +81,37 @@ before them, by the slice that added it.
   intent, and `tools/chain-simulator/e2e.sh` runs the whole unmodified
   pipeline end to end; CI runs the simulator's tests and that run. Testing
   only: it proves nothing about the real chain. No gateway code changed.
+- **Two operators for a manual honor.** An honor allocating at least
+  `GATEWAY_MANUAL_HONOR_DUAL_CONTROL_MIN_RAW` raw units (every honor when it
+  is unset) is refused with `dual_control_required`. One `admin` key proposes
+  it at `/v1/operator/manual-honor-proposals`, which checks it against locked
+  rows and stores the command with an evidence snapshot without writing money;
+  a different `admin` key approves it, re-running every honor check under
+  fresh locks, or rejects it. Proposals expire after 24 hours; both
+  identities, both reasons and the resolution are recorded (migration 0020).
+- **Webhook redelivery as the same event.**
+  `POST /v1/operator/webhook-events/{event_id}/redeliver` and
+  `gateway-worker admin webhook-redeliver` re-queue a delivered or
+  dead-lettered event in place, same id and payload, for one active endpoint
+  of its merchant or all of them, with a fresh retry budget, an idempotency
+  key, a `webhook_redeliveries` row and an audit row (migration 0019).
+- **Accounting export.** `GET /v1/operator/accounting/settlements` returns
+  settled money per merchant, asset, fiat currency and UTC day over at most 92
+  days, as JSON or CSV, with totals and a control sum taken from the
+  allocation rows; a disagreement is reported as `balanced: false`.
+- **Admin list commands.** `merchant-list`, `api-key-list`, `webhook-list` and
+  `collector-list` (with open reservations), bounded and cursor-paged, printing
+  no secret or hash.
+- **Retention.** A `retention` worker role, running as the new
+  `gateway_retention` database role, deletes old webhook delivery attempts,
+  final unreferenced chain observations and superseded health transitions in
+  bounded, audited batches. Nothing is deleted unless an age of at least 30
+  days is configured; attested and conflicting observations, and every attempt
+  of an undelivered event, are always kept.
+- **Fair webhook delivery.** A batch takes at most
+  `GATEWAY_WEBHOOK_MAX_EVENTS_PER_MERCHANT` events of one merchant and
+  delivers up to `GATEWAY_WEBHOOK_DELIVERY_CONCURRENCY` merchants at once, so
+  one slow endpoint no longer delays every other merchant.
 - **Collector retirement without SQL.** `collector-stop-quoting` moves an
   address to `receiving_only` (never quoted again, still watched), audited.
   `collector-retire` refuses while any amount reservation on the address
@@ -155,6 +186,14 @@ before them, by the slice that added it.
   where a command exists.
 
 ### Security
+
+- A manual honor locked the immutable `chain_transfers` row, which needs an
+  UPDATE privilege the least-privilege API role does not hold, so an honor
+  through the API failed with `storage_unavailable` in a deployment that
+  applied `db/roles`. It now locks the attempt, the intent and the transfer's
+  processing row, and a scenario runs an honor under the API login.
+- The provisioner role can no longer read merchant API key hashes; it reads
+  only the columns the list commands print.
 
 - Webhook delivery ignores system proxy settings, which would otherwise
   bypass the public-address pinning, and bounds DNS resolution time.

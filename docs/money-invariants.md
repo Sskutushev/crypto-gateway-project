@@ -14,9 +14,13 @@ Test locations use these short names:
 | postgres | `crates/gateway-storage/src/postgres.rs` (`mod tests`) |
 | outbox | `crates/gateway-application/src/outbox/tests.rs` |
 | webhook | `crates/gateway-webhook/src/lib.rs` (`mod tests`) |
+| redelivery | `crates/gateway-storage/src/redelivery/tests.rs` |
+| retention | `crates/gateway-storage/src/retention/tests.rs` |
+| roles | `crates/gateway-storage/src/roles/tests.rs` |
+| accounting | `crates/gateway-application/src/accounting/tests.rs` |
 
-Tests in `settlement`, `operations` and `postgres` are `#[ignore]`d PostgreSQL
-scenarios; they run with `GATEWAY_TEST_DATABASE_URL` set and
+Tests in `settlement`, `operations`, `postgres`, `redelivery`, `retention` and
+`roles` are `#[ignore]`d PostgreSQL scenarios; they run with `GATEWAY_TEST_DATABASE_URL` set and
 `cargo test -- --ignored`.
 
 ## 1. A transfer pays only an attempt on the same collector, asset and rail
@@ -193,7 +197,11 @@ operations: `manual_honor_is_atomic_idempotent_and_cannot_be_retargeted`
 **Note.** Delivery is at least once: the same event id can reach an endpoint
 more than once (outbox tests `a_refused_delivery_is_retried_later`,
 `an_exhausted_event_is_dead_lettered_instead_of_retried_forever`). "At most
-once" holds for the event, not for its deliveries.
+once" holds for the event, not for its deliveries. An operator redelivery
+re-queues the same outbox row (same id, payload and `created_at`) and never
+inserts a second one (redelivery:
+`a_dead_lettered_event_is_redelivered_as_the_same_event`, which also counts
+the events before and after).
 
 ## 8. Money nobody can attribute is kept, never absorbed
 
@@ -240,3 +248,83 @@ hour exists; a band with `require_risk_allow` then needs a person.
 **Tests.** domain: `nothing_settles_before_finality`,
 `an_unscreened_payment_is_not_treated_as_a_clean_one`,
 `a_denied_source_of_funds_holds_the_money`.
+
+## 11. A manual honor at or above the threshold needs two different operator keys
+
+**Invariant.** An honor allocating at least the configured threshold writes no
+money on one operator key's word. It is paid only when a second, different
+`admin` key approves a stored proposal before it expires, after every honor
+check (invariants 1, 2, 3, 4) has passed again against rows locked by the
+approving transaction. It is paid at most once.
+
+**Mechanism.** `OperationsService::resolve_manual` refuses such an honor with
+`DualControlRequired` before the repository is called. The threshold is
+`GATEWAY_MANUAL_HONOR_DUAL_CONTROL_MIN_RAW` in raw units; unset means zero, so
+every honor needs two keys (`HonorApprovalPolicy::default`). `propose_honor`
+(storage `honor_proposals.rs`) runs `plan_honor`, the same locked read and
+checks `honor_transfer` uses, and stores the command, an evidence snapshot and
+the proposer in `manual_honor_proposals` (migration 0020) without writing
+money. `approve_honor` locks the proposal row, refuses the proposing key
+(`SameOperator`), a decided proposal and an expired one (24 hours,
+`HONOR_PROPOSAL_TTL`), then calls `honor_transfer` under the approving key in
+the same transaction as the status change, so a refused honor also leaves the
+proposal pending. The database refuses `approved` with `decided_by_key_id =
+proposer_key_id` (CHECK) and allows one pending proposal per transfer (partial
+unique index). The honor's row lock covers the attempt, intent and processing
+row, never the immutable transfer row, which the API role cannot lock.
+
+**Tests.** operations:
+`a_second_operator_approves_an_honor_once_and_the_proposer_cannot` (the
+proposer's own approval is refused with nothing written; two different keys
+approving concurrently produce one allocation, one fulfilment, one
+`payment_intent.paid`), `an_expired_proposal_pays_nothing_and_can_be_asked_again`,
+`an_approval_after_the_facts_changed_is_refused_with_no_money_written` (intent
+cancelled between proposal and approval),
+`a_rejected_proposal_cannot_be_approved_and_below_the_threshold_one_operator_decides`.
+roles: `each_role_is_refused_the_writes_that_are_not_its_own` runs a proposal
+and its approval under the API's own login. application:
+`one_operator_alone_cannot_honor_unless_a_threshold_allows_it`.
+
+**Gap.** The threshold is one number for every asset, in that asset's raw
+units; assets of different precision share it.
+
+## 12. The settlement export adds up to the allocations behind it
+
+**Invariant.** The accounting export counts only decisions that moved money,
+counts a completed obligation and its fiat amount once, and states whether the
+raw units it reports equal the sum of the allocation rows behind the same
+decisions.
+
+**Mechanism.** `settlement_ledger` (storage `accounting.rs`) reads the day
+rows and the per-asset `payment_allocations` sums in one repeatable-read
+transaction; `build_export` (application `accounting.rs`) adds the days with
+checked 256-bit and 128-bit arithmetic and sets `control.balanced` only when
+every asset's total equals its allocation sum. A mismatch is reported, never
+corrected.
+
+**Tests.** operations:
+`the_settlement_export_adds_up_to_the_money_that_was_allocated` (an overpaid
+honor exports `payments` 1, `allocated_raw` equal to the allocation table,
+`remainder_raw` the recorded remainder; a `held` decision adds nothing; an
+edited allocation turns `balanced` false). accounting:
+`totals_add_up_and_the_control_sum_must_agree`.
+
+## 13. Retention never deletes the evidence behind a decision
+
+**Invariant.** Retention deletes no attestation-referenced or
+conflict-referenced observation, no observation of an event without a final
+canonical transfer, no delivery attempt of a pending or dead-lettered event,
+and nothing from any table outside its three.
+
+**Mechanism.** The delete statements in storage `retention.rs`; the
+`gateway_retention` role's grants (DELETE only on `webhook_deliveries`,
+`chain_observations`, `component_health_events`); the row policy
+`chain_observations_retention_delete` in `db/roles/10_grants.sql`, which
+repeats the observation rule in the database; the foreign keys from
+attestations and conflict items. Nothing runs unless an age of at least 30
+days is configured.
+
+**Tests.** retention: `retention_deletes_only_what_no_evidence_still_needs`.
+roles: the retention login's `DELETE FROM chain_observations` touches no row,
+and its deletes on allocations, audit events, outbox events and canonical
+transfers are refused.
