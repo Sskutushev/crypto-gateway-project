@@ -2,17 +2,23 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use gateway_domain::{
-    ChainEnvironment, EvidenceReading, FinalityPolicy, ObservationKind, ObservedTransfer, TxHash,
-    Verdict, VerificationError, verify,
+    ChainEnvironment, EvidenceReading, FinalityPolicy, ObservationKind, ObservedTransfer,
+    TransferState, TxHash, Verdict, VerificationError, verify,
 };
 use thiserror::Error;
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::{
     ChainSource, Clock, CollectorWatch, ComponentLease, ObservationRepository, RepositoryError,
     ResolvedObservation,
 };
+
+/// How long a verified but not yet finalized event waits before the verifier
+/// reads its depth again. Stored readings never grow deeper on their own: a
+/// lane reads a block once, so without a fresh read a policy asking for more
+/// confirmations than the first readings showed would never be met.
+const DEPTH_REREAD_INTERVAL: Duration = Duration::seconds(15);
 
 /// The identity of one chain event: a transfer inside a transaction.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -84,10 +90,13 @@ pub trait VerificationRepository: Send + Sync {
         environment: ChainEnvironment,
     ) -> Result<Option<FinalityPolicy>, RepositoryError>;
 
-    /// Events with fresh evidence and no final decision yet.
+    /// Events with fresh evidence and no final decision yet, and verified
+    /// events whose transfer is not finalized and whose verdict was decided
+    /// before `deepen_decided_before`, so their depth can be read again.
     async fn events_awaiting_verdict(
         &self,
         limit: u32,
+        deepen_decided_before: OffsetDateTime,
     ) -> Result<Vec<ChainEventKey>, RepositoryError>;
 
     async fn evidence_for(
@@ -171,7 +180,10 @@ where
         if limit == 0 || limit > 1_000 {
             return Err(VerificationServiceError::InvalidBatchLimit);
         }
-        let events = self.repository.events_awaiting_verdict(limit).await?;
+        let events = self
+            .repository
+            .events_awaiting_verdict(limit, self.clock.now() - DEPTH_REREAD_INTERVAL)
+            .await?;
         let mut report = VerificationReport::default();
 
         for event in events {
@@ -187,11 +199,13 @@ where
             };
 
             let mut evidence = self.repository.evidence_for(&event).await?;
+            let mut read_this_pass = false;
             if !self.has_own_reread(&evidence) {
                 match self.reread(lease, &event).await {
                     Ok(true) => {
                         report.rereads_performed = report.rereads_performed.saturating_add(1);
                         evidence = self.repository.evidence_for(&event).await?;
+                        read_this_pass = true;
                     }
                     Ok(false) => {
                         // The chain does not know this event. Another source
@@ -209,8 +223,25 @@ where
                 }
             }
 
+            let mut verdict = verify(&evidence, &policy, self.clock.now())?;
+            if !read_this_pass && awaits_depth(&verdict, &policy) {
+                // Agreed on everything but depth: only a fresh read of the
+                // chain can show the confirmations the policy asks for. A
+                // failed read keeps the verdict as it is; it is asked again
+                // after the interval.
+                match self.reread(lease, &event).await {
+                    Ok(true) => {
+                        report.rereads_performed = report.rereads_performed.saturating_add(1);
+                        evidence = self.repository.evidence_for(&event).await?;
+                        verdict = verify(&evidence, &policy, self.clock.now())?;
+                    }
+                    Ok(false) | Err(_) => {
+                        report.rereads_failed = report.rereads_failed.saturating_add(1);
+                    }
+                }
+            }
+
             let evidence_count = u32::try_from(evidence.len()).unwrap_or(u32::MAX);
-            let verdict = verify(&evidence, &policy, self.clock.now())?;
             match verdict {
                 Verdict::Verified(_) => report.verified = report.verified.saturating_add(1),
                 Verdict::Conflicted { .. } => {
@@ -325,6 +356,16 @@ impl VerificationServiceError {
             _ => false,
         }
     }
+}
+
+/// A verified event that is short of finality only for want of depth.
+fn awaits_depth(verdict: &Verdict, policy: &FinalityPolicy) -> bool {
+    matches!(
+        verdict,
+        Verdict::Verified(verified)
+            if verified.state != TransferState::Finalized
+                && verified.confirmations < policy.min_confirmations
+    )
 }
 
 #[cfg(test)]

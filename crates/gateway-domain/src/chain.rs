@@ -307,6 +307,12 @@ impl ObservedTransfer {
         field(self.to_address.as_bytes());
         field(self.amount_raw.to_string().as_bytes());
         field(self.memo.as_ref().map_or("", Memo::as_str).as_bytes());
+        // The verifier's own read is also its measure of depth: the same
+        // answer at a higher head is a new reading, or confirmations could
+        // never grow once the first read was stored.
+        if kind == ObservationKind::TargetedLookup {
+            field(&self.source_head.unwrap_or(-1).to_be_bytes());
+        }
         digest.finalize().into()
     }
 }

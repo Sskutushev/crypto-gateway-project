@@ -7,7 +7,7 @@ use std::{
 use async_trait::async_trait;
 use gateway_domain::{
     AddressKey, ChainEnvironment, EvidenceReading, ExecutionStatus, FinalityPolicy,
-    ObservationKind, ObservedTransfer, RawAmount, SourceFinality, TxHash, Verdict,
+    ObservationKind, ObservedTransfer, RawAmount, SourceFinality, TransferState, TxHash, Verdict,
 };
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
@@ -49,6 +49,7 @@ struct FakeRepository {
     evidence: Mutex<Vec<EvidenceReading>>,
     recorded: Mutex<Vec<ResolvedObservation>>,
     verdicts: Mutex<Vec<(ChainEventKey, String)>>,
+    states: Mutex<Vec<TransferState>>,
     policy: Mutex<Option<FinalityPolicy>>,
 }
 
@@ -62,6 +63,7 @@ impl FakeRepository {
             evidence: Mutex::new(evidence),
             recorded: Mutex::new(Vec::new()),
             verdicts: Mutex::new(Vec::new()),
+            states: Mutex::new(Vec::new()),
             policy: Mutex::new(policy),
         }))
     }
@@ -70,6 +72,13 @@ impl FakeRepository {
         self.verdicts
             .lock()
             .map(|verdicts| verdicts.iter().map(|(_, name)| name.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    fn states(&self) -> Vec<TransferState> {
+        self.states
+            .lock()
+            .map(|states| states.clone())
             .unwrap_or_default()
     }
 
@@ -99,6 +108,7 @@ impl VerificationRepository for FakeRepository {
     async fn events_awaiting_verdict(
         &self,
         _limit: u32,
+        _deepen_decided_before: OffsetDateTime,
     ) -> Result<Vec<ChainEventKey>, RepositoryError> {
         Ok(vec![self.event.clone()])
     }
@@ -123,6 +133,12 @@ impl VerificationRepository for FakeRepository {
         _verifier_version: &str,
         _now: OffsetDateTime,
     ) -> Result<VerdictOutcome, RepositoryError> {
+        if let Verdict::Verified(verified) = verdict {
+            self.states
+                .lock()
+                .map_err(|_| RepositoryError::Unavailable("poisoned test lock".to_owned()))?
+                .push(verified.state);
+        }
         let name = match verdict {
             Verdict::Verified(_) => "verified",
             Verdict::Conflicted { .. } => "conflicted",
@@ -500,6 +516,70 @@ async fn the_verifier_does_not_re_read_what_it_already_read() -> TestResult {
 
     assert_eq!(reader.calls(), 0);
     assert_eq!(report.verified, 1);
+    Ok(())
+}
+
+/// A chain that keeps producing blocks: every read reports a higher head.
+#[derive(Debug)]
+struct GrowingChain {
+    heads: Mutex<Vec<i64>>,
+}
+
+#[async_trait]
+impl ChainReader for GrowingChain {
+    async fn lookup(
+        &self,
+        _event: &ChainEventKey,
+    ) -> Result<Option<ObservedTransfer>, ChainReaderError> {
+        let head = self
+            .heads
+            .lock()
+            .map_err(|_| ChainReaderError::Unreachable("poisoned test lock".to_owned()))?
+            .remove(0);
+        let mut answer =
+            transfer().map_err(|error| ChainReaderError::Unparseable(error.to_string()))?;
+        answer.source_head = Some(head);
+        Ok(Some(answer))
+    }
+}
+
+#[tokio::test]
+async fn depth_the_first_reads_lacked_is_read_again_until_the_policy_is_met() -> TestResult {
+    // Both providers read block 100 as it solidified, five blocks deep.
+    let mut first = reading(101, PROVIDER_A, "group-a", ObservationKind::CursorScan)?;
+    first.transfer.source_head = Some(105);
+    let mut second = reading(102, PROVIDER_B, "group-b", ObservationKind::CursorScan)?;
+    second.transfer.source_head = Some(105);
+    let repository = FakeRepository::with(vec![first, second], Some(policy()))?;
+    let reader = Arc::new(GrowingChain {
+        heads: Mutex::new(vec![110, 125]),
+    });
+    let service = service(Arc::clone(&repository), Arc::clone(&reader));
+
+    // The first pass reads the chain once: ten deep, short of nineteen.
+    service.verify_pending(&lease(), 10).await?;
+    assert_eq!(repository.states(), vec![TransferState::Confirmed]);
+
+    // The next pass finds only stale depth and reads again: twenty-five deep.
+    let report = service.verify_pending(&lease(), 10).await?;
+    assert_eq!(report.rereads_performed, 1);
+    assert_eq!(
+        repository.states(),
+        vec![TransferState::Confirmed, TransferState::Finalized]
+    );
+    let heads: Vec<Option<i64>> = repository
+        .recorded()
+        .iter()
+        .map(|reading| reading.transfer.source_head)
+        .collect();
+    assert_eq!(heads, vec![Some(110), Some(125)]);
+    // Two reads of one answer at different heads are two stored readings.
+    let hashes: std::collections::BTreeSet<[u8; 32]> = repository
+        .recorded()
+        .iter()
+        .map(|reading| reading.semantic_hash)
+        .collect();
+    assert_eq!(hashes.len(), 2);
     Ok(())
 }
 

@@ -10,6 +10,17 @@ No version has been released yet. The first three groups below are the
 changes since the P0 hardening branch; the last `Added` group is what existed
 before them, by the slice that added it.
 
+### Fixed
+
+- **A transfer short of depth is read again until it is final.** Each lane
+  reads a block once and a repeated answer is a duplicate, so a finality
+  policy asking for more confirmations than the first readings showed (the
+  Nile seed asks for 19 on top of `finalized`) left a transfer at `confirmed`
+  with nothing to advance it. A verified event that is not finalized is now
+  due again 15 seconds after its last verdict; the verifier reads the chain
+  again, and its own reading counts the head in its identity, so a deeper
+  answer is stored as new evidence.
+
 ### Added
 
 - **Address pool and capacity.** A quote goes to the merchant's least loaded

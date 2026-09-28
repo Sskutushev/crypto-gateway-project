@@ -251,6 +251,100 @@ async fn one_provider_reporting_twice_never_becomes_a_fact() -> TestResult {
     Ok(())
 }
 
+/// A chain that keeps producing blocks: every read reports a higher head.
+#[derive(Debug)]
+struct GrowingChain(Mutex<Vec<i64>>);
+
+#[async_trait]
+impl ChainReader for GrowingChain {
+    async fn lookup(
+        &self,
+        _event: &ChainEventKey,
+    ) -> Result<Option<ObservedTransfer>, ChainReaderError> {
+        let head = self
+            .0
+            .lock()
+            .map_err(|_| ChainReaderError::Unreachable("poisoned test lock".to_owned()))?
+            .remove(0);
+        let mut answer =
+            transfer().map_err(|error| ChainReaderError::Unparseable(error.to_string()))?;
+        answer.source_head = Some(head);
+        Ok(Some(answer))
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+async fn a_transfer_short_of_depth_is_read_again_until_it_is_final() -> TestResult {
+    let _fixture = DATABASE.lock().await;
+    let pool = connect().await?;
+    seed(&pool).await?;
+    let repository = Arc::new(PostgresRepository::new(pool.clone()));
+    let clock = TestClock::at(OffsetDateTime::now_utc());
+    let lease = repository
+        .acquire_component_lease("verifier:tron", "pod-verifier:boot-1", 120, clock.now())
+        .await?
+        .ok_or("the verifier could not take its lease")?;
+    // Both providers read block 100 as it solidified, five blocks deep; the
+    // policy asks for nineteen.
+    let shallow = ObservedTransfer {
+        source_head: Some(105),
+        ..transfer()?
+    };
+    for (source_id, group) in [(SOURCE_A, "group-a"), (SOURCE_B, "group-b")] {
+        let source = source(source_id, group);
+        repository
+            .record_observations(
+                &source,
+                &lease,
+                &[observation(&source, shallow.clone(), clock.now())],
+                None,
+            )
+            .await?;
+    }
+    let service = VerificationService::new(
+        Arc::clone(&repository),
+        Arc::new(GrowingChain(Mutex::new(vec![110, 125]))),
+        clock.clone(),
+        source(VERIFIER_SOURCE, "verifier"),
+        "verifier-test",
+        "parser-test",
+    );
+    let state = |pool: PgPool| async move {
+        sqlx::query_scalar::<_, String>("SELECT state FROM chain_transfer_state_current")
+            .fetch_one(&pool)
+            .await
+    };
+
+    clock.advance(Duration::seconds(5));
+    service.verify_pending(&lease, 50).await?;
+    assert_eq!(state(pool.clone()).await?, "confirmed");
+
+    // Before the interval nothing is due: depth is not polled in a loop.
+    clock.advance(Duration::seconds(5));
+    assert_eq!(service.verify_pending(&lease, 50).await?.examined, 0);
+
+    // After it the verifier reads the chain again and sees twenty-five blocks.
+    clock.advance(Duration::seconds(20));
+    let report = service.verify_pending(&lease, 50).await?;
+    assert_eq!(report.examined, 1);
+    assert_eq!(report.rereads_performed, 1);
+    assert_eq!(state(pool.clone()).await?, "finalized");
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT count(*) FROM chain_observations WHERE observation_kind = 'targeted_lookup'"
+        )
+        .await?,
+        2
+    );
+
+    // Final: never read again.
+    clock.advance(Duration::seconds(60));
+    assert_eq!(service.verify_pending(&lease, 50).await?.examined, 0);
+    Ok(())
+}
+
 fn source(id: Uuid, group: &str) -> ChainSource {
     ChainSource {
         id,
