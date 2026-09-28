@@ -87,7 +87,7 @@ async fn transfer(pool: &PgPool, id: Uuid, tx_hash: &str, state: &str) -> TestRe
 #[allow(clippy::too_many_lines)]
 async fn seed(pool: &PgPool) -> TestResult {
     sqlx::query(
-        "TRUNCATE chain_sources, chain_assets, merchants, component_health_events, audit_events CASCADE",
+        "TRUNCATE chain_sources, chain_assets, merchants, component_health_events, audit_events, \n         chain_observation_conflicts CASCADE",
     )
     .execute(pool)
     .await?;
