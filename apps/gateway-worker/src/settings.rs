@@ -8,7 +8,7 @@
 use std::{env, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use gateway_application::{DeliveryFairness, SelfCheckConfig};
+use gateway_application::{DeliveryFairness, RetentionPolicy, SelfCheckConfig};
 use gateway_domain::ChainEnvironment;
 use gateway_scheduler::{BatchConfig, RetryPolicy};
 use gateway_tron::ScanLane;
@@ -25,16 +25,18 @@ pub enum Role {
     Settlement,
     Outbox,
     Reconciler,
+    Retention,
 }
 
 impl Role {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Expiry,
         Self::Observer,
         Self::Verifier,
         Self::Settlement,
         Self::Outbox,
         Self::Reconciler,
+        Self::Retention,
     ];
 
     #[must_use]
@@ -46,6 +48,7 @@ impl Role {
             Self::Settlement => "settlement",
             Self::Outbox => "outbox",
             Self::Reconciler => "reconciler",
+            Self::Retention => "retention",
         }
     }
 
@@ -58,6 +61,7 @@ impl Role {
             Self::Settlement => "GATEWAY_SETTLEMENT",
             Self::Outbox => "GATEWAY_OUTBOX",
             Self::Reconciler => "GATEWAY_RECONCILER",
+            Self::Retention => "GATEWAY_RETENTION",
         }
     }
 
@@ -84,6 +88,7 @@ pub struct WorkerSettings {
     pub observer: Option<ObserverSettings>,
     pub verifier: Option<VerifierSettings>,
     pub outbox: Option<OutboxSettings>,
+    pub retention: Option<RetentionPolicy>,
     pub batches: Vec<(Role, BatchConfig)>,
     pub self_check: SelfCheckConfig,
 }
@@ -167,6 +172,11 @@ impl WorkerSettings {
         } else {
             None
         };
+        let retention = if roles.contains(&Role::Retention) {
+            Some(retention_policy()?)
+        } else {
+            None
+        };
 
         let mut batches = Vec::with_capacity(roles.len());
         for role in &roles {
@@ -183,6 +193,7 @@ impl WorkerSettings {
             observer,
             verifier,
             outbox,
+            retention,
             batches,
             self_check,
         })
@@ -261,6 +272,34 @@ fn outbox_settings() -> Result<OutboxSettings> {
             .context("GATEWAY_WEBHOOK_DELIVERY_CONCURRENCY is too large")?,
         },
     })
+}
+
+/// Retention ages in whole days. Every age is optional and none is assumed:
+/// a table whose age is not set is never deleted from, and a retention role
+/// with no age set refuses to start rather than run doing nothing.
+fn retention_policy() -> Result<RetentionPolicy> {
+    let days = |name: &str| -> Result<Option<u32>> {
+        read(name)
+            .map(|value| {
+                value
+                    .parse::<u32>()
+                    .with_context(|| format!("{name} must be a whole number of days"))
+            })
+            .transpose()
+    };
+    let policy = RetentionPolicy::from_days(
+        days("GATEWAY_RETENTION_WEBHOOK_DELIVERIES_DAYS")?,
+        count("GATEWAY_RETENTION_KEEP_DELIVERY_ATTEMPTS", 3)?,
+        days("GATEWAY_RETENTION_OBSERVATIONS_DAYS")?,
+        days("GATEWAY_RETENTION_HEALTH_EVENTS_DAYS")?,
+    )
+    .context("GATEWAY_RETENTION_* settings")?;
+    if policy.is_disabled() {
+        bail!(
+            "the retention role needs at least one of GATEWAY_RETENTION_WEBHOOK_DELIVERIES_DAYS,              GATEWAY_RETENTION_OBSERVATIONS_DAYS or GATEWAY_RETENTION_HEALTH_EVENTS_DAYS"
+        );
+    }
+    Ok(policy)
 }
 
 fn batch_config(prefix: &str) -> Result<BatchConfig> {

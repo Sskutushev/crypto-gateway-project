@@ -18,11 +18,11 @@ use anyhow::{Context, Result, bail};
 use gateway_application::{
     ChainSource, CollectorWatch, ObservationRepository, ObservationService, OutboxService,
     QuoteService, ReconciliationKind, ReconciliationService, ReconciliationWindow,
-    SelfCheckService, SettlementService, SystemClock, VerificationService,
+    RetentionService, SelfCheckService, SettlementService, SystemClock, VerificationService,
 };
 use gateway_scheduler::{
     BatchConfig, ExpiryScheduler, LeasedWorker, ObservationWorker, OutboxWorker,
-    ReconciliationWorker, SettlementWorker, VerificationWorker, WorkerLoop,
+    ReconciliationWorker, RetentionWorker, SettlementWorker, VerificationWorker, WorkerLoop,
 };
 use gateway_storage::{PgPoolOptions, PostgresRepository};
 use gateway_tron::{ReqwestTransport, ScanLane, TokenView, TronHttpSource, TronSourceConfig};
@@ -83,6 +83,7 @@ async fn main() -> Result<()> {
             Role::Settlement => spawn_settlement(&settings, &repository, config, stop)?,
             Role::Outbox => spawn_outbox(&settings, &repository, config, stop)?,
             Role::Reconciler => spawn_reconciler(&settings, &repository, config, stop)?,
+            Role::Retention => spawn_retention(&settings, &repository, config, stop)?,
         };
         handles.push(handle);
         info!(role = role.as_str(), "role started");
@@ -263,6 +264,28 @@ fn spawn_reconciler(
         service,
         "reconciler",
         ReconciliationKind::Incremental,
+    ));
+    spawn_loop(worker, repository, settings, config, stop)
+}
+
+fn spawn_retention(
+    settings: &WorkerSettings,
+    repository: &Arc<PostgresRepository>,
+    config: BatchConfig,
+    stop: watch::Receiver<bool>,
+) -> Result<JoinHandle<()>> {
+    let policy = settings
+        .retention
+        .context("the retention role needs GATEWAY_RETENTION_* settings")?;
+    info!(?policy, "retention policy");
+    let service = Arc::new(
+        RetentionService::new(Arc::clone(repository), SystemClock, policy)
+            .context("configure retention")?,
+    );
+    let worker = Arc::new(RetentionWorker::new(
+        service,
+        "retention",
+        config.batch_limit,
     ));
     spawn_loop(worker, repository, settings, config, stop)
 }

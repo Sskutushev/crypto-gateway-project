@@ -14,6 +14,7 @@ mod quote_metrics;
 mod quotes;
 mod reconciliation;
 mod redelivery;
+mod retention;
 mod self_check;
 mod settlement;
 mod verification;
@@ -85,6 +86,10 @@ pub use reconciliation::{
 pub use redelivery::{
     RedeliveryActor, RedeliveryError, RedeliveryRepository, RedeliveryResult, WebhookRedelivery,
     validate_redelivery,
+};
+pub use retention::{
+    MIN_RETENTION_DAYS, RetentionError, RetentionPolicy, RetentionReport, RetentionRepository,
+    RetentionService,
 };
 pub use self_check::{
     ExpectedAsset, SelfCheckConfig, SelfCheckConfigError, SelfCheckReport, SelfCheckRepository,

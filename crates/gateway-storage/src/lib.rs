@@ -11,6 +11,7 @@ mod postgres;
 mod provisioning;
 mod provisioning_reads;
 mod redelivery;
+mod retention;
 mod roles;
 mod self_check;
 mod settlement;

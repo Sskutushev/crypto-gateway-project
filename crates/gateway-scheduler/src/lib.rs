@@ -15,5 +15,7 @@ pub use config::{BatchConfig, RetryPolicy, SchedulerConfigError};
 pub use expiry::{ExpiryScheduler, SweepError, SweepReport};
 pub use metrics::{RunMetrics, RunMetricsSnapshot};
 pub use observer::ObservationWorker;
-pub use pipeline::{OutboxWorker, ReconciliationWorker, SettlementWorker, VerificationWorker};
+pub use pipeline::{
+    OutboxWorker, ReconciliationWorker, RetentionWorker, SettlementWorker, VerificationWorker,
+};
 pub use worker::{BatchOutcome, LeasedWorker, RunError, RunReport, WorkerError, WorkerLoop};

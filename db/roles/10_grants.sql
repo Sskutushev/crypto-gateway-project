@@ -12,6 +12,10 @@
 --   oversight.rs      component health and reconciliation
 --   self_check.rs     start-up invariants, read by every process
 --   provisioning.rs   onboarding: merchants, keys, webhooks, collectors
+--   redelivery.rs     webhook redelivery, from the API and the admin CLI
+--   honor_proposals.rs two-operator honors
+--   accounting.rs     the settlement export, read by the API
+--   retention.rs      bounded deletion of operational rows
 --
 -- A privilege that is not on this list is a privilege a process does not have,
 -- and a new table gets nothing until it is added here. That is the point: an
@@ -40,17 +44,18 @@ $$;
 
 GRANT USAGE ON SCHEMA public TO
     gateway_api, gateway_observer, gateway_verifier, gateway_payment,
-    gateway_reconciler, gateway_readonly, gateway_provisioner;
+    gateway_reconciler, gateway_readonly, gateway_provisioner, gateway_retention;
 
 -- Every process proves its rails at start-up (self_check.rs) and every leased
 -- worker holds its lease in component_leases.
 GRANT SELECT ON
     chain_assets, collector_addresses, chain_sources, chain_finality_policies,
     chain_cursors, chain_observations
-TO gateway_api, gateway_observer, gateway_verifier, gateway_payment, gateway_reconciler;
+TO gateway_api, gateway_observer, gateway_verifier, gateway_payment, gateway_reconciler,
+   gateway_retention;
 
 GRANT SELECT, INSERT, UPDATE ON component_leases
-TO gateway_observer, gateway_verifier, gateway_payment, gateway_reconciler;
+TO gateway_observer, gateway_verifier, gateway_payment, gateway_reconciler, gateway_retention;
 
 -- Observer: it may say what it saw and where it stopped reading. Nothing else.
 -- Which rows of chain_observations and chain_cursors it may write is decided
@@ -205,3 +210,47 @@ GRANT UPDATE (state, retired_at) ON collector_addresses TO gateway_provisioner;
 -- Retiring or listing a collector counts the reservations still open on it,
 -- and nothing else about them.
 GRANT SELECT (collector_address_id) ON amount_leases TO gateway_provisioner;
+
+-- Retention: the one role that deletes, and only from three append-only
+-- operational tables. What it may delete is stated twice: in the statements
+-- retention.rs runs, and, for observations, in a row policy the database
+-- enforces whatever statement is sent. It reads what it must check a row
+-- against and nothing about money, merchants or credentials.
+GRANT DELETE ON webhook_deliveries, chain_observations, component_health_events
+TO gateway_retention;
+GRANT SELECT ON
+    webhook_deliveries, component_health_events,
+    chain_transfers, chain_transfer_state_current, chain_transfer_attestations,
+    chain_observation_conflicts, chain_observation_conflict_items
+TO gateway_retention;
+GRANT SELECT (id, delivered_at) ON domain_events TO gateway_retention;
+GRANT INSERT ON audit_events TO gateway_retention;
+
+-- chain_observations forces row level security and has no delete policy of
+-- its own, so no role deletes an observation unless a policy lets it. This one
+-- lets retention delete only a reading of a final canonical transfer that no
+-- attestation and no conflict references. A row it hides is not deleted and
+-- not reported: the DELETE simply touches fewer rows.
+DROP POLICY IF EXISTS chain_observations_retention_delete ON chain_observations;
+CREATE POLICY chain_observations_retention_delete
+    ON chain_observations
+    FOR DELETE
+    TO gateway_retention
+    USING (
+        NOT EXISTS (
+            SELECT 1 FROM chain_transfer_attestations AS attestation
+             WHERE attestation.observation_id = chain_observations.id)
+        AND NOT EXISTS (
+            SELECT 1 FROM chain_observation_conflict_items AS item
+             WHERE item.observation_id = chain_observations.id)
+        AND EXISTS (
+            SELECT 1
+              FROM chain_transfers AS transfer
+              JOIN chain_transfer_state_current AS state ON state.transfer_id = transfer.id
+             WHERE transfer.chain = chain_observations.chain
+               AND transfer.network = chain_observations.network
+               AND transfer.chain_environment = chain_observations.chain_environment
+               AND transfer.tx_hash = chain_observations.tx_hash
+               AND transfer.event_index = chain_observations.event_index
+               AND state.state IN ('finalized', 'invalidated'))
+    );

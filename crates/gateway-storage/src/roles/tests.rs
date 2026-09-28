@@ -31,12 +31,13 @@ const SOURCE_B: Uuid = Uuid::from_u128(11_402);
 /// Login roles created for the scenario: (name, group). The observer role is
 /// named as `SOURCE_A`'s `db_principal`; `SOURCE_B` belongs to a principal that
 /// never logs in, which is what "another source" means to row level security.
-const LOGINS: [(&str, &str); 5] = [
+const LOGINS: [(&str, &str); 6] = [
     ("roles_scenario_api", "gateway_api"),
     ("roles_scenario_observer_a", "gateway_observer"),
     ("roles_scenario_verifier", "gateway_verifier"),
     ("roles_scenario_payment", "gateway_payment"),
     ("roles_scenario_provisioner", "gateway_provisioner"),
+    ("roles_scenario_retention", "gateway_retention"),
 ];
 
 #[tokio::test]
@@ -85,6 +86,9 @@ async fn each_role_is_refused_the_writes_that_are_not_its_own() -> TestResult {
     }
     if outcome.is_ok() {
         outcome = prove_dual_control_honor(&pool).await;
+    }
+    if outcome.is_ok() {
+        outcome = prove_retention(&pool).await;
     }
     drop_logins(&pool).await?;
     outcome
@@ -624,5 +628,64 @@ async fn prove_dual_control_honor(owner: &PgPool) -> TestResult {
         .fetch_one(owner)
         .await?;
     assert_eq!(status, "paid");
+    Ok(())
+}
+
+/// Retention runs under its own login, deletes nothing it is not allowed to,
+/// and cannot delete an observation that is not a reading of a final
+/// transfer even with a statement of its own.
+async fn prove_retention(owner: &PgPool) -> TestResult {
+    let retention = connect_as("roles_scenario_retention").await?;
+    let service = gateway_application::RetentionService::new(
+        std::sync::Arc::new(crate::PostgresRepository::new(retention.clone())),
+        gateway_application::SystemClock,
+        gateway_application::RetentionPolicy::from_days(Some(30), 3, Some(30), Some(30))?,
+    )?;
+    service.purge_batch(100).await?;
+
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM chain_observations")
+        .fetch_one(owner)
+        .await?;
+    let hidden = sqlx::query("DELETE FROM chain_observations")
+        .execute(&retention)
+        .await?;
+    assert_eq!(hidden.rows_affected(), 0);
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM chain_observations")
+        .fetch_one(owner)
+        .await?;
+    assert_eq!(before, after);
+
+    for (statement, what) in [
+        (
+            "DELETE FROM payment_allocations",
+            "retention deleting an allocation",
+        ),
+        (
+            "DELETE FROM audit_events",
+            "retention deleting the audit trail",
+        ),
+        (
+            "DELETE FROM domain_events",
+            "retention deleting an outbox event",
+        ),
+        (
+            "DELETE FROM chain_transfers",
+            "retention deleting a canonical transfer",
+        ),
+        (
+            "UPDATE chain_observations SET amount_raw = 1",
+            "retention rewriting an observation",
+        ),
+        (
+            "SELECT count(*) FROM merchant_api_keys",
+            "retention reading credentials",
+        ),
+        (
+            "SELECT payload FROM domain_events",
+            "retention reading an event payload",
+        ),
+    ] {
+        denied(sqlx::query(statement).execute(&retention).await, what)?;
+    }
     Ok(())
 }
