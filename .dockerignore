@@ -18,3 +18,4 @@ compose.yaml
 deny.toml
 rustfmt.toml
 sdk
+integrations
