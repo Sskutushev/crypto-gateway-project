@@ -8,7 +8,7 @@
 use std::{env, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use gateway_application::SelfCheckConfig;
+use gateway_application::{DeliveryFairness, SelfCheckConfig};
 use gateway_domain::ChainEnvironment;
 use gateway_scheduler::{BatchConfig, RetryPolicy};
 use gateway_tron::ScanLane;
@@ -123,6 +123,7 @@ pub struct OutboxSettings {
     pub master_key: Vec<u8>,
     pub request_timeout: Duration,
     pub max_attempts: i32,
+    pub fairness: DeliveryFairness,
 }
 
 impl WorkerSettings {
@@ -248,6 +249,17 @@ fn outbox_settings() -> Result<OutboxSettings> {
         request_timeout: seconds("GATEWAY_WEBHOOK_REQUEST_TIMEOUT_SECONDS", 10)?,
         max_attempts: i32::try_from(count("GATEWAY_WEBHOOK_MAX_ATTEMPTS", 12)?)
             .context("GATEWAY_WEBHOOK_MAX_ATTEMPTS is too large")?,
+        fairness: DeliveryFairness {
+            max_events_per_merchant: count(
+                "GATEWAY_WEBHOOK_MAX_EVENTS_PER_MERCHANT",
+                DeliveryFairness::default().max_events_per_merchant,
+            )?,
+            concurrency: usize::try_from(count(
+                "GATEWAY_WEBHOOK_DELIVERY_CONCURRENCY",
+                u32::try_from(DeliveryFairness::default().concurrency).unwrap_or(8),
+            )?)
+            .context("GATEWAY_WEBHOOK_DELIVERY_CONCURRENCY is too large")?,
+        },
     })
 }
 

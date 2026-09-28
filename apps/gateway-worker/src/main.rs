@@ -241,6 +241,7 @@ fn spawn_outbox(
             settings.instance.clone(),
             outbox.max_attempts,
         )
+        .and_then(|service| service.with_fairness(outbox.fairness))
         .context("configure signed webhook delivery")?,
     );
     let worker = Arc::new(OutboxWorker::new(service, "outbox", config.batch_limit));
