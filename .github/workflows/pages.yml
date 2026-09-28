@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@v7
       - id: pages
         if: github.event_name != 'pull_request'
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
       - name: build
         env:
           SITE_BASE_URL: ${{ steps.pages.outputs.base_url }}
