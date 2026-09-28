@@ -154,8 +154,9 @@ webhook: [`docs/merchant-integration.md`](docs/merchant-integration.md).
 What is supported, what is not, and what happens to an underpayment, an
 overpayment, a late payment, the wrong token or the wrong network:
 [`docs/scope-and-limits.md`](docs/scope-and-limits.md). In short: incoming
-USDT TRC20 only, no payouts or refunds from the gateway, one quote per intent,
-and no API route to cancel an intent yet.
+USDT TRC20 only, no payouts or refunds from the gateway, one live quote per
+intent (an intent whose quote ran out unpaid can be quoted again), and a cancel
+route only for an intent with no money on it.
 
 ## How it works
 
@@ -220,6 +221,10 @@ Each money invariant with the tests that exercise it:
 
 ## Documentation
 
+The documentation is published as a site:
+<https://sskutushev.github.io/crypto-gateway-project/>, built from `docs/` by
+`site/build.py`.
+
 - [Architecture](docs/architecture.md) and [decisions](docs/decisions/)
 - [Merchant integration](docs/merchant-integration.md): intents, quotes, statuses, webhook verification
 - [Examples](examples/): webhook receivers, a create-payment script, a Postman collection
@@ -231,6 +236,8 @@ Each money invariant with the tests that exercise it:
 - [Deployment](docs/deployment.md): roles, Compose, Kubernetes, the TLS and network boundary
 - [Threat model](docs/threat-model.md)
 - [Owner setup](docs/owner-setup.md): every account, key and secret, in order
+- [Releasing and upgrading](docs/releasing.md): versioning, the schema and API compatibility matrix, the migrate-only upgrade, rollback rules, verifying signed images
+- [Backup and restore](docs/backup-and-restore.md): recovery objectives, point-in-time recovery, what to check after a restore, the monthly drill
 - [Implementation status](docs/implementation-status.md): what is verified, what is next
 
 ## Development
@@ -248,7 +255,10 @@ cargo deny check
 ```
 
 CI runs all of it on every push, plus compose and kustomize validation, an
-SBOM and an image scan; images publish to GHCR from a version tag. See
+SBOM and an image scan; images publish to GHCR from a version tag, signed with
+cosign, and each tag gets a GitHub Release ([releasing](docs/releasing.md)).
+`python site/build.py --check-links` builds the documentation site and
+`scripts/backup-drill.sh` runs the restore drill against the Compose database. See
 [`CONTRIBUTING.md`](CONTRIBUTING.md) for the rules, [`SECURITY.md`](SECURITY.md)
 for reporting a vulnerability, and [`CHANGELOG.md`](CHANGELOG.md) for what
 exists today.
