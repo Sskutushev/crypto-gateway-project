@@ -22,7 +22,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-k256 = { version = "0.13", features = ["ecdsa"] }
+k256 = { version = "0.14", features = ["ecdsa"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]

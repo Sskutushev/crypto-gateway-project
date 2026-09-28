@@ -24,3 +24,8 @@ updates:
       # The types pin the oldest supported Node, so newer APIs fail to compile.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
+      # TypeScript 7 removed `moduleResolution: node10`, the only resolution
+      # that builds the CommonJS half of the package from ESM sources. Moving
+      # to 7 means dropping `require()` support, a decision for a release.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
