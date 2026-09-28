@@ -1,0 +1,128 @@
+name: release
+
+# A GitHub Release for a version tag. The image itself is built, scanned,
+# published and signed by the `image` job of ci.yml on the same tag; this
+# workflow waits for that run instead of building a second image, so the
+# release describes exactly the digest CI tested and signed.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+      actions: read
+      packages: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # First, so a tag without notes fails in seconds rather than after CI.
+      - name: notes from CHANGELOG.md
+        run: python3 scripts/release-notes.py "$TAG" --out notes.md
+
+      - name: wait for the ci run of this tag
+        id: ci
+        run: |
+          deadline=$((SECONDS + 100 * 60))
+          while :; do
+            run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event push \
+                    --commit "$GITHUB_SHA" --limit 20 \
+                    --json databaseId,headBranch,status,conclusion \
+                    --jq "[.[] | select(.headBranch == \"$TAG\")][0]")
+            if [ -n "$run" ] && [ "$run" != "null" ]; then
+              status=$(jq -r .status <<<"$run")
+              conclusion=$(jq -r .conclusion <<<"$run")
+              id=$(jq -r .databaseId <<<"$run")
+              if [ "$status" = "completed" ]; then
+                if [ "$conclusion" != "success" ]; then
+                  echo "::error::ci run $id for $TAG concluded $conclusion; nothing is released"
+                  exit 1
+                fi
+                echo "run_id=$id" >> "$GITHUB_OUTPUT"
+                break
+              fi
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::no successful ci run for $TAG within 100 minutes"
+              exit 1
+            fi
+            sleep 30
+          done
+
+      - name: SBOM from the ci run
+        run: gh run download "${{ steps.ci.outputs.run_id }}" --repo "$GITHUB_REPOSITORY" --name sbom.spdx.json --dir sbom
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: image digest
+        id: image
+        run: |
+          repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/crypto-gateway-project"
+          digest=$(docker buildx imagetools inspect "$repo:${TAG#v}" --format '{{json .Manifest}}' | jq -r .digest)
+          case "$digest" in
+            sha256:*) ;;
+            *) echo "::error::no digest for $repo:${TAG#v}"; exit 1 ;;
+          esac
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - uses: sigstore/cosign-installer@v3
+
+      # The release names a digest only after its signature verifies against
+      # the identity of ci.yml on this very tag.
+      - name: verify the signature
+        env:
+          IMAGE: ${{ steps.image.outputs.repo }}@${{ steps.image.outputs.digest }}
+        run: |
+          cosign verify "$IMAGE" \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci.yml@refs/tags/${TAG}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
+
+      - name: create the release
+        env:
+          REPO: ${{ steps.image.outputs.repo }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          {
+            cat notes.md
+            echo
+            echo "## Image"
+            echo
+            echo '```'
+            echo "${REPO}@${DIGEST}"
+            echo '```'
+            echo
+            echo "Tag \`${REPO}:${TAG#v}\`. Verify before deploying:"
+            echo
+            echo '```sh'
+            echo "cosign verify ${REPO}@${DIGEST} \\"
+            echo "  --certificate-identity 'https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci.yml@refs/tags/${TAG}' \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com"
+            echo '```'
+            echo
+            echo "SBOM (SPDX JSON): \`sbom.spdx.json\`, attached. Upgrade procedure: docs/releasing.md."
+          } > release.md
+          prerelease=()
+          case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$TAG" --notes-file release.md "${prerelease[@]}" \
+            sbom/sbom.spdx.json

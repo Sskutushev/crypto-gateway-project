@@ -1,6 +1,6 @@
 # Implementation Status
 
-Last updated: 2026-09-27
+Last updated: 2026-09-28
 
 ## Repository state
 
@@ -36,6 +36,29 @@ all 50 PostgreSQL scenarios, including
 `quotes_spread_over_the_address_pool_and_stop_at_its_limits`. Not measured:
 quote latency and lock wait under load; the histogram exists so a load test
 can report them.
+
+## Session 2026-09-28: documentation site, release process, restore drill
+
+Branch `feat/docs-site-and-release`, from `main` at `2dc7ff7`. No tag was
+created.
+
+- `site/build.py` renders `docs/*.md` and `docs/openapi.json` into a static
+  site; `.github/workflows/pages.yml` deploys it to GitHub Pages from `main`
+  and fails a pull request on a broken internal link. Verified locally:
+  13 pages, sitemap and `robots.txt` built, internal links and anchors
+  resolve.
+- `.github/workflows/release.yml`, cosign keyless signing in the `image` job
+  of `ci.yml`, `scripts/release-notes.py`, `docs/releasing.md`. Verified with
+  actionlint and by running the notes script (it refuses today: there is no
+  `[0.1.0]` section yet). Not verified: a real tag run on GitHub.
+- `docs/backup-and-restore.md` and `scripts/backup-drill.sh`. Run against
+  the local Compose PostgreSQL: a freshly migrated source restores, migrates
+  and passes every check; a corrupted scratch copy fails the count and the
+  paid-without-fulfilment checks. The existing local databases
+  (`gateway`, `gateway_demo`) are refused by the current image because they
+  were migrated before `d5dbe2f` changed the line endings of migration `0006`;
+  the drill reports that as a FAIL, which is correct. No production backup or
+  point-in-time restore has been exercised.
 
 ## Session 2026-09-27: money binding, merchant-owned collectors, onboarding
 

@@ -31,6 +31,35 @@ before them, by the slice that added it.
   constant-time comparison, secret rotation and a typed union of every event
   the gateway emits. CI builds and tests it on Node 18, 20 and 22, and runs
   the TypeScript webhook receiver example's tests.
+- **Documentation site.** `site/build.py` (Python standard library only)
+  renders `docs/*.md` and `docs/openapi.json` into a static site with titles,
+  descriptions, canonical URLs, Open Graph tags, a sitemap and `robots.txt`;
+  `.github/workflows/pages.yml` publishes it to GitHub Pages from `main` and
+  fails a pull request on a broken internal link.
+- **Release process.** `.github/workflows/release.yml` turns a `vX.Y.Z` tag
+  into a GitHub Release with the matching `CHANGELOG.md` section (refused when
+  it is missing), the image digest and the SBOM, after the `ci` run of the tag
+  succeeds. `docs/releasing.md` covers versioning, the compatibility matrix,
+  the migrate-only upgrade and rollback rules.
+- **Signed images.** Tagged images are signed by digest with cosign keyless
+  signing; `docs/releasing.md` shows how to verify one.
+- **Backup and restore.** `docs/backup-and-restore.md` (recovery objectives,
+  point-in-time recovery, what to check after a restore, a monthly drill) and
+  `scripts/backup-drill.sh`, which dumps a database, restores it into a
+  scratch database, runs migrations on it and checks that the books still add
+  up.
+- **WooCommerce plugin.** `integrations/woocommerce/crypto-gateway-usdt/` is a
+  payment method for WooCommerce 8+ on PHP 8.1+, compatible with HPOS and the
+  Cart/Checkout Blocks. Checkout creates an intent and a quote with
+  idempotency keys derived from the order, converts the total to minor units
+  with string arithmetic, and redirects to the hosted checkout page; an
+  expired quote is re-quoted on the same intent from the order page. A signed
+  webhook (raw-body HMAC, several `v1` values, 300-second tolerance, event
+  deduplication, per-order lock) and a five-minute WP-Cron status check apply
+  the same mapping: `paid` completes the order once, `partially_paid` puts it
+  on hold, `cancelled` cancels an unpaid order, `OVERPAID` adds a note.
+  PHPUnit tests and a CI job cover signature verification, minor-unit
+  conversion and the order-state mapping.
 - **Collector retirement without SQL.** `collector-stop-quoting` moves an
   address to `receiving_only` (never quoted again, still watched), audited.
   `collector-retire` refuses while any amount reservation on the address
@@ -72,6 +101,8 @@ before them, by the slice that added it.
 
 ### Changed
 
+- **A tagged image is published only when `CHANGELOG.md` has its section and
+  `Cargo.toml` carries the same version** (`scripts/release-notes.py`).
 - **Manual `honor` is bound to its attempt.** The transfer must be at the
   attempt's collector, in its quote's asset, on its chain, network and
   environment; the attempt and intent must still be open for money; and the

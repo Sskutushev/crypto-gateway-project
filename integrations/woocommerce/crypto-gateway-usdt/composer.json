@@ -1,0 +1,27 @@
+{
+  "name": "crypto-gateway/woocommerce-usdt",
+  "description": "WooCommerce payment method for a self-hosted, non-custodial USDT TRC20 gateway.",
+  "type": "wordpress-plugin",
+  "license": "Apache-2.0",
+  "require": {
+    "php": ">=8.1"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^10.5"
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "CryptoGatewayUsdt\\": "src/",
+      "CryptoGatewayUsdt\\Tests\\": "tests/"
+    }
+  },
+  "config": {
+    "platform": {
+      "php": "8.1.0"
+    },
+    "sort-packages": true
+  },
+  "scripts": {
+    "test": "phpunit"
+  }
+}
