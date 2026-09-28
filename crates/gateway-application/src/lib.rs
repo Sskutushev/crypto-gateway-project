@@ -7,6 +7,7 @@ mod outbox;
 mod payment_intents;
 mod ports;
 mod provisioning;
+mod quote_metrics;
 mod quotes;
 mod reconciliation;
 mod self_check;
@@ -46,12 +47,16 @@ pub use payment_intents::{
     ServiceError,
 };
 pub use ports::{
-    ApiCredential, Clock, ExpiryResult, IdempotentCreate, IdempotentQuote, LeaseRepository,
-    PaymentIntentRepository, QuoteContext, QuoteRepository, RepositoryError, SystemClock,
+    ApiCredential, Clock, CollectorCandidate, ExpiryResult, IdempotentCreate, IdempotentQuote,
+    LeaseRepository, PaymentIntentRepository, QuoteContext, QuoteRepository, RepositoryError,
+    SystemClock,
 };
 pub use provisioning::{
     CollectorPolicy, EndpointState, IssuedApiKey, MerchantRecord, NewCollector, ProvisioningError,
     ProvisioningRepository, ProvisioningService, RandomBytes, WebhookRegistration,
+};
+pub use quote_metrics::{
+    QUOTE_LATENCY_BUCKETS, QUOTE_OUTCOMES, QuoteMetrics, QuoteMetricsSnapshot,
 };
 pub use quotes::{ExpirySweeper, IssueQuote, IssueQuoteResult, QuoteService, QuoteServiceError};
 pub use reconciliation::{

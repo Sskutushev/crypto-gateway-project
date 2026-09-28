@@ -2,13 +2,14 @@ mod auth;
 mod error;
 mod handlers;
 mod metrics;
+mod rate_limit;
 
 use std::{sync::Arc, time::Duration};
 
-use axum::{Router, http::StatusCode, middleware, routing::get};
+use axum::{Router, extract::DefaultBodyLimit, http::StatusCode, middleware, routing::get};
 use gateway_application::{
-    CheckoutService, OperationsService, OperatorReadService, PaymentIntentService, QuoteService,
-    SelfCheckConfig, SelfCheckReport, SelfCheckService, SystemClock,
+    CheckoutService, OperationsService, OperatorReadService, PaymentIntentService, QuoteMetrics,
+    QuoteService, SelfCheckConfig, SelfCheckReport, SelfCheckService, SystemClock,
 };
 use gateway_scheduler::RunMetrics;
 use gateway_storage::{PgPool, PostgresRepository};
@@ -22,6 +23,7 @@ use crate::{
 };
 
 pub use handlers::ROUTES;
+pub use rate_limit::{RateLimitConfig, RateLimits};
 
 #[derive(Debug, Clone)]
 pub struct AppState {
@@ -32,6 +34,8 @@ pub struct AppState {
     pub operator_reads: Arc<OperatorReadService<PostgresRepository>>,
     pub checkout: Arc<CheckoutService<PostgresRepository>>,
     pub expiry_metrics: Option<Arc<RunMetrics>>,
+    pub quote_metrics: Arc<QuoteMetrics>,
+    pub rate_limits: Arc<RateLimits>,
     pub pool: PgPool,
     pub self_check: Option<Arc<SelfCheckService<PostgresRepository, SystemClock>>>,
     pub self_check_cache: Arc<Mutex<Option<SelfCheckReport>>>,
@@ -46,6 +50,7 @@ impl AppState {
             SystemClock,
         ));
         let quotes = Arc::new(QuoteService::new(Arc::clone(&repository), SystemClock));
+        let quote_metrics = quotes.metrics();
         let operations = Arc::new(OperationsService::new(Arc::clone(&repository), SystemClock));
         let operator_reads = Arc::new(OperatorReadService::new(Arc::clone(&repository)));
         let checkout = Arc::new(CheckoutService::new(Arc::clone(&repository)));
@@ -57,6 +62,8 @@ impl AppState {
             operator_reads,
             checkout,
             expiry_metrics: None,
+            quote_metrics,
+            rate_limits: Arc::new(RateLimits::new(RateLimitConfig::default())),
             pool,
             self_check: None,
             self_check_cache: Arc::new(Mutex::new(None)),
@@ -66,6 +73,23 @@ impl AppState {
     #[must_use]
     pub fn with_expiry_metrics(mut self, metrics: Arc<RunMetrics>) -> Self {
         self.expiry_metrics = Some(metrics);
+        self
+    }
+
+    #[must_use]
+    pub fn with_rate_limits(mut self, config: RateLimitConfig) -> Self {
+        self.rate_limits = Arc::new(RateLimits::new(config));
+        self
+    }
+
+    /// Caps the amount reservations one address may hold before quotes move
+    /// to the merchant's next address, or are refused when none is left.
+    #[must_use]
+    pub fn with_max_open_leases_per_collector(mut self, limit: u64) -> Self {
+        let quotes = QuoteService::new(Arc::clone(&self.repository), SystemClock)
+            .with_max_open_leases_per_collector(limit);
+        self.quote_metrics = quotes.metrics();
+        self.quotes = Arc::new(quotes);
         self
     }
 
@@ -80,12 +104,36 @@ impl AppState {
     }
 }
 
+/// Request bodies are small JSON documents; anything larger is refused
+/// before it is read into memory.
+const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
+
 pub fn router(state: AppState) -> Router {
+    // A route layer added later runs first: failed authentications are
+    // counted around authentication, and the merchant budget is charged only
+    // once the merchant is known.
     let protected = handlers::payment_intent_routes()
-        .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
-    let operator = handlers::operator_routes().route_layer(middleware::from_fn_with_state(
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit::limit_merchant,
+        ))
+        .route_layer(middleware::from_fn_with_state(state.clone(), authenticate))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit::limit_auth_failures,
+        ));
+    let operator = handlers::operator_routes()
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            authenticate_operator,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit::limit_auth_failures,
+        ));
+    let checkout = handlers::checkout_routes().route_layer(middleware::from_fn_with_state(
         state.clone(),
-        authenticate_operator,
+        rate_limit::limit_checkout,
     ));
 
     Router::new()
@@ -93,8 +141,9 @@ pub fn router(state: AppState) -> Router {
         .route("/health/ready", get(health::ready))
         .merge(protected)
         .merge(operator)
-        .merge(handlers::checkout_routes())
+        .merge(checkout)
         .with_state(state)
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(15),

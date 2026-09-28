@@ -1,4 +1,5 @@
 mod expiry_settings;
+mod limit_settings;
 
 use std::{env, net::SocketAddr, sync::Arc};
 
@@ -12,7 +13,10 @@ use tokio::{net::TcpListener, signal, sync::watch};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
-use crate::expiry_settings::expiry_config;
+use crate::{
+    expiry_settings::expiry_config,
+    limit_settings::{max_open_leases_per_collector, rate_limit_config},
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -23,6 +27,8 @@ async fn main() -> Result<()> {
         .parse()
         .context("GATEWAY_BIND_ADDRESS must be a socket address")?;
     let expiry_config = expiry_config()?;
+    let rate_limits = rate_limit_config()?;
+    let lease_cap = max_open_leases_per_collector()?;
 
     let pool = PgPoolOptions::new()
         .max_connections(20)
@@ -55,7 +61,12 @@ async fn main() -> Result<()> {
         error!(report = ?startup_report, "startup self-check failed");
         bail!("startup self-check failed");
     }
-    let mut state = AppState::new(pool).with_self_check(self_check_config);
+    let mut state = AppState::new(pool)
+        .with_self_check(self_check_config)
+        .with_rate_limits(rate_limits);
+    if let Some(limit) = lease_cap {
+        state = state.with_max_open_leases_per_collector(limit);
+    }
     let (shutdown, expiry_shutdown) = watch::channel(false);
     let http_shutdown = shutdown.subscribe();
 
@@ -75,10 +86,14 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("bind HTTP server to {bind_address}"))?;
     info!(%bind_address, "gateway API listening");
-    let served = axum::serve(listener, router(state))
-        .with_graceful_shutdown(wait_for_shutdown(http_shutdown))
-        .await
-        .context("serve HTTP API");
+    let served = axum::serve(
+        listener,
+        // The peer address feeds the per-client budgets.
+        router(state).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(wait_for_shutdown(http_shutdown))
+    .await
+    .context("serve HTTP API");
 
     // The scheduler must stop before the process exits, so an in-flight expiry
     // transaction is never abandoned by a disappearing runtime.

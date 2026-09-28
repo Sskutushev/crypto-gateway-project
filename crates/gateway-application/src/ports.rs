@@ -33,8 +33,10 @@ pub struct ExpiryResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuoteContext {
-    pub collector_address_id: Uuid,
-    pub collector_address: String,
+    /// Every address that may receive this merchant's money for the asset,
+    /// least loaded first. Never empty: no address is a
+    /// [`RepositoryError::CollectorUnavailable`].
+    pub candidates: Vec<CollectorCandidate>,
     pub price: Option<PriceSnapshot>,
     pub policy: Option<QuotePolicySnapshot>,
     pub rail_health: Option<RailHealthSnapshot>,
@@ -42,6 +44,15 @@ pub struct QuoteContext {
     /// and leaves issued ones payable: it is a decision about obligations not
     /// yet made, never a way to forget the ones already made.
     pub rail_stop_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectorCandidate {
+    pub id: Uuid,
+    pub address: String,
+    /// Amount reservations currently held on the address, including those
+    /// kept for late money after their quote ran out.
+    pub open_leases: u64,
 }
 
 #[async_trait]

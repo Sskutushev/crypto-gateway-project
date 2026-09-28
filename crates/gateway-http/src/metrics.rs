@@ -5,8 +5,9 @@ use axum::{
     http::{HeaderValue, header},
     response::IntoResponse,
 };
-use gateway_application::Overview;
+use gateway_application::{Overview, QUOTE_LATENCY_BUCKETS, QUOTE_OUTCOMES, QuoteMetricsSnapshot};
 use gateway_scheduler::RunMetricsSnapshot;
+use gateway_storage::CollectorOccupancy;
 use serde::Serialize;
 use std::fmt::Write;
 use time::OffsetDateTime;
@@ -142,7 +143,9 @@ pub async fn metrics(
     // Do not render a partial snapshot: the architecture requires storage
     // failure to fail the scrape instead of presenting missing data as health.
     let overview = s.operator_reads.overview(&a.0).await?;
-    let body = render(&overview, s.expiry_metrics.as_ref().map(|m| m.snapshot()));
+    let occupancy = s.repository.collector_occupancy().await?;
+    let mut body = render(&overview, s.expiry_metrics.as_ref().map(|m| m.snapshot()));
+    render_capacity(&mut body, &occupancy, &s.quote_metrics.snapshot());
     Ok((
         [(
             header::CONTENT_TYPE,
@@ -328,6 +331,97 @@ pub fn render(o: &Overview, expiry: Option<RunMetricsSnapshot>) -> String {
     }
     x
 }
+/// Address load from the database and quote outcomes from this process.
+pub fn render_capacity(
+    out: &mut String,
+    occupancy: &[CollectorOccupancy],
+    quotes: &QuoteMetricsSnapshot,
+) {
+    family(
+        out,
+        "gateway_collector_open_leases",
+        "Amount reservations held per receiving address, including those kept for late money.",
+        "gauge",
+    );
+    family(
+        out,
+        "gateway_collector_live_leases",
+        "Amount reservations per receiving address whose quote is still payable.",
+        "gauge",
+    );
+    for c in occupancy {
+        let labels = format!(
+            "collector_id=\"{}\",asset_id=\"{}\",merchant_id=\"{}\",state=\"{}\"",
+            c.collector_id,
+            c.asset_id,
+            c.merchant_id
+                .map_or_else(|| "shared".to_owned(), |id| id.to_string()),
+            esc(&c.state)
+        );
+        let _ = writeln!(
+            out,
+            "gateway_collector_open_leases{{{labels}}} {}",
+            c.open_leases
+        );
+        let _ = writeln!(
+            out,
+            "gateway_collector_live_leases{{{labels}}} {}",
+            c.live_leases
+        );
+    }
+    family(
+        out,
+        "gateway_quote_requests_total",
+        "Quote requests handled by this process, by outcome.",
+        "counter",
+    );
+    for (outcome, value) in QUOTE_OUTCOMES.iter().zip(&quotes.outcomes) {
+        let _ = writeln!(
+            out,
+            "gateway_quote_requests_total{{outcome=\"{outcome}\"}} {value}"
+        );
+    }
+    family(
+        out,
+        "gateway_quote_collector_spillovers_total",
+        "Quotes issued on a merchant address other than its least loaded one.",
+        "counter",
+    );
+    let _ = writeln!(
+        out,
+        "gateway_quote_collector_spillovers_total {}",
+        quotes.spillovers
+    );
+    family(
+        out,
+        "gateway_quote_duration_seconds",
+        "Time to answer a quote request, including refusals.",
+        "histogram",
+    );
+    for (bound, value) in QUOTE_LATENCY_BUCKETS.iter().zip(&quotes.latency_buckets) {
+        let _ = writeln!(
+            out,
+            "gateway_quote_duration_seconds_bucket{{le=\"{bound}\"}} {value}"
+        );
+    }
+    let _ = writeln!(
+        out,
+        "gateway_quote_duration_seconds_bucket{{le=\"+Inf\"}} {}",
+        quotes.latency_count
+    );
+    let _ = writeln!(
+        out,
+        "gateway_quote_duration_seconds_sum {}.{:06}",
+        quotes.latency_sum_micros / 1_000_000,
+        quotes.latency_sum_micros % 1_000_000
+    );
+    let _ = writeln!(
+        out,
+        "gateway_quote_duration_seconds_count {}",
+        quotes.latency_count
+    );
+}
+
 fn render_counts(
     out: &mut String,
     name: &str,
@@ -372,6 +466,34 @@ mod tests {
         assert!(text.contains("component=\"bad\\\\\\\"\\nname\""));
         assert_eq!(text.matches("# HELP gateway_component_state ").count(), 1);
         assert!(!text.contains("gateway_expiry_runs_total"));
+    }
+    #[test]
+    fn capacity_is_rendered_per_address_and_the_histogram_is_complete() {
+        let mut text = String::new();
+        render_capacity(
+            &mut text,
+            &[CollectorOccupancy {
+                collector_id: uuid::Uuid::from_u128(1),
+                asset_id: uuid::Uuid::from_u128(2),
+                merchant_id: None,
+                state: "active".into(),
+                open_leases: 7,
+                live_leases: 3,
+            }],
+            &QuoteMetricsSnapshot {
+                outcomes: vec![5, 1, 2, 0, 0, 0, 0, 0, 0],
+                spillovers: 2,
+                latency_buckets: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 8],
+                latency_count: 8,
+                latency_sum_micros: 1_500_000,
+            },
+        );
+        assert!(text.contains("merchant_id=\"shared\",state=\"active\"} 7"));
+        assert!(text.contains("gateway_collector_live_leases{"));
+        assert!(text.contains("gateway_quote_requests_total{outcome=\"slots_exhausted\"} 2"));
+        assert!(text.contains("gateway_quote_duration_seconds_bucket{le=\"+Inf\"} 8"));
+        assert!(text.contains("gateway_quote_duration_seconds_sum 1.500000"));
+        assert!(text.contains("gateway_quote_collector_spillovers_total 2"));
     }
     #[test]
     fn omits_last_success_until_one_exists() {
