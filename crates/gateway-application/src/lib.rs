@@ -7,9 +7,11 @@ mod outbox;
 mod payment_intents;
 mod ports;
 mod provisioning;
+mod provisioning_reads;
 mod quote_metrics;
 mod quotes;
 mod reconciliation;
+mod redelivery;
 mod self_check;
 mod settlement;
 mod verification;
@@ -39,8 +41,8 @@ pub use operator_reads::{
     SettlementDecisionSummary, StateCount, UnmatchedTransfer, WebhookDeliverySummary,
 };
 pub use outbox::{
-    DeliveryAttempt, DeliveryResult, OutboxError, OutboxEvent, OutboxReport, OutboxRepository,
-    OutboxService, PreviousSecret, WebhookEndpoint, WebhookSender,
+    DeliveryAttempt, DeliveryFairness, DeliveryResult, OutboxError, OutboxEvent, OutboxReport,
+    OutboxRepository, OutboxService, PreviousSecret, WebhookEndpoint, WebhookSender,
 };
 pub use payment_intents::{
     CancelPaymentIntent, CreatePaymentIntent, CreatePaymentIntentResult, PaymentIntentService,
@@ -55,6 +57,10 @@ pub use provisioning::{
     CollectorPolicy, EndpointState, IssuedApiKey, MerchantRecord, NewCollector, ProvisioningError,
     ProvisioningRepository, ProvisioningService, RandomBytes, WebhookRegistration,
 };
+pub use provisioning_reads::{
+    ApiKeySummary, CollectorSummary, ListRequest, Listing, MerchantSummary,
+    ProvisioningReadRepository, WebhookEndpointSummary,
+};
 pub use quote_metrics::{
     QUOTE_LATENCY_BUCKETS, QUOTE_OUTCOMES, QuoteMetrics, QuoteMetricsSnapshot,
 };
@@ -64,6 +70,10 @@ pub use reconciliation::{
     HARD_STOP_REASON as RECONCILIATION_HARD_STOP_REASON, ReconciliationError, ReconciliationKind,
     ReconciliationReport, ReconciliationRepository, ReconciliationService, ReconciliationWindow,
     RunRecord, RunStatus, ScanFindings,
+};
+pub use redelivery::{
+    RedeliveryActor, RedeliveryError, RedeliveryRepository, RedeliveryResult, WebhookRedelivery,
+    validate_redelivery,
 };
 pub use self_check::{
     ExpectedAsset, SelfCheckConfig, SelfCheckConfigError, SelfCheckReport, SelfCheckRepository,

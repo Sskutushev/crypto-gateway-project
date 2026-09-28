@@ -7,6 +7,8 @@ mod outbox;
 mod oversight;
 mod postgres;
 mod provisioning;
+mod provisioning_reads;
+mod redelivery;
 mod roles;
 mod self_check;
 mod settlement;

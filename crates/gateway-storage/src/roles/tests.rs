@@ -80,7 +80,7 @@ async fn each_role_is_refused_the_writes_that_are_not_its_own() -> TestResult {
     // The roles are dropped whether or not the assertions hold, so a failed
     // run does not leave logins behind for the next one to trip over.
     let outcome = match prove(&pool).await {
-        Ok(()) => prove_provisioner().await,
+        Ok(()) => prove_provisioner(&pool).await,
         failed => failed,
     };
     drop_logins(&pool).await?;
@@ -386,7 +386,8 @@ impl gateway_application::RandomBytes for FixedRandom {
 
 /// The provisioner onboards through the service, under its own login, and is
 /// refused the money path and the columns it must not rewrite.
-async fn prove_provisioner() -> TestResult {
+#[allow(clippy::too_many_lines)]
+async fn prove_provisioner(owner: &PgPool) -> TestResult {
     let provisioner = connect_as("roles_scenario_provisioner").await?;
     let service = gateway_application::ProvisioningService::new(
         std::sync::Arc::new(crate::PostgresRepository::new(provisioner.clone())),
@@ -424,9 +425,65 @@ async fn prove_provisioner() -> TestResult {
             "scenario",
         )
         .await?;
-    service
+    let event_id = service
         .send_test_event("roles-scenario", endpoint.endpoint_id)
         .await?;
+
+    // Redelivery and the read-only lists run under the same login.
+    sqlx::query("UPDATE domain_events SET dead_lettered_at = now(), attempts = 2 WHERE id = $1")
+        .bind(event_id)
+        .execute(owner)
+        .await?;
+    let request = gateway_application::WebhookRedelivery {
+        event_id,
+        endpoint_id: Some(endpoint.endpoint_id),
+        reason: "roles scenario".to_owned(),
+    };
+    let redelivered = service
+        .redeliver_webhook("roles-scenario", "roles-redeliver-00001", &request)
+        .await?;
+    assert_eq!(redelivered.previous_state, "dead_lettered");
+    let page = gateway_application::ListRequest::new(Some(10), None)?;
+    assert_eq!(service.list_merchants(page).await?.items.len(), 1);
+    assert_eq!(
+        service.list_api_keys(merchant.id, page).await?.items.len(),
+        1
+    );
+    assert_eq!(
+        service
+            .list_webhook_endpoints(merchant.id, page)
+            .await?
+            .items
+            .len(),
+        1
+    );
+    service.list_collectors(None, page).await?;
+
+    // The API redelivers under its own login too.
+    sqlx::query("UPDATE domain_events SET delivered_at = now(), attempts = 3 WHERE id = $1")
+        .bind(event_id)
+        .execute(owner)
+        .await?;
+    let api = connect_as("roles_scenario_api").await?;
+    let api_repository = crate::PostgresRepository::new(api.clone());
+    let hash = gateway_application::validate_redelivery("roles-redeliver-api-01", &request)?;
+    gateway_application::RedeliveryRepository::redeliver_webhook_event(
+        &api_repository,
+        &gateway_application::RedeliveryActor::Admin {
+            name: "roles-scenario".to_owned(),
+        },
+        "roles-redeliver-api-01",
+        &hash,
+        &request,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await?;
+    denied(
+        sqlx::query("UPDATE domain_events SET payload = '{}'::jsonb")
+            .execute(&api)
+            .await,
+        "api rewriting an event payload",
+    )?;
 
     denied(
         sqlx::query("INSERT INTO payment_allocations DEFAULT VALUES")
@@ -451,6 +508,24 @@ async fn prove_provisioner() -> TestResult {
             .execute(&provisioner)
             .await,
         "provisioner reading payments",
+    )?;
+    denied(
+        sqlx::query("SELECT secret_hash FROM merchant_api_keys")
+            .execute(&provisioner)
+            .await,
+        "provisioner reading a key hash",
+    )?;
+    denied(
+        sqlx::query("SELECT payload FROM domain_events")
+            .execute(&provisioner)
+            .await,
+        "provisioner reading an event payload",
+    )?;
+    denied(
+        sqlx::query("UPDATE domain_events SET event_type = 'payment_intent.paid'")
+            .execute(&provisioner)
+            .await,
+        "provisioner rewriting an event",
     )?;
     Ok(())
 }

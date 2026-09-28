@@ -16,7 +16,10 @@ use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
-use crate::{Clock, RepositoryError};
+use crate::{
+    Clock, RedeliveryActor, RedeliveryError, RedeliveryRepository, RedeliveryResult,
+    RepositoryError, WebhookRedelivery, validate_redelivery,
+};
 
 /// Whose address receives a merchant's money. See migration 0015.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +139,8 @@ pub enum ProvisioningError {
     MasterKeyMissing,
     #[error("secure randomness is unavailable")]
     Randomness,
+    #[error(transparent)]
+    Redelivery(#[from] RedeliveryError),
     #[error(transparent)]
     Webhook(#[from] gateway_domain::WebhookError),
     #[error(transparent)]
@@ -552,6 +557,49 @@ where
         self.master_key
             .as_deref()
             .ok_or(ProvisioningError::MasterKeyMissing)
+    }
+}
+
+impl<R, C, G> ProvisioningService<R, C, G> {
+    pub(crate) fn repository(&self) -> &R {
+        &self.repository
+    }
+}
+
+impl<R, C, G> ProvisioningService<R, C, G>
+where
+    R: ProvisioningRepository + RedeliveryRepository,
+    C: Clock,
+    G: RandomBytes,
+{
+    /// Re-queues one delivered or dead-lettered webhook event as the same
+    /// event. The same operation as the operator API's, under a named person
+    /// instead of a key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProvisioningError`] when the actor or request is invalid, the
+    /// event cannot be redelivered, or storage fails.
+    pub async fn redeliver_webhook(
+        &self,
+        actor: &str,
+        idempotency_key: &str,
+        request: &WebhookRedelivery,
+    ) -> Result<RedeliveryResult, ProvisioningError> {
+        let actor = bounded(actor, 1, 100, "an actor of 1-100 characters is required")?;
+        let hash = validate_redelivery(idempotency_key, request)?;
+        Ok(self
+            .repository
+            .redeliver_webhook_event(
+                &RedeliveryActor::Admin {
+                    name: actor.to_owned(),
+                },
+                idempotency_key,
+                &hash,
+                request,
+                self.clock.now(),
+            )
+            .await?)
     }
 }
 

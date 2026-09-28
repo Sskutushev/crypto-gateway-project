@@ -1,8 +1,8 @@
 use std::{error::Error, sync::Arc};
 
 use gateway_application::{
-    CollectorPolicy, NewCollector, OutboxRepository, PaymentIntentRepository, ProvisioningError,
-    ProvisioningRepository, ProvisioningService, RandomBytes, SystemClock,
+    CollectorPolicy, ListRequest, NewCollector, OutboxRepository, PaymentIntentRepository,
+    ProvisioningError, ProvisioningRepository, ProvisioningService, RandomBytes, SystemClock,
 };
 use gateway_domain::AddressKey;
 use sha2::{Digest, Sha256};
@@ -309,5 +309,138 @@ async fn a_rotated_secret_keeps_signing_until_its_transition_ends_and_a_stale_ro
             .await,
         Err(ProvisioningError::EndpointNotFound)
     ));
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+#[allow(clippy::too_many_lines)]
+async fn the_lists_page_through_everything_and_show_no_secret() -> TestResult {
+    let _fixture = DATABASE.lock().await;
+    let pool = connect().await?;
+    reset(&pool).await?;
+    let provisioning = service(&pool);
+    let mut merchants = Vec::new();
+    for index in 0..3 {
+        merchants.push(
+            provisioning
+                .create_merchant(
+                    "alice",
+                    &format!("list-{index}"),
+                    "Listed",
+                    CollectorPolicy::Own,
+                )
+                .await?
+                .id,
+        );
+    }
+    let first = merchants[0];
+    let mut secrets = Vec::new();
+    for label in ["one", "two", "three"] {
+        secrets.push(provisioning.issue_api_key("alice", first, label).await?);
+    }
+
+    let page = ListRequest::new(Some(2), None)?;
+    let listed = provisioning.list_merchants(page).await?;
+    assert_eq!(listed.items.len(), 2);
+    let cursor = listed.next_cursor.ok_or("a full page names the next one")?;
+    let rest = provisioning
+        .list_merchants(ListRequest::new(Some(2), Some(cursor))?)
+        .await?;
+    assert_eq!(rest.items.len(), 1);
+    assert_eq!(rest.next_cursor, None);
+    let mut seen: Vec<Uuid> = listed
+        .items
+        .iter()
+        .chain(rest.items.iter())
+        .map(|merchant| merchant.id)
+        .collect();
+    seen.sort();
+    merchants.sort();
+    assert_eq!(seen, merchants);
+
+    let keys = provisioning
+        .list_api_keys(first, ListRequest::new(Some(10), None)?)
+        .await?;
+    assert_eq!(keys.items.len(), 3);
+    for key in &keys.items {
+        let issued = secrets
+            .iter()
+            .find(|issued| issued.key_id == key.id)
+            .ok_or("a listed key was never issued")?;
+        assert_eq!(key.prefix, issued.prefix);
+        assert!(!format!("{key:?}").contains(&issued.secret));
+    }
+    assert!(
+        provisioning
+            .list_api_keys(merchants[1], ListRequest::new(Some(10), None)?)
+            .await?
+            .items
+            .is_empty()
+    );
+
+    provisioning
+        .add_webhook_endpoint("alice", first, "https://list.example/hooks", None)
+        .await?;
+    let endpoints = provisioning
+        .list_webhook_endpoints(first, ListRequest::new(None, None)?)
+        .await?;
+    assert_eq!(endpoints.items.len(), 1);
+    assert_eq!(endpoints.items[0].status, "active");
+
+    // A collector that still holds one reservation says so.
+    let collector = provisioning
+        .register_collector(
+            "alice",
+            NewCollector {
+                id: Uuid::now_v7(),
+                asset_id: ASSET,
+                merchant_id: Some(first),
+                address: address(61)?,
+                address_text: "TListed".to_owned(),
+                ownership_evidence: "manual check".to_owned(),
+            },
+        )
+        .await?;
+    reserve(&pool, first, collector).await?;
+    let collectors = provisioning
+        .list_collectors(Some(first), ListRequest::new(None, None)?)
+        .await?;
+    assert_eq!(collectors.items.len(), 1);
+    assert_eq!(collectors.items[0].open_reservations, 1);
+    assert!(
+        provisioning
+            .list_collectors(Some(merchants[1]), ListRequest::new(None, None)?)
+            .await?
+            .items
+            .is_empty()
+    );
+    Ok(())
+}
+
+/// One quote and one amount reservation on `collector`.
+async fn reserve(pool: &PgPool, merchant: Uuid, collector: Uuid) -> TestResult {
+    let (price, policy, health, intent, quote, attempt) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    sqlx::query("INSERT INTO price_snapshots(id,asset_id,fiat_currency,rate_numerator,rate_denominator,sources,observed_at) VALUES($1,$2,'USD',1,1,'[{},{}]'::jsonb,now())")
+        .bind(price).bind(ASSET).execute(pool).await?;
+    sqlx::query("INSERT INTO quote_policies(id,asset_id,fiat_currency,version,status,quote_ttl_seconds,late_payment_window_seconds,amount_slot_count,max_price_age_seconds,max_policy_age_seconds,max_rail_health_age_seconds,observed_at) VALUES($1,$2,'USD','list-v1','active',900,3600,10000,300,300,300,now())")
+        .bind(policy).bind(ASSET).execute(pool).await?;
+    sqlx::query("INSERT INTO rail_health_snapshots(id,asset_id,health,observed_at) VALUES($1,$2,'healthy',now())")
+        .bind(health).bind(ASSET).execute(pool).await?;
+    sqlx::query("INSERT INTO payment_intents(id,merchant_id,amount_minor,currency,status,reference,created_at,updated_at) VALUES($1,$2,100,'USD','awaiting_payment','listed',now(),now())")
+        .bind(intent).bind(merchant).execute(pool).await?;
+    sqlx::query("INSERT INTO payment_quotes(id,merchant_id,payment_intent_id,asset_id,collector_address_id,fiat_currency,fiat_amount_minor,base_amount_raw,amount_raw,rate_numerator,rate_denominator,price_sources,price_observed_at,policy_version,rail_health_observed_at,created_at,expires_at,late_payment_until,price_snapshot_id,quote_policy_id,rail_health_snapshot_id) VALUES($1,$2,$3,$4,$5,'USD',100,100,100,1,1,'[{}]'::jsonb,now(),'list-v1',now(),now(),now()+interval '1 hour',now()+interval '2 hours',$6,$7,$8)")
+        .bind(quote).bind(merchant).bind(intent).bind(ASSET).bind(collector).bind(price).bind(policy).bind(health).execute(pool).await?;
+    sqlx::query("INSERT INTO payment_attempts(id,merchant_id,payment_intent_id,quote_id,collector_address_id,expected_amount_raw,status,quote_expires_at,late_payment_until,created_at,updated_at) VALUES($1,$2,$3,$4,$5,100,'awaiting_payment',now()+interval '1 hour',now()+interval '2 hours',now(),now())")
+        .bind(attempt).bind(merchant).bind(intent).bind(quote).bind(collector).execute(pool).await?;
+    sqlx::query("INSERT INTO amount_leases(id,collector_address_id,amount_raw,attempt_id,leased_from,lease_until) VALUES($1,$2,100,$3,now(),now()+interval '2 hours')")
+        .bind(Uuid::now_v7()).bind(collector).bind(attempt).execute(pool).await?;
     Ok(())
 }

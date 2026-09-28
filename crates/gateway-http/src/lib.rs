@@ -184,6 +184,8 @@ mod tests {
                 .replace("{intent_id}", "00000000-0000-7000-8000-000000000001")
                 .replace("{asset_id}", "00000000-0000-7000-8000-000000000002")
                 .replace("{transfer_id}", "00000000-0000-7000-8000-000000000003")
+                .replace("{event_id}", "00000000-0000-7000-8000-000000000004")
+                .replace("{proposal_id}", "00000000-0000-7000-8000-000000000005")
                 .replace("{checkout_token}", &"c".repeat(64));
             let response = app
                 .clone()

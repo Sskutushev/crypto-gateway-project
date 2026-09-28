@@ -11,7 +11,9 @@ use axum::{
     extract::{Path, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
 };
-use gateway_application::{ManualResolution, OperationsError, RiskSubmission};
+use gateway_application::{
+    ManualResolution, OperationsError, RedeliveryError, RiskSubmission, WebhookRedelivery,
+};
 use gateway_domain::{
     CurrencyCode, ManualResolutionAction, PriceReading, RailHealth, RawAmount,
     RemainderDisposition, RiskDecision,
@@ -316,6 +318,75 @@ pub async fn resolve_manual(
     ))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RedeliveryBody {
+    #[serde(default)]
+    endpoint_id: Option<Uuid>,
+    reason: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RedeliveryResponse {
+    id: Uuid,
+    event_id: Uuid,
+    merchant_id: Uuid,
+    endpoint_id: Option<Uuid>,
+    previous_state: String,
+    previous_attempts: i32,
+    #[serde(with = "time::serde::rfc3339")]
+    requested_at: OffsetDateTime,
+    replayed: bool,
+}
+
+pub async fn redeliver_webhook(
+    State(state): State<AppState>,
+    Extension(auth): Extension<OperatorAuth>,
+    Path(event_id): Path<Uuid>,
+    headers: HeaderMap,
+    payload: Result<Json<RedeliveryBody>, JsonRejection>,
+) -> Result<(StatusCode, Json<RedeliveryResponse>), ApiError> {
+    let key = idempotency_key(&headers)?;
+    let Json(body) = payload.map_err(|_| ApiError::InvalidJson)?;
+    let result = state
+        .operations
+        .redeliver_webhook(
+            &auth.0,
+            key,
+            &WebhookRedelivery {
+                event_id,
+                endpoint_id: body.endpoint_id,
+                reason: body.reason,
+            },
+        )
+        .await?;
+    let status = if result.replayed {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((
+        status,
+        Json(RedeliveryResponse {
+            id: result.id,
+            event_id: result.event_id,
+            merchant_id: result.merchant_id,
+            endpoint_id: result.endpoint_id,
+            previous_state: result.previous_state,
+            previous_attempts: result.previous_attempts,
+            requested_at: result.requested_at,
+            replayed: result.replayed,
+        }),
+    ))
+}
+
+pub(crate) fn idempotency_key(headers: &HeaderMap) -> Result<&str, ApiError> {
+    headers
+        .get("idempotency-key")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(ApiError::InvalidJson)
+}
+
 fn parse_rate(value: &str) -> Result<RawAmount, ApiError> {
     value
         .parse::<RawAmount>()
@@ -334,7 +405,10 @@ pub fn status_for(error: &OperationsError) -> (StatusCode, &'static str) {
         | OperationsError::ReasonRequired
         | OperationsError::InvalidPageLimit
         | OperationsError::InvalidIdempotencyKey
-        | OperationsError::InvalidManualResolution => (StatusCode::BAD_REQUEST, "invalid_request"),
+        | OperationsError::InvalidManualResolution
+        | OperationsError::Redelivery(
+            RedeliveryError::InvalidIdempotencyKey | RedeliveryError::ReasonRequired,
+        ) => (StatusCode::BAD_REQUEST, "invalid_request"),
         OperationsError::ManualResolutionNotFound => {
             (StatusCode::NOT_FOUND, "manual_resolution_not_found")
         }
@@ -350,9 +424,25 @@ pub fn status_for(error: &OperationsError) -> (StatusCode, &'static str) {
         OperationsError::UnknownScope(_) | OperationsError::SnapshotNotRecorded => {
             (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
         }
-        OperationsError::Repository(gateway_application::RepositoryError::IdempotencyConflict) => {
+        OperationsError::Repository(gateway_application::RepositoryError::IdempotencyConflict)
+        | OperationsError::Redelivery(RedeliveryError::IdempotencyConflict) => {
             (StatusCode::CONFLICT, "idempotency_conflict")
         }
-        OperationsError::Repository(_) => (StatusCode::SERVICE_UNAVAILABLE, "storage_unavailable"),
+        OperationsError::Redelivery(RedeliveryError::EventNotFound) => {
+            (StatusCode::NOT_FOUND, "webhook_event_not_found")
+        }
+        OperationsError::Redelivery(RedeliveryError::EndpointNotFound) => {
+            (StatusCode::NOT_FOUND, "webhook_endpoint_not_found")
+        }
+        OperationsError::Redelivery(RedeliveryError::StillQueued) => {
+            (StatusCode::CONFLICT, "webhook_event_still_queued")
+        }
+        OperationsError::Redelivery(RedeliveryError::NotAWebhook) => {
+            (StatusCode::CONFLICT, "not_a_webhook_event")
+        }
+        OperationsError::Repository(_)
+        | OperationsError::Redelivery(RedeliveryError::Repository(_)) => {
+            (StatusCode::SERVICE_UNAVAILABLE, "storage_unavailable")
+        }
     }
 }

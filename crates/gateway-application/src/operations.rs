@@ -22,7 +22,10 @@ use thiserror::Error;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{Clock, RepositoryError};
+use crate::{
+    Clock, RedeliveryActor, RedeliveryError, RedeliveryRepository, RedeliveryResult,
+    RepositoryError, WebhookRedelivery, validate_redelivery,
+};
 
 /// What an operator key is allowed to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -488,6 +491,37 @@ where
     }
 }
 
+impl<R, C> OperationsService<R, C>
+where
+    R: OperationsRepository + RedeliveryRepository,
+    C: Clock,
+{
+    /// Re-queues one delivered or dead-lettered webhook event as the same
+    /// event, for one endpoint of its merchant or for all of them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OperationsError`] when the key lacks `admin`, the request is
+    /// malformed, the event cannot be redelivered, or storage fails.
+    pub async fn redeliver_webhook(
+        &self,
+        credential: &OperatorCredential,
+        idempotency_key: &str,
+        request: &WebhookRedelivery,
+    ) -> Result<RedeliveryResult, OperationsError> {
+        Self::require(credential, OperatorScope::Admin)?;
+        let hash = validate_redelivery(idempotency_key, request)?;
+        let actor = RedeliveryActor::OperatorKey {
+            key_id: credential.key_id,
+            label: credential.label.clone(),
+        };
+        Ok(self
+            .repository
+            .redeliver_webhook_event(&actor, idempotency_key, &hash, request, self.clock.now())
+            .await?)
+    }
+}
+
 /// The short, stable name a refusal is stored under.
 const fn refusal_code(error: PriceAggregationError) -> &'static str {
     match error {
@@ -535,6 +569,8 @@ pub enum OperationsError {
     InvalidRiskEvaluation,
     #[error("this operator key is not bound to the named risk provider")]
     RiskProviderNotAllowed,
+    #[error(transparent)]
+    Redelivery(#[from] RedeliveryError),
     #[error(transparent)]
     Price(#[from] PriceAggregationError),
     #[error(transparent)]
@@ -618,7 +654,9 @@ impl OperationsError {
     #[must_use]
     pub const fn is_transient(&self) -> bool {
         match self {
-            Self::Repository(error) => error.is_transient(),
+            Self::Repository(error) | Self::Redelivery(RedeliveryError::Repository(error)) => {
+                error.is_transient()
+            }
             _ => false,
         }
     }

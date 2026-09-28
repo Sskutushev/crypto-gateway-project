@@ -26,7 +26,8 @@
       "CheckoutToken": { "name": "checkout_token", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^[0-9a-f]{64}$" } },
       "IntentId": { "name": "intent_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
       "AssetId": { "name": "asset_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
-      "TransferId": { "name": "transfer_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+      "TransferId": { "name": "transfer_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+      "EventId": { "name": "event_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "description": "The outbox event id, which is the id a merchant receives and deduplicates by." }
     },
     "headers": {
       "RetryAfter": { "schema": { "type": "integer", "minimum": 1 }, "description": "Whole seconds to wait before retrying." },
@@ -168,6 +169,26 @@
           "merchant_id": { "type": ["string", "null"], "format": "uuid" },
           "allocated_raw": { "oneOf": [{ "$ref": "#/components/schemas/IntegerString" }, { "type": "null" }] },
           "remainder_raw": { "oneOf": [{ "$ref": "#/components/schemas/IntegerString" }, { "type": "null" }] },
+          "replayed": { "type": "boolean" }
+        }
+      },
+      "WebhookRedelivery": {
+        "type": "object", "additionalProperties": false, "required": ["reason"],
+        "properties": {
+          "endpoint_id": { "type": ["string", "null"], "format": "uuid", "description": "One active endpoint of the event's merchant. Omitted means every active endpoint." },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 1000 }
+        }
+      },
+      "WebhookRedeliveryResult": {
+        "type": "object", "required": ["id", "event_id", "merchant_id", "endpoint_id", "previous_state", "previous_attempts", "requested_at", "replayed"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "event_id": { "type": "string", "format": "uuid" },
+          "merchant_id": { "type": "string", "format": "uuid" },
+          "endpoint_id": { "type": ["string", "null"], "format": "uuid" },
+          "previous_state": { "type": "string", "enum": ["delivered", "dead_lettered"] },
+          "previous_attempts": { "type": "integer", "minimum": 0 },
+          "requested_at": { "$ref": "#/components/schemas/Timestamp" },
           "replayed": { "type": "boolean" }
         }
       },
@@ -339,6 +360,18 @@
           "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" },
           "404": { "description": "manual_resolution_not_found: the transfer, intent, attempt or overpayment decision does not exist.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "409": { "description": "manual_resolution_conflict or idempotency_conflict: the requested transition is no longer eligible, would violate a money invariant, or reuses a key with a different command.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "503": { "$ref": "#/components/responses/StorageUnavailable" }
+        } }
+    },
+    "/v1/operator/webhook-events/{event_id}/redeliver": {
+      "post": { "tags": ["operator"], "summary": "Send a webhook event again, as the same event", "description": "Requires the admin scope and an Idempotency-Key. Re-queues a delivered or dead-lettered webhook event in place: the same event id, payload and created_at, so a merchant that already processed it deduplicates it. Aimed at one active endpoint of the event's merchant, or at every active endpoint when endpoint_id is omitted. The retry budget starts again; attempt numbers keep growing, so earlier delivery records are kept. The request, its reason and the operator are recorded with an audit row in the same transaction. The admin command line offers the same operation as webhook-redeliver.", "security": [{ "operatorKey": ["admin"] }], "parameters": [{ "$ref": "#/components/parameters/EventId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebhookRedelivery" } } } },
+        "responses": {
+          "201": { "description": "Queued again.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebhookRedeliveryResult" } } } },
+          "200": { "description": "The result of an identical idempotent replay.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebhookRedeliveryResult" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "description": "webhook_event_not_found, or webhook_endpoint_not_found: the endpoint is not an active endpoint of the event's merchant, or the merchant has none.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "webhook_event_still_queued (the event has not finished; it is not queued twice), not_a_webhook_event (an operator-channel event), or idempotency_conflict.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "503": { "$ref": "#/components/responses/StorageUnavailable" }
         } }
     },

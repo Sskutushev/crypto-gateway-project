@@ -10,8 +10,8 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::{
-    DeliveryAttempt, DeliveryResult, OutboxEvent, OutboxRepository, OutboxService, WebhookEndpoint,
-    WebhookSender,
+    DeliveryAttempt, DeliveryFairness, DeliveryResult, OutboxEvent, OutboxRepository,
+    OutboxService, WebhookEndpoint, WebhookSender,
 };
 use crate::{Clock, RepositoryError};
 
@@ -76,6 +76,7 @@ impl OutboxRepository for FakeRepository {
         &self,
         _holder: &str,
         _limit: u32,
+        _per_merchant_limit: u32,
         _visibility_seconds: i64,
         _now: OffsetDateTime,
     ) -> Result<Vec<OutboxEvent>, RepositoryError> {
@@ -88,12 +89,18 @@ impl OutboxRepository for FakeRepository {
 
     async fn active_endpoints(
         &self,
-        _merchant_id: Uuid,
+        merchant_id: Uuid,
     ) -> Result<Vec<WebhookEndpoint>, RepositoryError> {
         Ok(self
             .endpoints
             .lock()
-            .map(|endpoints| endpoints.clone())
+            .map(|endpoints| {
+                endpoints
+                    .iter()
+                    .filter(|endpoint| endpoint.merchant_id == merchant_id)
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default())
     }
 
@@ -197,6 +204,8 @@ fn event() -> OutboxEvent {
         payload: json!({"transfer_id": "abc"}),
         attempts: 0,
         created_at: OffsetDateTime::UNIX_EPOCH,
+        target_endpoint_id: None,
+        attempt_floor: 0,
     }
 }
 
@@ -405,5 +414,218 @@ async fn a_previous_secret_that_does_not_match_its_fingerprint_is_left_out() -> 
     let seen = sender.seen();
     let (signature, _) = seen.first().ok_or("nothing was sent")?;
     assert_eq!(signature.matches(",v1=").count(), 1);
+    Ok(())
+}
+
+const SECOND_MERCHANT: Uuid = Uuid::from_u128(11);
+const SECOND_ENDPOINT: Uuid = Uuid::from_u128(12);
+const SECOND_EVENT: Uuid = Uuid::from_u128(13);
+
+/// Accepts everything, remembers which endpoint was called, and can hold one
+/// endpoint's answer until another endpoint has been called: a slow endpoint
+/// that only a concurrent delivery can release.
+#[derive(Debug, Default)]
+struct RoutingSender {
+    slow: Option<Uuid>,
+    released: tokio::sync::Notify,
+    called: Mutex<Vec<Uuid>>,
+}
+
+impl RoutingSender {
+    fn called(&self) -> Vec<Uuid> {
+        self.called
+            .lock()
+            .map(|called| called.clone())
+            .unwrap_or_default()
+    }
+}
+
+#[async_trait]
+impl WebhookSender for RoutingSender {
+    async fn deliver(
+        &self,
+        endpoint: &WebhookEndpoint,
+        _event_id: Uuid,
+        _body: &[u8],
+        _signature: &str,
+    ) -> DeliveryResult {
+        if let Ok(mut called) = self.called.lock() {
+            called.push(endpoint.id);
+        }
+        if Some(endpoint.id) == self.slow {
+            self.released.notified().await;
+        } else {
+            self.released.notify_one();
+        }
+        DeliveryResult::Accepted {
+            status: 200,
+            duration_ms: 1,
+        }
+    }
+}
+
+fn endpoint_for(merchant: Uuid, id: Uuid) -> Result<WebhookEndpoint, Box<dyn Error>> {
+    let secret = SigningSecret::derive(&master_key(), 1, merchant, id)?;
+    Ok(WebhookEndpoint {
+        id,
+        merchant_id: merchant,
+        url: format!("https://{id}.example/hooks"),
+        secret_version: 1,
+        secret_fingerprint: secret.fingerprint(),
+        previous_secret: None,
+    })
+}
+
+fn routed_service(
+    repository: Arc<FakeRepository>,
+    sender: Arc<RoutingSender>,
+    concurrency: usize,
+) -> Result<OutboxService<FakeRepository, RoutingSender, FixedClock>, Box<dyn Error>> {
+    Ok(
+        OutboxService::new(repository, sender, FixedClock, master_key(), "pod:boot", 5)?
+            .with_fairness(DeliveryFairness {
+                max_events_per_merchant: 20,
+                concurrency,
+            })?,
+    )
+}
+
+fn two_merchants() -> Result<Arc<FakeRepository>, Box<dyn Error>> {
+    let mut second = event();
+    second.id = SECOND_EVENT;
+    second.merchant_id = Some(SECOND_MERCHANT);
+    Ok(FakeRepository::with(
+        vec![event(), second],
+        vec![endpoint()?, endpoint_for(SECOND_MERCHANT, SECOND_ENDPOINT)?],
+    ))
+}
+
+#[tokio::test]
+async fn a_slow_endpoint_holds_back_only_its_own_merchant() -> TestResult {
+    // The first merchant's endpoint does not answer until the second
+    // merchant's endpoint has been called. Delivered one after the other, the
+    // batch would wait on the slow endpoint forever.
+    let repository = two_merchants()?;
+    let sender = Arc::new(RoutingSender {
+        slow: Some(ENDPOINT),
+        ..RoutingSender::default()
+    });
+    let service = routed_service(Arc::clone(&repository), Arc::clone(&sender), 2)?;
+
+    let report =
+        tokio::time::timeout(std::time::Duration::from_secs(5), service.deliver_due(10)).await??;
+
+    assert_eq!(report.delivered, 2);
+    assert_eq!(sender.called(), vec![ENDPOINT, SECOND_ENDPOINT]);
+    let mut terminal = repository.terminal();
+    terminal.sort();
+    assert_eq!(
+        terminal,
+        vec![
+            (EVENT, "delivered".to_owned()),
+            (SECOND_EVENT, "delivered".to_owned())
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn one_merchant_at_a_time_is_the_starvation_the_bound_prevents() -> TestResult {
+    // The same batch with no concurrency never reaches the second merchant:
+    // proof that the test above measures concurrency, not luck.
+    let repository = two_merchants()?;
+    let sender = Arc::new(RoutingSender {
+        slow: Some(ENDPOINT),
+        ..RoutingSender::default()
+    });
+    let service = routed_service(repository, Arc::clone(&sender), 1)?;
+
+    let stalled = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        service.deliver_due(10),
+    )
+    .await;
+
+    assert!(stalled.is_err(), "a sequential batch finished: {stalled:?}");
+    assert_eq!(sender.called(), vec![ENDPOINT]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_redelivery_aimed_at_one_endpoint_calls_only_that_endpoint() -> TestResult {
+    let mut targeted = event();
+    targeted.target_endpoint_id = Some(SECOND_ENDPOINT);
+    let repository = FakeRepository::with(
+        vec![targeted],
+        vec![endpoint()?, endpoint_for(MERCHANT, SECOND_ENDPOINT)?],
+    );
+    let sender = Arc::new(RoutingSender::default());
+    let service = routed_service(Arc::clone(&repository), Arc::clone(&sender), 2)?;
+
+    let report = service.deliver_due(10).await?;
+
+    assert_eq!(report.delivered, 1);
+    assert_eq!(sender.called(), vec![SECOND_ENDPOINT]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_redelivery_to_an_endpoint_that_was_disabled_is_parked_not_sent_elsewhere() -> TestResult
+{
+    let mut targeted = event();
+    targeted.target_endpoint_id = Some(SECOND_ENDPOINT);
+    let repository = FakeRepository::with(vec![targeted], vec![endpoint()?]);
+    let sender = Arc::new(RoutingSender::default());
+    let service = routed_service(Arc::clone(&repository), Arc::clone(&sender), 2)?;
+
+    let report = service.deliver_due(10).await?;
+
+    assert_eq!(report.dead_lettered, 1);
+    assert!(sender.called().is_empty());
+    assert_eq!(
+        repository.terminal(),
+        vec![(EVENT, "dead_letter:redelivery_target_inactive".to_owned())]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_redelivered_event_gets_a_fresh_retry_budget() -> TestResult {
+    let mut redelivered = event();
+    redelivered.attempts = 12;
+    redelivered.attempt_floor = 12;
+    let repository = FakeRepository::with(vec![redelivered], vec![endpoint()?]);
+    let sender = ScriptedSender::new(DeliveryResult::Refused {
+        status: 503,
+        duration_ms: 3,
+        detail: "busy".to_owned(),
+    });
+    let service = service(Arc::clone(&repository), sender)?;
+
+    let report = service.deliver_due(10).await?;
+
+    assert_eq!(report.rescheduled, 1);
+    assert_eq!(report.dead_lettered, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_fairness_bound_of_zero_is_refused() -> TestResult {
+    for fairness in [
+        DeliveryFairness {
+            max_events_per_merchant: 0,
+            concurrency: 1,
+        },
+        DeliveryFairness {
+            max_events_per_merchant: 1,
+            concurrency: 0,
+        },
+    ] {
+        let repository = FakeRepository::with(Vec::new(), Vec::new());
+        let sender = Arc::new(RoutingSender::default());
+        let built = OutboxService::new(repository, sender, FixedClock, master_key(), "pod", 5)?
+            .with_fairness(fairness);
+        assert!(built.is_err(), "{fairness:?}");
+    }
     Ok(())
 }

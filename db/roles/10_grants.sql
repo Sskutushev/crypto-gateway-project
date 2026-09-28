@@ -136,6 +136,19 @@ GRANT UPDATE ON
     payment_allocations, payment_settlement_decisions
 TO gateway_api;
 
+-- Webhook redelivery (redelivery.rs), from the operator API and from the
+-- admin command line: re-queue a finished event in place and record who asked.
+-- The columns are the queue's own; the payload, type and merchant of an event
+-- cannot be rewritten through them.
+GRANT SELECT, INSERT ON webhook_redeliveries TO gateway_api, gateway_provisioner;
+GRANT SELECT (id, merchant_id, status) ON webhook_endpoints TO gateway_api;
+GRANT SELECT (id, merchant_id, channel, attempts, delivered_at, dead_lettered_at)
+    ON domain_events TO gateway_provisioner;
+GRANT UPDATE (
+    delivered_at, dead_lettered_at, available_at, last_error, claimed_by, claimed_until,
+    attempt_floor, target_endpoint_id
+) ON domain_events TO gateway_api, gateway_provisioner;
+
 -- Read-only: the operator views, for a person or a dashboard. No credentials,
 -- no request payloads, no endpoint URLs.
 GRANT SELECT ON
@@ -151,7 +164,7 @@ GRANT SELECT ON
     component_health, component_health_events, domain_events, webhook_deliveries,
     reconciliation_runs, reconciliation_discrepancies,
     manual_resolution_requests, overpayment_remainder_dispositions,
-    operator_risk_provider_bindings
+    operator_risk_provider_bindings, webhook_redeliveries
 TO gateway_readonly;
 
 -- A table the next migration creates is readable by the two roles that only
@@ -165,8 +178,14 @@ ALTER DEFAULT PRIVILEGES FOR ROLE gateway_migrator IN SCHEMA public
 -- It never touches a quote, a transfer or an allocation, and it can neither
 -- rewrite a key's hash nor move a merchant between collector policies.
 GRANT SELECT ON
-    merchants, merchant_api_keys, webhook_endpoints, collector_addresses, chain_assets
+    merchants, webhook_endpoints, collector_addresses, chain_assets
 TO gateway_provisioner;
+-- A key is listed by its prefix. The hash is never read back, so it is not
+-- readable: earlier releases granted the whole table, and that grant is taken
+-- back before the columns are named.
+REVOKE SELECT ON merchant_api_keys FROM gateway_provisioner;
+GRANT SELECT (id, merchant_id, key_prefix, label, created_at, last_used_at, revoked_at)
+    ON merchant_api_keys TO gateway_provisioner;
 GRANT INSERT ON
     merchants, merchant_api_keys, webhook_endpoints, collector_addresses,
     audit_events, domain_events
@@ -179,6 +198,6 @@ GRANT UPDATE (
     previous_secret_fingerprint, previous_valid_until, status, disabled_at
 ) ON webhook_endpoints TO gateway_provisioner;
 GRANT UPDATE (state, retired_at) ON collector_addresses TO gateway_provisioner;
--- Retiring a collector counts the reservations still open on it, and nothing
--- else about them.
+-- Retiring or listing a collector counts the reservations still open on it,
+-- and nothing else about them.
 GRANT SELECT (collector_address_id) ON amount_leases TO gateway_provisioner;
