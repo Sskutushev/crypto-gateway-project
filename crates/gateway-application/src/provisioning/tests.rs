@@ -164,7 +164,22 @@ impl ProvisioningRepository for FakeRepository {
         Ok(())
     }
 
-    async fn retire_collector(&self, _: &str, _: Uuid, _: &str) -> Result<(), ProvisioningError> {
+    async fn stop_quoting_collector(
+        &self,
+        _: &str,
+        _: Uuid,
+        _: &str,
+    ) -> Result<(), ProvisioningError> {
+        Ok(())
+    }
+
+    async fn retire_collector(
+        &self,
+        _: &str,
+        _: Uuid,
+        _: &str,
+        _: bool,
+    ) -> Result<(), ProvisioningError> {
         Ok(())
     }
 }
@@ -303,7 +318,13 @@ async fn every_write_names_a_person_and_every_removal_a_reason() {
     ));
     assert!(matches!(
         provisioning
-            .retire_collector("alice", Uuid::from_u128(6), "")
+            .retire_collector("alice", Uuid::from_u128(6), "", false)
+            .await,
+        Err(ProvisioningError::Invalid(_))
+    ));
+    assert!(matches!(
+        provisioning
+            .stop_quoting_collector("alice", Uuid::from_u128(6), " ")
             .await,
         Err(ProvisioningError::Invalid(_))
     ));

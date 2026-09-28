@@ -126,6 +126,10 @@ pub enum ProvisioningError {
     CollectorNotFound,
     #[error("the address is already registered for this asset")]
     AddressTaken,
+    #[error(
+        "the collector still holds {0} amount reservation(s); stop quoting on it and wait until they end, or retire it as compromised"
+    )]
+    CollectorStillReserved(i64),
     #[error("the merchant's collector policy does not allow this collector")]
     PolicyMismatch,
     #[error("the webhook master key is required for this command")]
@@ -218,11 +222,23 @@ pub trait ProvisioningRepository: Send + Sync {
         collector: &NewCollector,
     ) -> Result<(), ProvisioningError>;
 
+    /// Moves an active collector to `receiving_only`: never quoted again,
+    /// still watched and pinned, so money for issued quotes is still seen.
+    async fn stop_quoting_collector(
+        &self,
+        actor: &str,
+        collector_id: Uuid,
+        reason: &str,
+    ) -> Result<(), ProvisioningError>;
+
+    /// Retires a collector. Unless `compromised`, it is refused while any
+    /// amount reservation on it can still be paid.
     async fn retire_collector(
         &self,
         actor: &str,
         collector_id: Uuid,
         reason: &str,
+        compromised: bool,
     ) -> Result<(), ProvisioningError>;
 }
 
@@ -499,8 +515,9 @@ where
 
     /// # Errors
     ///
-    /// Returns [`ProvisioningError`] when no reason is given or the collector is unknown.
-    pub async fn retire_collector(
+    /// Returns [`ProvisioningError`] when no reason is given or the collector
+    /// is unknown or not active.
+    pub async fn stop_quoting_collector(
         &self,
         actor: &str,
         collector_id: Uuid,
@@ -509,7 +526,25 @@ where
         let actor = required(actor, "an actor naming the person is required")?;
         let reason = required(reason, "a reason is required")?;
         self.repository
-            .retire_collector(actor, collector_id, reason)
+            .stop_quoting_collector(actor, collector_id, reason)
+            .await
+    }
+
+    /// # Errors
+    ///
+    /// Returns [`ProvisioningError`] when no reason is given, the collector is
+    /// unknown, or it still holds reservations and is not declared compromised.
+    pub async fn retire_collector(
+        &self,
+        actor: &str,
+        collector_id: Uuid,
+        reason: &str,
+        compromised: bool,
+    ) -> Result<(), ProvisioningError> {
+        let actor = required(actor, "an actor naming the person is required")?;
+        let reason = required(reason, "a reason is required")?;
+        self.repository
+            .retire_collector(actor, collector_id, reason, compromised)
             .await
     }
 

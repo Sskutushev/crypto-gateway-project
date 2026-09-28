@@ -179,3 +179,6 @@ GRANT UPDATE (
     previous_secret_fingerprint, previous_valid_until, status, disabled_at
 ) ON webhook_endpoints TO gateway_provisioner;
 GRANT UPDATE (state, retired_at) ON collector_addresses TO gateway_provisioner;
+-- Retiring a collector counts the reservations still open on it, and nothing
+-- else about them.
+GRANT SELECT (collector_address_id) ON amount_leases TO gateway_provisioner;

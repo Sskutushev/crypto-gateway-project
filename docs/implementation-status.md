@@ -105,9 +105,12 @@ Next smallest slices, in order:
 6. The first release tag, once the branch stack is merged and CI is green on
    `main`.
 
-Smaller gaps found while documenting: no admin command moves a collector to
-`receiving_only` (the runbook's retirement procedure uses one unaudited SQL
-update for it), and the CLI has no list commands.
+Closed on 2026-09-28: `collector-stop-quoting` moves a collector to
+`receiving_only` with an audit row, and `collector-retire` refuses while a
+reservation remains unless `--compromised yes` (scenario
+`a_collector_holding_a_reservation_stops_quoting_but_is_not_retired`). The
+CLI still has no list commands; identifiers are read with the
+`gateway_readonly` role.
 
 Still needs the owner: genuinely independent TRON providers and keys, a
 sustained Nile testnet run with a merchant address registered by signature,

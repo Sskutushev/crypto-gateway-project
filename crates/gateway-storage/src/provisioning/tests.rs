@@ -165,7 +165,21 @@ async fn a_merchant_is_onboarded_end_to_end_and_every_step_is_audited() -> TestR
         Err(ProvisioningError::AddressTaken)
     ));
     provisioning
-        .retire_collector("bob", collector, "merchant moved wallets")
+        .stop_quoting_collector("bob", collector, "merchant moves wallets")
+        .await?;
+    let state: String = sqlx::query_scalar("SELECT state FROM collector_addresses WHERE id = $1")
+        .bind(collector)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(state, "receiving_only");
+    assert!(matches!(
+        provisioning
+            .stop_quoting_collector("bob", collector, "twice")
+            .await,
+        Err(ProvisioningError::CollectorNotFound)
+    ));
+    provisioning
+        .retire_collector("bob", collector, "merchant moved wallets", false)
         .await?;
 
     let mut actions = audit_actions(&pool).await?;
@@ -177,6 +191,7 @@ async fn a_merchant_is_onboarded_end_to_end_and_every_step_is_audited() -> TestR
             "api_key.revoke",
             "collector.register",
             "collector.retire",
+            "collector.stop_quoting",
             "merchant.create",
             "webhook_endpoint.create",
             "webhook_endpoint.test",

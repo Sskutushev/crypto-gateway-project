@@ -2352,6 +2352,77 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    #[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+    async fn a_collector_holding_a_reservation_stops_quoting_but_is_not_retired()
+    -> Result<(), Box<dyn Error>> {
+        use gateway_application::{ProvisioningError, ProvisioningRepository};
+
+        let _fixture = DATABASE.lock().await;
+        let database_url = env::var("GATEWAY_TEST_DATABASE_URL")?;
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&database_url)
+            .await?;
+        let now = OffsetDateTime::UNIX_EPOCH + Duration::days(20_000);
+        reset_database(&pool, now).await?;
+        let repository = PostgresRepository::new(pool.clone());
+        let route = "POST /v1/payment-intents/:id/quotes";
+        repository
+            .issue_quote_idempotently(
+                plan(MERCHANT_ONE, INTENT_ONE, now)?,
+                ACTOR_KEY,
+                route,
+                "retire_reserved_quote_01",
+                &[11; 32],
+            )
+            .await?;
+
+        repository
+            .stop_quoting_collector("alice", COLLECTOR_ID, "moving to a new address")
+            .await?;
+        let refused_quote = repository
+            .issue_quote_idempotently(
+                plan(MERCHANT_TWO, INTENT_TWO, now)?,
+                ACTOR_KEY,
+                route,
+                "retire_reserved_quote_02",
+                &[12; 32],
+            )
+            .await;
+        assert!(refused_quote.is_err(), "{refused_quote:?}");
+
+        // The first order's amount is still reserved for late money.
+        let refused = repository
+            .retire_collector("alice", COLLECTOR_ID, "moved", false)
+            .await;
+        assert!(
+            matches!(refused, Err(ProvisioningError::CollectorStillReserved(1))),
+            "{refused:?}"
+        );
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM collector_addresses WHERE id = $1")
+                .bind(COLLECTOR_ID)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(state, "receiving_only");
+
+        repository
+            .retire_collector("alice", COLLECTOR_ID, "key leaked", true)
+            .await?;
+        let audited: serde_json::Value = sqlx::query_scalar(
+            "SELECT payload FROM audit_events WHERE action = 'collector.retire' AND resource_id = $1",
+        )
+        .bind(COLLECTOR_ID)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(
+            audited,
+            json!({ "actor": "alice", "compromised": true, "open_reservations": 1 })
+        );
+        Ok(())
+    }
+
     /// Moves the seeded price, policy and rail evidence to `at`, exactly as a
     /// plan built at `at` describes it, so a later quote passes the issue-time
     /// comparison with the stored evidence.

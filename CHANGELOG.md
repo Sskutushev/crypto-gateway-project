@@ -12,6 +12,11 @@ before them, by the slice that added it.
 
 ### Added
 
+- **Collector retirement without SQL.** `collector-stop-quoting` moves an
+  address to `receiving_only` (never quoted again, still watched), audited.
+  `collector-retire` refuses while any amount reservation on the address
+  can still be paid, unless `--compromised yes` is given, which records the
+  open reservations in the audit row.
 - **Admin CLI for onboarding.** `gateway-worker admin <command>` creates
   merchants, issues and revokes API keys, adds, rotates, disables and tests
   webhook endpoints, and registers and retires collector addresses, without

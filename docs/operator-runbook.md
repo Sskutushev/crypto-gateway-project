@@ -165,7 +165,8 @@ terminal.
 | `webhook-test` | `--endpoint` | `endpoint_id`, `event_id` |
 | `collector-statement` | `--merchant`, `--address`, `[--issued]`; no `--actor`, no database | `statement`, `issued`, `valid_for_hours` |
 | `collector-register` | `--asset`, `--address`, and either `--merchant --issued --signature` or `[--merchant] --manual-evidence` | `collector_id`, `merchant_id`, `address`, `ownership_evidence` |
-| `collector-retire` | `--collector`, `--reason` | `collector_id`, `retired` |
+| `collector-stop-quoting` | `--collector`, `--reason` | `collector_id`, `state` |
+| `collector-retire` | `--collector`, `--reason`, `[--compromised yes]` | `collector_id`, `retired`, `compromised` |
 
 The CLI has no list commands. Read identifiers with the `gateway_readonly`
 role, for example
@@ -272,27 +273,34 @@ not quoted, and observers refuse any transfer to it as `retired_collector`
 arrives there later is outside the gateway's books. Retire only when nothing
 can still be paid there:
 
-1. Stop new quotes on it first. No command moves an address to
-   `receiving_only` yet; do it as the provisioner role
-   (`UPDATE collector_addresses SET state = 'receiving_only' WHERE id = '<uuid>'`)
-   and record it in your change log, because no audit row is written.
-   Receiving-only addresses are still watched and still pinned.
-2. Wait until no reservation remains on it:
-   `SELECT count(*) FROM amount_leases WHERE collector_address_id = '<uuid>'`
-   returns 0. A lease is archived only after its `late_payment_until`.
+1. Stop new quotes on it first:
+
+   ```
+   gateway-worker admin collector-stop-quoting --actor <you> --collector <uuid> --reason '<why>'
+   ```
+
+   The address moves to `receiving_only` and the change is audited as
+   `collector.stop_quoting`. Receiving-only addresses are still watched and
+   still pinned, so money for quotes already issued is still settled.
+2. Wait until no reservation remains on it. A lease is archived only after
+   its `late_payment_until`.
 3. Retire it:
 
    ```
    gateway-worker admin collector-retire --actor <you> --collector <uuid> --reason '<why>'
    ```
 
+   The command refuses while any reservation remains and names how many.
+
 4. For an operator address, remove it from `GATEWAY_EXPECTED_COLLECTORS` in
    the same deployment (`none` if no operator address is left). For a
    merchant on `own`, register the replacement address before step 1, or
    its quotes are `503 quote_unavailable` until you do.
 
-If the key of an address is compromised, skip the wait: retire at once and
-handle anything paid to it afterwards outside the gateway.
+If the key of an address is compromised, skip the wait: add
+`--compromised yes`, which retires at once and records the open reservations
+in the audit row, and handle anything paid to it afterwards outside the
+gateway.
 
 ### Where each action is recorded
 

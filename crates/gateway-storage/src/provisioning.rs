@@ -465,16 +465,18 @@ impl ProvisioningRepository for PostgresRepository {
         tx.commit().await.map_err(storage)
     }
 
-    async fn retire_collector(
+    async fn stop_quoting_collector(
         &self,
         actor: &str,
         collector_id: Uuid,
         reason: &str,
     ) -> Result<(), ProvisioningError> {
         let mut tx = self.pool().begin().await.map_err(storage)?;
+        // Quote issuance locks the collector row and requires 'active', so
+        // once this commits no new reservation can be written on it.
         let merchant_id = sqlx::query_scalar::<_, Option<Uuid>>(
-            r"UPDATE collector_addresses SET state = 'retired', retired_at = now()
-               WHERE id = $1 AND state <> 'retired'
+            r"UPDATE collector_addresses SET state = 'receiving_only'
+               WHERE id = $1 AND state = 'active'
               RETURNING merchant_id",
         )
         .bind(collector_id)
@@ -486,11 +488,66 @@ impl ProvisioningRepository for PostgresRepository {
             &mut tx,
             merchant_id,
             actor,
+            "collector.stop_quoting",
+            "collector_address",
+            collector_id,
+            Some(reason),
+            json!({ "state": "receiving_only" }),
+        )
+        .await?;
+        tx.commit().await.map_err(storage)
+    }
+
+    async fn retire_collector(
+        &self,
+        actor: &str,
+        collector_id: Uuid,
+        reason: &str,
+        compromised: bool,
+    ) -> Result<(), ProvisioningError> {
+        let mut tx = self.pool().begin().await.map_err(storage)?;
+        // The row lock waits for any quote being issued on this collector; the
+        // lease count below is a later statement and sees what it committed.
+        let merchant_id = sqlx::query_scalar::<_, Option<Uuid>>(
+            r"SELECT merchant_id FROM collector_addresses
+               WHERE id = $1 AND state <> 'retired'
+               FOR UPDATE",
+        )
+        .bind(collector_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?
+        .ok_or(ProvisioningError::CollectorNotFound)?;
+        // A reservation lives until its late-payment window ends. Retiring
+        // before then turns money still owed to an order into money the
+        // observers refuse, so only a compromised key justifies it.
+        let reserved: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM amount_leases WHERE collector_address_id = $1",
+        )
+        .bind(collector_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(storage)?;
+        if reserved > 0 && !compromised {
+            return Err(ProvisioningError::CollectorStillReserved(reserved));
+        }
+        sqlx::query(
+            r"UPDATE collector_addresses SET state = 'retired', retired_at = now()
+               WHERE id = $1",
+        )
+        .bind(collector_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
+        audit(
+            &mut tx,
+            merchant_id,
+            actor,
             "collector.retire",
             "collector_address",
             collector_id,
             Some(reason),
-            json!({}),
+            json!({ "compromised": compromised, "open_reservations": reserved }),
         )
         .await?;
         tx.commit().await.map_err(storage)

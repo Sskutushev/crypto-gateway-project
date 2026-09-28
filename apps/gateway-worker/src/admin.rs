@@ -35,7 +35,9 @@ commands:
   collector-register  --asset <uuid> --address <T...>
                       (--merchant <uuid> --issued <RFC 3339> --signature <hex>
                        | [--merchant <uuid>] --manual-evidence <who checked and how>)
-  collector-retire    --collector <uuid> --reason <text>";
+  collector-stop-quoting --collector <uuid> --reason <text>
+  collector-retire    --collector <uuid> --reason <text> [--compromised yes]
+                      (refused while a reservation remains, unless compromised)";
 
 struct OsRandom;
 
@@ -142,12 +144,28 @@ async fn execute(
             })
         }
         "collector-register" => register_collector(service, flags, actor).await?,
-        "collector-retire" => {
+        "collector-stop-quoting" => {
             let collector = uuid(flags, "collector")?;
             service
-                .retire_collector(actor, collector, flag(flags, "reason")?)
+                .stop_quoting_collector(actor, collector, flag(flags, "reason")?)
                 .await?;
-            json!({ "collector_id": collector, "retired": true })
+            json!({
+                "collector_id": collector,
+                "state": "receiving_only",
+                "note": "no new quotes; issued quotes are still watched and paid; retire once no reservation remains",
+            })
+        }
+        "collector-retire" => {
+            let collector = uuid(flags, "collector")?;
+            let compromised = match flags.get("compromised").map(String::as_str) {
+                None => false,
+                Some("yes") => true,
+                Some(_) => bail!("--compromised takes the value yes"),
+            };
+            service
+                .retire_collector(actor, collector, flag(flags, "reason")?, compromised)
+                .await?;
+            json!({ "collector_id": collector, "retired": true, "compromised": compromised })
         }
         other => bail!("unknown admin command {other}\n\n{USAGE}"),
     })

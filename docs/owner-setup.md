@@ -183,8 +183,9 @@ change as one deployment. A deployment where every address belongs to a
 merchant sets `GATEWAY_EXPECTED_COLLECTORS=none`; an empty value is an error,
 so a forgotten variable is never read as that decision.
 
-Retirement: `gateway-worker admin collector-retire --actor <you> --collector
-<uuid> --reason <text>`; see the runbook for when it is safe.
+Retirement: `gateway-worker admin collector-stop-quoting`, then, once no
+reservation remains, `gateway-worker admin collector-retire --actor <you>
+--collector <uuid> --reason <text>`; see the runbook.
 
 ## 6. The webhook signing master key — blocking
 
