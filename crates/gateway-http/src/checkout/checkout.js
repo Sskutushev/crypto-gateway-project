@@ -30,12 +30,30 @@
     });
   }
 
+  // ISO 4217 decides how many minor digits a currency has (JPY 0, KWD 3);
+  // the browser's currency data knows it, and the digits are placed as
+  // text so no amount passes through a float.
+  function minorDigits(currency) {
+    try {
+      return new Intl.NumberFormat("en", { style: "currency", currency: currency })
+        .resolvedOptions().maximumFractionDigits;
+    } catch (_unknownCurrency) {
+      return null;
+    }
+  }
+
   function fiat(amount) {
-    // Minor units with two decimals is the common case; the currency code is
-    // always shown, so a three-decimal currency is still read correctly.
     const minor = String(amount.minor_units);
-    const padded = minor.padStart(3, "0");
-    return padded.slice(0, -2) + "." + padded.slice(-2) + " " + amount.currency;
+    const digits = minorDigits(amount.currency);
+    if (digits === null) {
+      // Without the currency's scale a decimal point would be a guess.
+      return minor + " minor units of " + amount.currency;
+    }
+    if (digits === 0) {
+      return minor + " " + amount.currency;
+    }
+    const padded = minor.padStart(digits + 1, "0");
+    return padded.slice(0, -digits) + "." + padded.slice(-digits) + " " + amount.currency;
   }
 
   function showStatus(status, title, detail) {
