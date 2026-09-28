@@ -12,6 +12,17 @@ before them, by the slice that added it.
 
 ### Added
 
+- **Address pool and capacity.** A quote goes to the merchant's least loaded
+  active address and moves to the next (up to eight) when every exact amount
+  near its price is taken. `GATEWAY_MAX_OPEN_LEASES_PER_COLLECTOR` caps the
+  reservations one address may hold; a merchant whose addresses are all full
+  gets `503 quote_capacity_exhausted` with `Retry-After`. `/metrics` gains
+  open and live reservations per address, quote outcomes, spillovers and a
+  quote latency histogram.
+- **Request budgets.** Per-merchant token buckets for writes and reads,
+  per-client-address budgets for failed authentications and the payment
+  page, all answering `429 rate_limited` with `Retry-After`; a 64 KiB request
+  body limit and a 16 KiB `metadata` limit.
 - **Collector retirement without SQL.** `collector-stop-quoting` moves an
   address to `receiving_only` (never quoted again, still watched), audited.
   `collector-retire` refuses while any amount reservation on the address

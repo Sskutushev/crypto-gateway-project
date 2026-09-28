@@ -2,8 +2,8 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use gateway_application::{
-    ApiCredential, ExpiryResult, IdempotentCreate, IdempotentQuote, PaymentIntentRepository,
-    QuoteContext, QuoteRepository, RepositoryError,
+    ApiCredential, CollectorCandidate, ExpiryResult, IdempotentCreate, IdempotentQuote,
+    PaymentIntentRepository, QuoteContext, QuoteRepository, RepositoryError,
 };
 use gateway_domain::{
     CurrencyCode, FiatAmount, IssuedQuote, MoneyError, PaymentIntent, PaymentIntentStatus,
@@ -167,6 +167,7 @@ impl TryFrom<IssuedQuoteRow> for IssuedQuote {
 struct QuoteContextRow {
     collector_address_id: Uuid,
     collector_address: String,
+    open_leases: i64,
     price_snapshot_id: Option<Uuid>,
     rate_numerator: Option<String>,
     rate_denominator: Option<String>,
@@ -261,8 +262,12 @@ impl TryFrom<QuoteContextRow> for QuoteContext {
             .transpose()?;
 
         Ok(Self {
-            collector_address_id: row.collector_address_id,
-            collector_address: row.collector_address,
+            candidates: vec![CollectorCandidate {
+                id: row.collector_address_id,
+                address: row.collector_address,
+                open_leases: u64::try_from(row.open_leases)
+                    .map_err(|_| corrupt("negative lease count"))?,
+            }],
             price,
             policy,
             rail_health,
@@ -627,16 +632,20 @@ impl QuoteRepository for PostgresRepository {
         Ok(Some(quote))
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn load_quote_context(
         &self,
         merchant_id: Uuid,
         asset_id: Uuid,
         currency: &CurrencyCode,
     ) -> Result<QuoteContext, RepositoryError> {
-        let row = sqlx::query_as::<_, QuoteContextRow>(
+        let rows = sqlx::query_as::<_, QuoteContextRow>(
             r"
             SELECT collector.id AS collector_address_id,
                    collector.address_text AS collector_address,
+                   (SELECT count(*)
+                      FROM amount_leases AS lease
+                     WHERE lease.collector_address_id = collector.id) AS open_leases,
                    price.id AS price_snapshot_id,
                    price.rate_numerator::TEXT AS rate_numerator,
                    price.rate_denominator::TEXT AS rate_denominator,
@@ -703,18 +712,36 @@ impl QuoteRepository for PostgresRepository {
                AND asset.status = 'active'
                AND ((merchant.collector_policy = 'own' AND collector.merchant_id = merchant.id)
                     OR (merchant.collector_policy = 'shared' AND collector.merchant_id IS NULL))
-             ORDER BY collector.valid_from, collector.id
-             LIMIT 1
+             ORDER BY open_leases, collector.valid_from, collector.id
+             LIMIT 8
             ",
         )
         .bind(asset_id)
         .bind(currency.as_str())
         .bind(merchant_id)
-        .fetch_optional(&self.pool)
+        .fetch_all(&self.pool)
         .await
-        .map_err(unavailable)?
-        .ok_or(RepositoryError::CollectorUnavailable)?;
-        row.try_into()
+        .map_err(unavailable)?;
+        // The price, policy, rail and stop are per asset, so every row carries
+        // the same evidence; only the address and its load differ.
+        let candidates = rows
+            .iter()
+            .map(|row| {
+                Ok(CollectorCandidate {
+                    id: row.collector_address_id,
+                    address: row.collector_address.clone(),
+                    open_leases: u64::try_from(row.open_leases)
+                        .map_err(|_| corrupt("negative lease count"))?,
+                })
+            })
+            .collect::<Result<Vec<_>, RepositoryError>>()?;
+        let first = rows
+            .into_iter()
+            .next()
+            .ok_or(RepositoryError::CollectorUnavailable)?;
+        let mut context = QuoteContext::try_from(first)?;
+        context.candidates = candidates;
+        Ok(context)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1524,7 +1551,7 @@ mod tests {
 
     use gateway_application::{
         Clock, IdempotentCreate, IdempotentQuote, IssueQuote, PaymentIntentRepository,
-        QuoteRepository, QuoteService, RepositoryError,
+        QuoteRepository, QuoteService, QuoteServiceError, RepositoryError,
     };
     use gateway_domain::{
         CurrencyCode, FiatAmount, PriceSnapshot, QuotePlan, QuotePolicySnapshot, RailHealth,
@@ -1687,6 +1714,137 @@ mod tests {
         assert_eq!(issued_audits, 2);
         assert_eq!(archived_audits, 2);
         assert_eq!(attempt_expiry_audits, 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+    #[allow(clippy::too_many_lines)]
+    async fn quotes_spread_over_the_address_pool_and_stop_at_its_limits()
+    -> Result<(), Box<dyn Error>> {
+        const SECOND_COLLECTOR: Uuid = Uuid::from_u128(403);
+        let _fixture = DATABASE.lock().await;
+        let database_url = env::var("GATEWAY_TEST_DATABASE_URL")?;
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&database_url)
+            .await?;
+        let now = OffsetDateTime::UNIX_EPOCH + Duration::days(20_000);
+        reset_database(&pool, now).await?;
+        sqlx::query(
+            r"INSERT INTO collector_addresses (id, asset_id, address_key, address_text, state,
+                  valid_from, pinned_sha256, approved_by)
+              VALUES ($1, $2, $3, 'TSecondCollector', 'active', $4, encode(sha256($3), 'hex'),
+                  'test-fixture')",
+        )
+        .bind(SECOND_COLLECTOR)
+        .bind(ASSET_ID)
+        .bind([10_u8; 21].as_slice())
+        .bind(OffsetDateTime::UNIX_EPOCH)
+        .execute(&pool)
+        .await?;
+        // Five orders at one price. The seeded policy allows two exact amounts
+        // per price on an address, so two addresses hold four of them.
+        let intents: Vec<Uuid> = (0..5_u128).map(|n| Uuid::from_u128(510 + n)).collect();
+        for (position, intent) in intents.iter().enumerate() {
+            sqlx::query(
+                r"INSERT INTO payment_intents (id, merchant_id, amount_minor, currency, status,
+                      reference, created_at, updated_at)
+                  VALUES ($1, $2, 1000, 'USD', 'requires_quote', $3, $4, $4)",
+            )
+            .bind(intent)
+            .bind(MERCHANT_ONE)
+            .bind(format!("pool-order-{position}"))
+            .bind(OffsetDateTime::UNIX_EPOCH)
+            .execute(&pool)
+            .await?;
+        }
+        let repository = Arc::new(PostgresRepository::new(pool.clone()));
+        let quotes = QuoteService::new(Arc::clone(&repository), FixedClock(now));
+        let mut collectors = Vec::new();
+        for (position, intent) in intents.iter().take(4).enumerate() {
+            let issued = quotes
+                .issue(
+                    MERCHANT_ONE,
+                    ACTOR_KEY,
+                    &format!("pool_quote_{position:012}"),
+                    IssueQuote {
+                        payment_intent_id: *intent,
+                        asset_id: ASSET_ID,
+                    },
+                )
+                .await?;
+            collectors.push(issued.quote.collector_address_id);
+        }
+        // Least loaded first, the older address on a tie.
+        assert_eq!(
+            collectors,
+            vec![
+                COLLECTOR_ID,
+                SECOND_COLLECTOR,
+                COLLECTOR_ID,
+                SECOND_COLLECTOR
+            ]
+        );
+
+        // The fifth order finds both amounts taken on the first address, tries
+        // the second, and is refused there too; nothing is written for it.
+        let fifth = quotes
+            .issue(
+                MERCHANT_ONE,
+                ACTOR_KEY,
+                "pool_quote_000000000004",
+                IssueQuote {
+                    payment_intent_id: intents[4],
+                    asset_id: ASSET_ID,
+                },
+            )
+            .await;
+        assert!(
+            matches!(
+                fifth,
+                Err(QuoteServiceError::Repository(
+                    RepositoryError::AmountSlotsExhausted
+                ))
+            ),
+            "{fifth:?}"
+        );
+        let snapshot = quotes.metrics().snapshot();
+        assert_eq!(snapshot.spillovers, 1);
+        assert_eq!(count(&pool, "amount_leases").await?, 4);
+        let idempotency_rows: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM api_idempotency_records WHERE idempotency_key = 'pool_quote_000000000004'",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(idempotency_rows, 0);
+
+        // With a cap of two reservations per address, both addresses are full
+        // and the refusal says so instead of trying them.
+        let capped = QuoteService::new(Arc::clone(&repository), FixedClock(now))
+            .with_max_open_leases_per_collector(2)
+            .issue(
+                MERCHANT_ONE,
+                ACTOR_KEY,
+                "pool_quote_capped_000001",
+                IssueQuote {
+                    payment_intent_id: intents[4],
+                    asset_id: ASSET_ID,
+                },
+            )
+            .await;
+        assert!(
+            matches!(capped, Err(QuoteServiceError::CapacityExhausted)),
+            "{capped:?}"
+        );
+        let occupancy = repository.collector_occupancy().await?;
+        assert_eq!(
+            occupancy
+                .iter()
+                .map(|row| (row.collector_id, row.open_leases, row.live_leases))
+                .collect::<Vec<_>>(),
+            vec![(COLLECTOR_ID, 2, 2), (SECOND_COLLECTOR, 2, 2)]
+        );
         Ok(())
     }
 
@@ -1867,15 +2025,21 @@ mod tests {
             repository
                 .load_quote_context(MERCHANT_ONE, ASSET_ID, &usd)
                 .await?
-                .collector_address_id,
-            COLLECTOR_ID
+                .candidates
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>(),
+            vec![COLLECTOR_ID]
         );
         assert_eq!(
             repository
                 .load_quote_context(MERCHANT_TWO, ASSET_ID, &usd)
                 .await?
-                .collector_address_id,
-            COLLECTOR_TWO
+                .candidates
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>(),
+            vec![COLLECTOR_TWO]
         );
         // No address of its own is no quote, never someone else's address.
         assert!(matches!(

@@ -18,7 +18,9 @@ pub use chain::{
     ObservedTransfer, SourceFinality, TransferState, TxHash,
 };
 pub use money::{CurrencyCode, FiatAmount, MoneyError, RawAmount};
-pub use payment_intent::{PaymentIntent, PaymentIntentError, PaymentIntentStatus};
+pub use payment_intent::{
+    MAX_METADATA_BYTES, PaymentIntent, PaymentIntentError, PaymentIntentStatus,
+};
 pub use price::{
     AggregatedPrice, PriceAggregationError, PriceAggregationPolicy, PriceDiscardReason,
     PriceReading, aggregate,

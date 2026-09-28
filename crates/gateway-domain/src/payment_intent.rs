@@ -90,6 +90,11 @@ impl PaymentIntent {
         if !metadata.is_object() {
             return Err(PaymentIntentError::MetadataMustBeObject);
         }
+        // Metadata is stored on every intent and returned on every read; an
+        // unbounded object lets one merchant grow the table and every response.
+        if metadata.to_string().len() > MAX_METADATA_BYTES {
+            return Err(PaymentIntentError::MetadataTooLarge);
+        }
 
         Ok(Self {
             id: Uuid::now_v7(),
@@ -105,6 +110,9 @@ impl PaymentIntent {
     }
 }
 
+/// Upper bound on serialized merchant metadata.
+pub const MAX_METADATA_BYTES: usize = 16_384;
+
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum PaymentIntentError {
     #[error("reference must contain between 1 and 128 characters")]
@@ -113,6 +121,51 @@ pub enum PaymentIntentError {
     DescriptionTooLong,
     #[error("metadata must be a JSON object")]
     MetadataMustBeObject,
+    #[error("metadata must not exceed 16384 bytes when serialized")]
+    MetadataTooLarge,
     #[error("unknown payment intent status: {0}")]
     UnknownStatus(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use time::OffsetDateTime;
+    use uuid::Uuid;
+
+    use super::{MAX_METADATA_BYTES, PaymentIntent, PaymentIntentError};
+    use crate::{CurrencyCode, FiatAmount};
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn create(
+        metadata: serde_json::Value,
+    ) -> Result<Result<PaymentIntent, PaymentIntentError>, Box<dyn std::error::Error>> {
+        let amount = FiatAmount::positive(CurrencyCode::new("USD")?, 1_000)?;
+        Ok(PaymentIntent::create(
+            Uuid::nil(),
+            amount,
+            "order-1".to_owned(),
+            None,
+            metadata,
+            OffsetDateTime::UNIX_EPOCH,
+        ))
+    }
+
+    #[test]
+    fn metadata_is_bounded_by_its_serialized_size() -> TestResult {
+        // `{"k":"..."}` adds eight bytes around the value.
+        let fits = "a".repeat(MAX_METADATA_BYTES - 8);
+        assert!(create(json!({ "k": fits }))?.is_ok());
+        let over = "a".repeat(MAX_METADATA_BYTES - 7);
+        assert_eq!(
+            create(json!({ "k": over }))?.err(),
+            Some(PaymentIntentError::MetadataTooLarge)
+        );
+        assert_eq!(
+            create(json!([1]))?.err(),
+            Some(PaymentIntentError::MetadataMustBeObject)
+        );
+        Ok(())
+    }
 }

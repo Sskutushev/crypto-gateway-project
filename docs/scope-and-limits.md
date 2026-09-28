@@ -11,7 +11,7 @@ branch; where the code has a known gap, it is stated.
 | Chains and tokens | USDT TRC20 on TRON (mainnet or Nile testnet), one allowlisted contract per asset. | Other chains and tokens. ERC20 and TON are planned as separate adapters behind the same observer and verifier interface; none exists yet. |
 | Direction | Incoming payments only. | Outgoing payouts, withdrawals, balances. |
 | Keys | None held. The gateway watches addresses; it never signs. | Key custody of any kind. |
-| Collectors | Merchant-owned (`collector_policy = 'own'`, the default for new merchants) or operator-owned (`'shared'`, where the operator owes the merchant outside this system). No fallback between the two. | Per-payment deposit addresses. |
+| Collectors | Merchant-owned (`collector_policy = 'own'`, the default for new merchants) or operator-owned (`'shared'`, where the operator owes the merchant outside this system). No fallback between the two. A merchant may have several addresses; quotes spread over them, least loaded first. | Per-payment deposit addresses. |
 | Matching on TRON | Exact `amount_raw` at the quoted collector, inside the lease window. | Memo matching: the TRON adapter records no memo, so a memo never matches on TRON. |
 | Refunds | Recording a refund or other disposition done outside the gateway. | Automatic refunds; the gateway never sends funds. |
 | Intent lifecycle | One live attempt per intent. An intent whose quote ran out with no money, claim or settlement decision on it is quoted again on the same intent and reference. `POST /v1/payment-intents/{id}/cancel` cancels an intent that has no money, hold or decision on it. | Cancelling an intent that already has money, a hold or a decision on it. |

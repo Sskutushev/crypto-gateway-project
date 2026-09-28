@@ -82,8 +82,9 @@ order be paid twice.
 ## 2. Quote it in an asset
 
 A quote converts the obligation into an exact token amount at one collector
-address, for a bounded time. An intent can be quoted once: the quote route
-accepts only an intent in `requires_quote`.
+address, for a bounded time. The quote route accepts an intent in
+`requires_quote`, or an `expired` one that no money, hold or decision is
+attached to (see "After `expires_at`").
 
 ```
 POST /v1/payment-intents/{intent_id}/quotes
@@ -103,9 +104,13 @@ Content-Type: application/json
 | `late_payment_until` | Until this, a payment of exactly `amount_raw` is still recorded against the quote, for an operator to honour. |
 
 `amount_raw` is in the token's smallest unit: for USDT on TRON (6 decimals),
-`4999000` is 4.999 USDT. The quote response does not carry the token's
-decimals or a display amount today; take the decimals from the operator with
-the asset id, convert with integer arithmetic, and do not round for display.
+`4999000` is 4.999 USDT. The quote also names the asset (`asset.chain`,
+`asset.network`, `asset.symbol`, `asset.decimals`, `asset.contract_address`)
+and gives the same amount in whole tokens as an exact string (`amount`),
+and it carries
+a `checkout_token`: send the payer to `/checkout/{checkout_token}` for the
+hosted payment page, or show the address, amount, network and contract
+yourself. Never round the amount for display.
 
 The amount is exact because it is the match key: the gateway reserves this
 amount at this collector for this obligation, and no other open reservation on
@@ -116,12 +121,13 @@ The rate always rounds up and is never revisited. A replay of the same
 idempotency key returns the same quote even while pricing is down.
 
 **After `expires_at`.** The intent becomes `expired` (unless money already
-arrived on it; see the status table) and cannot be quoted again: a new quote
-on it is `409 payment_intent_not_quotable`. To let the payer try again,
-create a new intent. Because the reference is unique per merchant, the new
-intent needs a new reference (for example `order-1042-2`); keep the mapping
-to your order on your side. Re-quoting an existing intent is not supported
-yet.
+arrived on it; see the status table). To let the payer try again, quote the
+same intent again with a new idempotency key: a new attempt is issued on the
+same intent and reference, and the earlier attempt keeps its amount reserved
+until `late_payment_until`, so a late payment to the old amount is still
+recognised. Once money, a hold or an operator decision is attached, a new
+quote is `409 payment_intent_not_quotable`. Only one attempt is live at a
+time.
 
 ## 3. Read the intent
 
@@ -136,8 +142,8 @@ GET /v1/payment-intents/{intent_id}
 | `partially_paid` | An operator accepted less than the amount; the remainder is still owed. It keeps this status after the quote window closes. | no |
 | `risk_hold` | Reserved for a payment a person must decide. The current code does not set it: a held payment leaves the intent in its current status. | no |
 | `paid` | Settled: independent chain evidence, allocated exactly once, webhook queued. | yes |
-| `expired` | No quote was paid in time. Create a new intent. An operator may still honour an exact payment sent before `late_payment_until`, which moves it to `paid`. | see note |
-| `cancelled` | Closed without payment. No API route sets it today. | yes |
+| `expired` | No quote was paid in time. Quote it again to let the payer retry. An operator may still honour an exact payment sent before `late_payment_until`, which moves it to `paid`. | see note |
+| `cancelled` | Closed without payment by `POST /v1/payment-intents/{id}/cancel`, allowed only while no money, hold or decision is attached. Money that still arrives is held for a person. | yes |
 
 Polling is fine; the webhook is faster.
 
@@ -151,6 +157,7 @@ merchant over HTTPS.
 |---|---|
 | `payment_intent.paid` | The intent is settled. Fulfil the order on this event only. |
 | `payment_intent.partially_paid` | An operator honoured an underpayment. Never fulfil on it. |
+| `payment_intent.cancelled` | You cancelled the intent. Written in the same transaction as the cancellation. |
 | `OVERPAID` | A payment exceeded the amount; `attributes.remainder_raw` names the excess. Written together with `payment_intent.paid`. |
 | `webhook.test` | Sent by the operator (`webhook-test`) to check delivery and your signature verification. Not a payment; answer `2xx` and do nothing else. |
 
@@ -256,10 +263,14 @@ same key.
 
 | Response | Why |
 |---|---|
-| `503 quote_unavailable` | No fresh price, policy or rail-health evidence, no free amount slot, or (on `own`) no active address of yours for the asset. The gateway does not invent a rate or borrow an address. Retry later; a replay of an issued quote still works. |
+| `503 quote_unavailable` | No fresh price, policy or rail-health evidence, no free amount slot on any of your addresses, or (on `own`) no active address of yours for the asset. The gateway does not invent a rate or borrow an address. Retry later; a replay of an issued quote still works. |
+| `503 quote_capacity_exhausted` | Every address of yours holds the operator's maximum of open reservations. Wait `Retry-After` seconds. |
+| `429 rate_limited` | Your request budget (writes and reads counted separately), or your address's budget of failed authentications, is spent. Wait `Retry-After` seconds; retry writes with the same idempotency key. |
+| `413` | The request body is larger than 64 KiB. |
 | `503 rail_stopped` | A person, or the reconciler finding money that does not add up, closed the rail. Issued quotes stay payable. |
-| `409 payment_intent_not_quotable` | The intent is not in `requires_quote`: it is already quoted, paid, expired or closed. Create a new intent. |
-| `422 invalid_request` | The amount is not a positive integer string or the currency is not a code. |
+| `409 payment_intent_not_quotable` | A quote is already live, or money, a hold or a decision is attached, or the intent is paid or cancelled. |
+| `409 payment_intent_not_cancellable` | Money, a hold or a decision is attached, or the intent is already closed. |
+| `422 invalid_request` | The amount is not a positive integer string, the currency is not a code, or `metadata` is not an object of at most 16 KiB serialized. |
 
 Money that arrives but matches no reservation exactly is never absorbed into an
 intent: it is recorded as unmatched and put in front of the operator. Tell

@@ -125,7 +125,11 @@ is process presence.
 
 ## Scaling a role
 
-- The API scales horizontally; it holds no state between requests.
+- The API scales horizontally; it holds no state between requests except
+  its request budgets, which are per replica (see the operator runbook,
+  "Request budgets").
+- Quote throughput per merchant grows with its addresses: quotes spread over
+  every active address of the merchant, least loaded first.
 - Workers hold a fenced lease per role. A second replica of a role is safe
   (the loser of the lease waits) but is not what the `Recreate` strategy
   intends: the way to more throughput is a larger batch or a shorter interval

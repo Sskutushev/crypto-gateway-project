@@ -21,9 +21,16 @@ pub enum ApiError {
     /// A malformed and an unknown checkout token answer alike.
     #[error("payment page not found")]
     CheckoutNotFound,
+    #[error("too many requests; retry after {retry_after_seconds} seconds")]
+    RateLimited { retry_after_seconds: u64 },
     #[error("internal error: {0}")]
     Internal(String),
 }
+
+/// How long a client should wait before asking again for a quote on a
+/// merchant whose addresses are all at their reservation limit. Reservations
+/// end on the quote TTL at the earliest, so a shorter wait only adds load.
+const CAPACITY_RETRY_AFTER_SECONDS: u64 = 60;
 
 #[derive(Debug, Serialize)]
 struct ErrorEnvelope {
@@ -41,7 +48,24 @@ impl IntoResponse for ApiError {
     #[allow(clippy::too_many_lines)]
     fn into_response(self) -> axum::response::Response {
         let error_message = self.to_string();
+        let retry_after = match &self {
+            Self::RateLimited {
+                retry_after_seconds,
+            } => Some(*retry_after_seconds),
+            Self::Quote(QuoteServiceError::CapacityExhausted) => Some(CAPACITY_RETRY_AFTER_SECONDS),
+            _ => None,
+        };
         let (status, code, message) = match self {
+            Self::RateLimited { .. } => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limited",
+                error_message.clone(),
+            ),
+            Self::Quote(QuoteServiceError::CapacityExhausted) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "quote_capacity_exhausted",
+                error_message.clone(),
+            ),
             Self::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
                 "authentication_failed",
@@ -142,12 +166,18 @@ impl IntoResponse for ApiError {
                 )
             }
         };
-        (
+        let mut response = (
             status,
             Json(ErrorEnvelope {
                 error: ErrorBody { code, message },
             }),
         )
-            .into_response()
+            .into_response();
+        if let Some(seconds) = retry_after {
+            response
+                .headers_mut()
+                .insert(http::header::RETRY_AFTER, http::HeaderValue::from(seconds));
+        }
+        response
     }
 }

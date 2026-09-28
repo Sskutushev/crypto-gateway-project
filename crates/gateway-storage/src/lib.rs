@@ -1,3 +1,4 @@
+mod capacity;
 mod checkout;
 mod observations;
 mod operations;
@@ -13,6 +14,7 @@ mod settlement;
 mod test_support;
 mod verification;
 
+pub use capacity::CollectorOccupancy;
 pub use postgres::PostgresRepository;
 pub use roles::{GRANTS_SQL, ROLES_SQL};
 

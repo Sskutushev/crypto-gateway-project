@@ -257,10 +257,11 @@ refused. Only when the merchant genuinely cannot sign, replace
 `--issued`/`--signature` with `--manual-evidence '<who checked, and how>'`;
 it is recorded verbatim.
 
-The address is quoted for that merchant only, from the next quote on. Quote
-selection takes the merchant's oldest active address for the asset, so a
-second address is not used while the first is still active. It needs no
-change to `GATEWAY_EXPECTED_COLLECTORS`. An operator address (no
+The address is quoted for that merchant only, from the next quote on. A
+merchant may have several active addresses for an asset: each quote goes to
+the one holding the fewest amount reservations (the older one on a tie), and
+moves to the next when every exact amount near its price is taken there. See
+"Capacity" below. It needs no change to `GATEWAY_EXPECTED_COLLECTORS`. An operator address (no
 `--merchant`, `--manual-evidence` only) does: add it to
 `GATEWAY_EXPECTED_COLLECTORS` for every process in the same deployment, or
 processes refuse to start and the API reports not ready.
@@ -357,6 +358,51 @@ immutable quote and closes that rail. If a future corruption cannot be mapped
 to an asset, the run still hard-stops and must be treated as a system-wide
 incident until a dedicated global stop exists.
 
+## Capacity
+
+An address holds one reservation per exact amount, for the quote's lifetime
+plus its late-payment window; `amount_slot_count` in the quote policy is how
+many exact amounts near one price it may use. When they are all taken on one
+address, the quote moves to the merchant's next active address, up to eight.
+Watch it on `/metrics`:
+
+- `gateway_collector_open_leases` and `gateway_collector_live_leases` per
+  address: all reservations, and those whose quote is still payable.
+- `gateway_quote_requests_total{outcome=...}`: `slots_exhausted` means every
+  address was full near that price; add an address or widen
+  `amount_slot_count`.
+- `gateway_quote_collector_spillovers_total`: quotes that did not fit on the
+  least loaded address.
+- `gateway_quote_duration_seconds`: the time to answer a quote request,
+  refusals included.
+
+`GATEWAY_MAX_OPEN_LEASES_PER_COLLECTOR` (API, unset by default) caps the
+reservations one address may hold. A full address is skipped, and when every
+address of the merchant is full the quote is refused with
+`503 quote_capacity_exhausted` and `Retry-After: 60`, before any lock is
+taken. The count is read before the collector lock, so concurrent quotes may
+overshoot the cap by a few: it is admission control, not a ledger limit.
+
+## Request budgets
+
+The API keeps a token bucket per merchant and per client address, in each
+replica's memory (so the effective limit is the setting times the replica
+count). A spent budget answers `429 rate_limited` with `Retry-After`.
+
+| Variable | Default | Budget |
+|---|---|---|
+| `GATEWAY_RATE_LIMIT_MERCHANT_WRITES_PER_MINUTE` | 600 | `POST` per merchant |
+| `GATEWAY_RATE_LIMIT_MERCHANT_READS_PER_MINUTE` | 3000 | `GET` per merchant |
+| `GATEWAY_RATE_LIMIT_AUTH_FAILURES_PER_MINUTE` | 30 | failed authentications per client address, merchant and operator routes; once spent, every request from that address is refused until it refills |
+| `GATEWAY_RATE_LIMIT_CHECKOUT_READS_PER_MINUTE` | 600 | payment-page requests per client address |
+| `GATEWAY_CLIENT_IP_HEADER` | unset | header your reverse proxy appends the client address to, for example `x-forwarded-for`; its last entry is used |
+
+`0` disables a budget. A value that is set but not a number stops the
+process at start-up. Behind a reverse proxy, set `GATEWAY_CLIENT_IP_HEADER`,
+or every client shares the proxy's address and one caller's failed keys
+lock out everyone. Request bodies above 64 KiB are refused with `413`, and
+`metadata` above 16 KiB serialized with `422`.
+
 ## Alerts worth setting
 
 From `/metrics`, scraped with a `read` key:
@@ -371,6 +417,7 @@ From `/metrics`, scraped with a `read` key:
 | Sources disagree | `gateway_observation_conflicts_open > 0` |
 | A component is down | `gateway_component_state{component=~".*"} > 1` for more than one interval |
 | Expiry sweep stuck | `time() - gateway_expiry_last_success_timestamp_seconds > 5 × interval` |
+| Addresses filling up | `rate(gateway_quote_requests_total{outcome=~"slots_exhausted\|capacity_exhausted"}[15m]) > 0` |
 
 Absent telemetry is not health: the scrape fails as a whole when storage
 cannot answer, so alert on the scrape failing too. Also alert on the observer
