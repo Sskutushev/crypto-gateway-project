@@ -16,6 +16,27 @@ Last updated: 2026-09-27
   production readiness. It does not certify providers, KYT, secrets, backups,
   disaster recovery, capacity, legal approval or a mainnet deployment.
 
+## Session 2026-09-28: address pool, capacity and request budgets
+
+Branch `feat/api-limits-and-capacity`, from `main` at `2dc7ff7`.
+
+- Quotes spread over a merchant's active addresses, least loaded first, and
+  move to the next address (up to eight) when every exact amount near the
+  price is taken; a refused attempt rolls back with its idempotency record.
+- `GATEWAY_MAX_OPEN_LEASES_PER_COLLECTOR` caps reservations per address;
+  all-full is `503 quote_capacity_exhausted` with `Retry-After`.
+- `/metrics`: open and live reservations per address, quote outcomes,
+  spillovers, quote latency histogram.
+- Request budgets per merchant (writes, reads) and per client address
+  (failed authentications, payment page), `429 rate_limited` with
+  `Retry-After`; 64 KiB body limit; 16 KiB metadata limit.
+
+Verified in `crypto-gateway-dev`: fmt, clippy `-D warnings`, unit tests, and
+all 50 PostgreSQL scenarios, including
+`quotes_spread_over_the_address_pool_and_stop_at_its_limits`. Not measured:
+quote latency and lock wait under load; the histogram exists so a load test
+can report them.
+
 ## Session 2026-09-27: money binding, merchant-owned collectors, onboarding
 
 Branch `feat/merchant-owned-collectors`, stacked on
