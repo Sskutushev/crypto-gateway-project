@@ -23,6 +23,14 @@ before them, by the slice that added it.
   per-client-address budgets for failed authentications and the payment
   page, all answering `429 rate_limited` with `Retry-After`; a 64 KiB request
   body limit and a 16 KiB `metadata` limit.
+- **TypeScript SDK.** `sdk/typescript` is the npm package
+  `@crypto-gateway/sdk` (zero runtime dependencies, Node 18+, ESM and
+  CommonJS): a typed client for every merchant route, typed errors with the
+  API's error codes and `Retry-After`, retries only for idempotent requests,
+  exact `BigInt` amount formatting and parsing, and `verifyWebhook` with
+  constant-time comparison, secret rotation and a typed union of every event
+  the gateway emits. CI builds and tests it on Node 18, 20 and 22, and runs
+  the TypeScript webhook receiver example's tests.
 - **Collector retirement without SQL.** `collector-stop-quoting` moves an
   address to `receiving_only` (never quoted again, still watched), audited.
   `collector-retire` refuses while any amount reservation on the address

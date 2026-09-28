@@ -223,6 +223,7 @@ Each money invariant with the tests that exercise it:
 - [Architecture](docs/architecture.md) and [decisions](docs/decisions/)
 - [Merchant integration](docs/merchant-integration.md): intents, quotes, statuses, webhook verification
 - [Examples](examples/): webhook receivers, a create-payment script, a Postman collection
+- [TypeScript SDK](sdk/typescript/): typed client, webhook verification and exact amount helpers (`@crypto-gateway/sdk`)
 - [Scope and limits](docs/scope-and-limits.md): what is supported and every exceptional payment case
 - [Money invariants](docs/money-invariants.md): each invariant and the tests that falsify it
 - [OpenAPI 3.1](docs/openapi.json): every route the router serves, checked by a test
