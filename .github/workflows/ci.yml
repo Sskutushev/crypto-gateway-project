@@ -148,7 +148,9 @@ jobs:
         run: kubectl kustomize deploy/k8s > /dev/null
 
   # One image for the API and the workers, with its SBOM and a scan that fails
-  # on HIGH or CRITICAL findings. Published to ghcr.io only from a version tag.
+  # on HIGH or CRITICAL findings. Published to ghcr.io only from a version tag,
+  # and signed there with cosign keyless: the certificate names this workflow
+  # and the tag, so a verifier can refuse an image built anywhere else.
   image:
     name: image, SBOM, scan, publish
     runs-on: ubuntu-24.04
@@ -156,6 +158,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
@@ -188,6 +191,12 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
+      # An image whose version has no CHANGELOG section, or whose binaries
+      # carry another version, is not published; release.yml would refuse
+      # to describe it afterwards anyway.
+      - name: release notes and version agree with the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python3 scripts/release-notes.py "$GITHUB_REF_NAME" > /dev/null
       - name: login
         if: startsWith(github.ref, 'refs/tags/v')
         uses: docker/login-action@v4
@@ -196,6 +205,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: publish
+        id: publish
         if: startsWith(github.ref, 'refs/tags/v')
         uses: docker/build-push-action@v7
         with:
@@ -204,3 +214,15 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
+      - name: install cosign
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: sigstore/cosign-installer@v3
+      # Signed by digest: a tag can be moved, the digest is the image.
+      - name: sign
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/crypto-gateway-project@${DIGEST}"
+          cosign sign --yes "$image"
+          echo "signed $image" >> "$GITHUB_STEP_SUMMARY"

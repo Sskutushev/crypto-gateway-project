@@ -10,3 +10,6 @@
 
 # Operator-created environment files for the production compose topology.
 deploy/env/*.env
+
+# The generated documentation site.
+/site/_build/
