@@ -105,7 +105,7 @@ second settlement against another intent returns `ForeignClaim`),
 
 **Invariant.** A transfer whose attempt is no longer `awaiting_payment`, or
 whose block time is at or after the lease end, is never settled
-automatically. An operator can honour it only if its block time is not after
+automatically. An operator can honour it only if its block time is before
 the attempt's `late_payment_until`.
 
 **Mechanism.** The amount lease lasts until `late_payment_until`
@@ -114,7 +114,7 @@ the attempt's `late_payment_until`.
 the lease end; a slot already released is matched by the block's time against
 `amount_lease_history`, so it is never credited to whoever holds the slot
 today. `decide_settlement` turns `late` into `ManualRequired { LatePayment }`.
-`honor_transfer` requires `t.block_time <= a.late_payment_until`
+`honor_transfer` requires `t.block_time < a.late_payment_until`
 (`within_late_window`).
 
 **Tests.** operations: `honor_takes_a_late_payment_only_inside_its_window`
@@ -122,13 +122,12 @@ today. `decide_settlement` turns `late` into `ManualRequired { LatePayment }`.
 `payment_intent.paid`). domain: `a_late_payment_is_a_decision_for_a_person`,
 `a_payment_after_the_window_matches_the_attempt_that_held_the_slot_then`.
 
-**Notes.** "Late" is decided by the attempt's status at settlement time, not
-by comparing the block time with `expires_at`: an exact payment sent before
-`expires_at` but finalized after the expiry worker marked the attempt
-`expired` goes to an operator. The automatic match uses `block_time <
-lease_until`; the honor check uses `block_time <= late_payment_until`, so a
-block at exactly `late_payment_until` is unmatched automatically but can be
-honoured.
+**Notes.** "Late" is decided by the block time against the quote's
+`expires_at`, not by the attempt's status when settlement runs: an exact
+payment made before `expires_at` settles automatically even when the expiry
+worker marked the attempt `expired` first. The automatic match and the honor
+check use the same half-open window, `block_time < late_payment_until`, so a
+block at exactly `late_payment_until` is neither matched nor honourable.
 
 ## 5. A merchant on collector policy `own` is quoted only on its own address
 
