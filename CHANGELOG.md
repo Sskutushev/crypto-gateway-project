@@ -48,6 +48,18 @@ before them, by the slice that added it.
   `scripts/backup-drill.sh`, which dumps a database, restores it into a
   scratch database, runs migrations on it and checks that the books still add
   up.
+- **WooCommerce plugin.** `integrations/woocommerce/crypto-gateway-usdt/` is a
+  payment method for WooCommerce 8+ on PHP 8.1+, compatible with HPOS and the
+  Cart/Checkout Blocks. Checkout creates an intent and a quote with
+  idempotency keys derived from the order, converts the total to minor units
+  with string arithmetic, and redirects to the hosted checkout page; an
+  expired quote is re-quoted on the same intent from the order page. A signed
+  webhook (raw-body HMAC, several `v1` values, 300-second tolerance, event
+  deduplication, per-order lock) and a five-minute WP-Cron status check apply
+  the same mapping: `paid` completes the order once, `partially_paid` puts it
+  on hold, `cancelled` cancels an unpaid order, `OVERPAID` adds a note.
+  PHPUnit tests and a CI job cover signature verification, minor-unit
+  conversion and the order-state mapping.
 - **Collector retirement without SQL.** `collector-stop-quoting` moves an
   address to `receiving_only` (never quoted again, still watched), audited.
   `collector-retire` refuses while any amount reservation on the address

@@ -147,6 +147,30 @@ jobs:
       - name: kustomize build
         run: kubectl kustomize deploy/k8s > /dev/null
 
+  # The WooCommerce plugin: every PHP file parses on the oldest and a current
+  # supported PHP, and the unit tests of its signature, money and order-state
+  # code pass.
+  woocommerce-plugin:
+    name: WooCommerce plugin (PHP ${{ matrix.php }})
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        php: ["8.1", "8.3"]
+    defaults:
+      run:
+        working-directory: integrations/woocommerce/crypto-gateway-usdt
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          tools: composer:v2
+          coverage: none
+      - name: php lint
+        run: find . -path ./vendor -prune -o -name '*.php' -print0 | xargs -0 -n1 php -l
+      - run: composer install --no-interaction --no-progress
+      - run: vendor/bin/phpunit
+
   # One image for the API and the workers, with its SBOM and a scan that fails
   # on HIGH or CRITICAL findings. Published to ghcr.io only from a version tag,
   # and signed there with cosign keyless: the certificate names this workflow
