@@ -494,3 +494,52 @@ async fn manual_money_decisions_require_admin_and_well_formed_commands() -> Test
     ));
     Ok(())
 }
+
+#[tokio::test]
+async fn one_operator_alone_cannot_honor_unless_a_threshold_allows_it() -> TestResult {
+    let honor = manual_resolution(ManualResolutionAction::Honor)?;
+    let admin = credential(&[OperatorScope::Admin]);
+
+    // Nothing configured: every honor waits for a second operator, and the
+    // repository is never asked to move money.
+    assert!(matches!(
+        service(StubRepository::default())
+            .resolve_manual(&admin, "manual-resolution-dual1", &honor)
+            .await,
+        Err(OperationsError::DualControlRequired)
+    ));
+    let at_threshold =
+        service(StubRepository::default()).with_honor_approval_policy(crate::HonorApprovalPolicy {
+            dual_control_min_raw: RawAmount::from_str("1000000")?,
+        });
+    assert!(matches!(
+        at_threshold
+            .resolve_manual(&admin, "manual-resolution-dual2", &honor)
+            .await,
+        Err(OperationsError::DualControlRequired)
+    ));
+    // Below the threshold the command reaches the repository, whose stub
+    // answers with a conflict.
+    let above =
+        service(StubRepository::default()).with_honor_approval_policy(crate::HonorApprovalPolicy {
+            dual_control_min_raw: RawAmount::from_str("1000001")?,
+        });
+    assert!(matches!(
+        above
+            .resolve_manual(&admin, "manual-resolution-dual3", &honor)
+            .await,
+        Err(OperationsError::ManualResolutionConflict)
+    ));
+    // Rejecting parked money is not a payment and never needs a second key.
+    let mut reject = manual_resolution(ManualResolutionAction::Reject)?;
+    reject.payment_intent_id = None;
+    reject.attempt_id = None;
+    reject.allocate_raw = None;
+    assert!(matches!(
+        service(StubRepository::default())
+            .resolve_manual(&admin, "manual-resolution-dual4", &reject)
+            .await,
+        Err(OperationsError::ManualResolutionConflict)
+    ));
+    Ok(())
+}

@@ -56,6 +56,7 @@ manager. Each becomes a `GATEWAY_DATABASE_URL` with `sslmode=verify-full`:
 | `gateway-db-observer` | `gateway_observer` (login named as the source's `db_principal`) | `worker-observer`, one per source |
 | `gateway-db-verifier` | `gateway_verifier` (login named as the verifier source's `db_principal`) | `worker-verifier` |
 | `gateway-db-reconciler` | `gateway_reconciler` | `worker-reconciler` |
+| `gateway-db-retention` (only if retention runs) | `gateway_retention` | `worker-retention` |
 | a provisioner URL kept with the people who onboard merchants | `gateway_provisioner` | `gateway-worker admin` |
 | a migrator URL kept outside the cluster | `gateway_migrator` | the release step |
 

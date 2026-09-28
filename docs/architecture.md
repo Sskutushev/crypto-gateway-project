@@ -55,7 +55,8 @@ credentials.
 
 `db/roles/` ships the roles as applied SQL: `gateway_migrator` owns every
 table; `gateway_api`, `gateway_verifier`, `gateway_payment`,
-`gateway_reconciler` and `gateway_readonly` are groups whose table privileges
+`gateway_reconciler`, `gateway_readonly`, `gateway_provisioner` and
+`gateway_retention` are groups whose table privileges
 are derived from the SQL each crate embeds, and each process connects as a
 login role in exactly one group. Observers are the exception in two ways: every
 chain source gets its own login role, named as the source's `db_principal`,
@@ -64,7 +65,9 @@ that name with `session_user`. A compromised observer can therefore lie about
 what it saw, under its own name, for its own source, and can move its own
 cursor; it cannot write a canonical fact, an allocation, an outbox event, or
 another source's recovery point. A PostgreSQL scenario connects as each group
-and proves every refusal by SQLSTATE.
+and proves every refusal by SQLSTATE. `gateway_retention` is the only group that can
+delete, and only webhook delivery attempts, component health transitions and
+observations that a row policy says no evidence needs.
 
 ## Core aggregates
 

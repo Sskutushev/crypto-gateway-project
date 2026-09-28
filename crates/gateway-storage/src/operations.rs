@@ -442,8 +442,8 @@ impl OperationsRepository for PostgresRepository {
 }
 
 #[derive(Debug, FromRow)]
-struct ManualHonorRow {
-    merchant_id: Uuid,
+pub(crate) struct ManualHonorRow {
+    pub(crate) merchant_id: Uuid,
     fiat_amount_minor: i64,
     expected_raw: String,
     attempt_allocated_raw: String,
@@ -472,16 +472,44 @@ struct StoredResolutionRow {
     request_hash: Vec<u8>,
 }
 
-#[allow(clippy::too_many_arguments)]
+/// What an honor would do, computed from locked rows.
+pub(crate) struct HonorPlan {
+    pub(crate) row: ManualHonorRow,
+    pub(crate) outcome: SettlementOutcome,
+    pub(crate) outcome_name: &'static str,
+    pub(crate) allocate: RawAmount,
+    pub(crate) remainder: RawAmount,
+}
+
+impl HonorPlan {
+    /// What the operator saw when deciding, kept with a proposal so an
+    /// approval can be compared with the moment it was asked for.
+    pub(crate) fn evidence(&self) -> Value {
+        json!({
+            "fiat_amount_minor": self.row.fiat_amount_minor.to_string(),
+            "expected_raw": self.row.expected_raw,
+            "attempt_allocated_raw": self.row.attempt_allocated_raw,
+            "transfer_raw": self.row.transfer_raw,
+            "transfer_allocated_raw": self.row.transfer_allocated_raw,
+            "finality": self.row.finality,
+            "processing_state": self.row.processing_state,
+            "attempt_status": self.row.attempt_status,
+            "intent_status": self.row.intent_status,
+            "within_late_window": self.row.within_late_window,
+            "outcome": self.outcome_name,
+            "remainder_raw": self.remainder.to_string(),
+        })
+    }
+}
+
+/// Locks the transfer, attempt and intent and checks every condition an honor
+/// depends on, writing nothing. A proposal runs it when it is made and an
+/// approval runs it again, because the rows may have moved in between.
 #[allow(clippy::too_many_lines)]
-async fn honor_transfer(
+pub(crate) async fn plan_honor(
     tx: &mut Transaction<'_, Postgres>,
-    credential: &OperatorCredential,
-    key: &str,
-    hash: &[u8; 32],
     resolution: &ManualResolution,
-    now: OffsetDateTime,
-) -> Result<ManualResolutionResult, OperationsError> {
+) -> Result<HonorPlan, OperationsError> {
     let intent_id = resolution
         .payment_intent_id
         .ok_or(OperationsError::InvalidManualResolution)?;
@@ -495,6 +523,9 @@ async fn honor_transfer(
     // locked rows, never taken from the request: the money must have arrived
     // at this attempt's collector, in this quote's asset, on this quote's
     // chain, network and environment, while the attempt could still be paid.
+    // The transfer row itself is immutable and the API role holds no UPDATE
+    // on it, which a row lock would need; its processing row is the lock that
+    // serializes every decision about the transfer.
     let row = sqlx::query_as::<_, ManualHonorRow>(
         r"SELECT i.merchant_id, i.amount_minor AS fiat_amount_minor,
                   a.expected_amount_raw::text AS expected_raw,
@@ -518,7 +549,7 @@ async fn honor_transfer(
              JOIN chain_transfer_state_current s ON s.transfer_id=t.id
              JOIN chain_transfer_processing p ON p.transfer_id=t.id
             WHERE a.id=$2 AND i.id=$3
-            FOR UPDATE OF a,i,t,p",
+            FOR UPDATE OF a,i,p",
     )
     .bind(resolution.transfer_id)
     .bind(attempt_id)
@@ -583,6 +614,36 @@ async fn honor_transfer(
             "partial",
         )
     };
+    Ok(HonorPlan {
+        row,
+        outcome,
+        outcome_name,
+        allocate,
+        remainder,
+    })
+}
+
+pub(crate) async fn honor_transfer(
+    tx: &mut Transaction<'_, Postgres>,
+    credential: &OperatorCredential,
+    key: &str,
+    hash: &[u8; 32],
+    resolution: &ManualResolution,
+    now: OffsetDateTime,
+) -> Result<ManualResolutionResult, OperationsError> {
+    let intent_id = resolution
+        .payment_intent_id
+        .ok_or(OperationsError::InvalidManualResolution)?;
+    let attempt_id = resolution
+        .attempt_id
+        .ok_or(OperationsError::InvalidManualResolution)?;
+    let HonorPlan {
+        row,
+        outcome,
+        outcome_name,
+        allocate,
+        remainder,
+    } = plan_honor(tx, resolution).await?;
     if let Some(replay) = insert_resolution(
         tx,
         credential,
@@ -804,7 +865,7 @@ async fn insert_resolution(
     Ok(None)
 }
 
-async fn load_resolution(
+pub(crate) async fn load_resolution(
     tx: &mut Transaction<'_, Postgres>,
     operator: Uuid,
     key: &str,
@@ -852,7 +913,7 @@ async fn record_admin_audit(
     Ok(())
 }
 
-fn parse_raw(value: &str) -> Result<RawAmount, OperationsError> {
+pub(crate) fn parse_raw(value: &str) -> Result<RawAmount, OperationsError> {
     value
         .parse::<RawAmount>()
         .map_err(|e| OperationsError::Repository(corrupt(e.to_string())))

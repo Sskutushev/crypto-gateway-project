@@ -79,6 +79,43 @@ created.
   public `https` on port 443, so the run shows the outbox attempting delivery
   to an unresolvable reserved name; a public tunnel completes the leg.
 
+## Session 2026-09-28: operator exceptions (`feat/operator-exceptions`)
+
+Branch `feat/operator-exceptions`, based on `main` at `2dc7ff7`.
+Migrations are numbered 0019-0021 so they do not collide with a concurrent
+branch that may add 0018.
+
+- Webhook redelivery (API route and `admin webhook-redeliver`): re-queues the
+  same outbox row, one endpoint or all, fresh retry budget, attempt numbers
+  continue; `webhook_redeliveries` plus an audit row (0019).
+- Fair delivery: at most `GATEWAY_WEBHOOK_MAX_EVENTS_PER_MERCHANT` (20) events
+  of one merchant per batch, up to `GATEWAY_WEBHOOK_DELIVERY_CONCURRENCY` (8)
+  merchants delivered at once; single lease unchanged.
+- Two-operator honors: `GATEWAY_MANUAL_HONOR_DUAL_CONTROL_MIN_RAW`, unset
+  means every honor; propose / approve (different key, all checks re-run under
+  fresh locks) / reject; 24-hour expiry (0020).
+- Fixed: an honor locked `chain_transfers`, which the least-privilege API role
+  cannot lock, so honors through the API failed under `db/roles`. The roles
+  scenario now runs a proposal and approval as the API login.
+- Accounting export `GET /v1/operator/accounting/settlements`, JSON or CSV,
+  with a control sum from `payment_allocations`.
+- Admin list commands; the provisioner lost SELECT on key hashes.
+- `retention` worker role and `gateway_retention` DB role; disabled unless an
+  age of at least 30 days is set; a row policy on `chain_observations`
+  repeats the evidence rule (index in 0021).
+
+Verified on the final tree in `crypto-gateway-dev-ops`: `cargo fmt --check`,
+`cargo clippy --workspace --all-targets --locked -D warnings`,
+`cargo test --workspace --locked` (215 passed), and all ignored PostgreSQL
+scenarios against `gateway_test_ops` (59 passed: 55 storage, 3 HTTP,
+1 webhook).
+
+Known gaps: the dual-control threshold is one raw number for every asset; the
+docs (invariant 4) say an honor accepts `block_time <= late_payment_until`
+while the code uses `<` (pre-existing, unchanged); the accounting export has
+no HTTP-level PostgreSQL scenario (storage scenario plus unit tests for CSV
+and content negotiation).
+
 ## Session 2026-09-27: money binding, merchant-owned collectors, onboarding
 
 Branch `feat/merchant-owned-collectors`, stacked on
@@ -171,9 +208,8 @@ Next smallest slices, in order:
 Closed on 2026-09-28: `collector-stop-quoting` moves a collector to
 `receiving_only` with an audit row, and `collector-retire` refuses while a
 reservation remains unless `--compromised yes` (scenario
-`a_collector_holding_a_reservation_stops_quoting_but_is_not_retired`). The
-CLI still has no list commands; identifiers are read with the
-`gateway_readonly` role.
+`a_collector_holding_a_reservation_stops_quoting_but_is_not_retired`). List
+commands were added on `feat/operator-exceptions`.
 
 Still needs the owner: genuinely independent TRON providers and keys, a
 sustained Nile testnet run with a merchant address registered by signature,

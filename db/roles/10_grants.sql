@@ -12,6 +12,10 @@
 --   oversight.rs      component health and reconciliation
 --   self_check.rs     start-up invariants, read by every process
 --   provisioning.rs   onboarding: merchants, keys, webhooks, collectors
+--   redelivery.rs     webhook redelivery, from the API and the admin CLI
+--   honor_proposals.rs two-operator honors
+--   accounting.rs     the settlement export, read by the API
+--   retention.rs      bounded deletion of operational rows
 --
 -- A privilege that is not on this list is a privilege a process does not have,
 -- and a new table gets nothing until it is added here. That is the point: an
@@ -40,17 +44,18 @@ $$;
 
 GRANT USAGE ON SCHEMA public TO
     gateway_api, gateway_observer, gateway_verifier, gateway_payment,
-    gateway_reconciler, gateway_readonly, gateway_provisioner;
+    gateway_reconciler, gateway_readonly, gateway_provisioner, gateway_retention;
 
 -- Every process proves its rails at start-up (self_check.rs) and every leased
 -- worker holds its lease in component_leases.
 GRANT SELECT ON
     chain_assets, collector_addresses, chain_sources, chain_finality_policies,
     chain_cursors, chain_observations
-TO gateway_api, gateway_observer, gateway_verifier, gateway_payment, gateway_reconciler;
+TO gateway_api, gateway_observer, gateway_verifier, gateway_payment, gateway_reconciler,
+   gateway_retention;
 
 GRANT SELECT, INSERT, UPDATE ON component_leases
-TO gateway_observer, gateway_verifier, gateway_payment, gateway_reconciler;
+TO gateway_observer, gateway_verifier, gateway_payment, gateway_reconciler, gateway_retention;
 
 -- Observer: it may say what it saw and where it stopped reading. Nothing else.
 -- Which rows of chain_observations and chain_cursors it may write is decided
@@ -136,6 +141,23 @@ GRANT UPDATE ON
     payment_allocations, payment_settlement_decisions
 TO gateway_api;
 
+-- Webhook redelivery (redelivery.rs), from the operator API and from the
+-- admin command line: re-queue a finished event in place and record who asked.
+-- The columns are the queue's own; the payload, type and merchant of an event
+-- cannot be rewritten through them.
+GRANT SELECT, INSERT ON webhook_redeliveries TO gateway_api, gateway_provisioner;
+
+-- Two-operator honors (honor_proposals.rs): a proposal is written, then closed
+-- once, by an approval, a rejection or its expiry.
+GRANT SELECT, INSERT, UPDATE ON manual_honor_proposals TO gateway_api;
+GRANT SELECT (id, merchant_id, status) ON webhook_endpoints TO gateway_api;
+GRANT SELECT (id, merchant_id, channel, attempts, delivered_at, dead_lettered_at)
+    ON domain_events TO gateway_provisioner;
+GRANT UPDATE (
+    delivered_at, dead_lettered_at, available_at, last_error, claimed_by, claimed_until,
+    attempt_floor, target_endpoint_id
+) ON domain_events TO gateway_api, gateway_provisioner;
+
 -- Read-only: the operator views, for a person or a dashboard. No credentials,
 -- no request payloads, no endpoint URLs.
 GRANT SELECT ON
@@ -151,7 +173,7 @@ GRANT SELECT ON
     component_health, component_health_events, domain_events, webhook_deliveries,
     reconciliation_runs, reconciliation_discrepancies,
     manual_resolution_requests, overpayment_remainder_dispositions,
-    operator_risk_provider_bindings
+    operator_risk_provider_bindings, webhook_redeliveries, manual_honor_proposals
 TO gateway_readonly;
 
 -- A table the next migration creates is readable by the two roles that only
@@ -165,8 +187,14 @@ ALTER DEFAULT PRIVILEGES FOR ROLE gateway_migrator IN SCHEMA public
 -- It never touches a quote, a transfer or an allocation, and it can neither
 -- rewrite a key's hash nor move a merchant between collector policies.
 GRANT SELECT ON
-    merchants, merchant_api_keys, webhook_endpoints, collector_addresses, chain_assets
+    merchants, webhook_endpoints, collector_addresses, chain_assets
 TO gateway_provisioner;
+-- A key is listed by its prefix. The hash is never read back, so it is not
+-- readable: earlier releases granted the whole table, and that grant is taken
+-- back before the columns are named.
+REVOKE SELECT ON merchant_api_keys FROM gateway_provisioner;
+GRANT SELECT (id, merchant_id, key_prefix, label, created_at, last_used_at, revoked_at)
+    ON merchant_api_keys TO gateway_provisioner;
 GRANT INSERT ON
     merchants, merchant_api_keys, webhook_endpoints, collector_addresses,
     audit_events, domain_events
@@ -179,6 +207,50 @@ GRANT UPDATE (
     previous_secret_fingerprint, previous_valid_until, status, disabled_at
 ) ON webhook_endpoints TO gateway_provisioner;
 GRANT UPDATE (state, retired_at) ON collector_addresses TO gateway_provisioner;
--- Retiring a collector counts the reservations still open on it, and nothing
--- else about them.
+-- Retiring or listing a collector counts the reservations still open on it,
+-- and nothing else about them.
 GRANT SELECT (collector_address_id) ON amount_leases TO gateway_provisioner;
+
+-- Retention: the one role that deletes, and only from three append-only
+-- operational tables. What it may delete is stated twice: in the statements
+-- retention.rs runs, and, for observations, in a row policy the database
+-- enforces whatever statement is sent. It reads what it must check a row
+-- against and nothing about money, merchants or credentials.
+GRANT DELETE ON webhook_deliveries, chain_observations, component_health_events
+TO gateway_retention;
+GRANT SELECT ON
+    webhook_deliveries, component_health_events,
+    chain_transfers, chain_transfer_state_current, chain_transfer_attestations,
+    chain_observation_conflicts, chain_observation_conflict_items
+TO gateway_retention;
+GRANT SELECT (id, delivered_at) ON domain_events TO gateway_retention;
+GRANT INSERT ON audit_events TO gateway_retention;
+
+-- chain_observations forces row level security and has no delete policy of
+-- its own, so no role deletes an observation unless a policy lets it. This one
+-- lets retention delete only a reading of a final canonical transfer that no
+-- attestation and no conflict references. A row it hides is not deleted and
+-- not reported: the DELETE simply touches fewer rows.
+DROP POLICY IF EXISTS chain_observations_retention_delete ON chain_observations;
+CREATE POLICY chain_observations_retention_delete
+    ON chain_observations
+    FOR DELETE
+    TO gateway_retention
+    USING (
+        NOT EXISTS (
+            SELECT 1 FROM chain_transfer_attestations AS attestation
+             WHERE attestation.observation_id = chain_observations.id)
+        AND NOT EXISTS (
+            SELECT 1 FROM chain_observation_conflict_items AS item
+             WHERE item.observation_id = chain_observations.id)
+        AND EXISTS (
+            SELECT 1
+              FROM chain_transfers AS transfer
+              JOIN chain_transfer_state_current AS state ON state.transfer_id = transfer.id
+             WHERE transfer.chain = chain_observations.chain
+               AND transfer.network = chain_observations.network
+               AND transfer.chain_environment = chain_observations.chain_environment
+               AND transfer.tx_hash = chain_observations.tx_hash
+               AND transfer.event_index = chain_observations.event_index
+               AND state.state IN ('finalized', 'invalidated'))
+    );

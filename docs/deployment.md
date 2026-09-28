@@ -19,7 +19,8 @@ hosts and reached only over TLS.
    worker-verifier    gateway_verifier ──────────┤ ◄─── chain provider B (HTTPS)
    worker-settlement  gateway_payment ───────────┤
    worker-outbox      gateway_payment ───────────┤ ───► merchant webhooks (HTTPS)
-   worker-reconciler  gateway_reconciler ────────┘
+   worker-reconciler  gateway_reconciler ────────┤
+   worker-retention   gateway_retention ─────────┘  (optional)
 ```
 
 - `gateway-api` serves merchants and operators. It reaches nothing but the
@@ -36,6 +37,10 @@ hosts and reached only over TLS.
   The outbox is the only process that reaches merchant endpoints.
 - `worker-reconciler` reads everything, records findings, publishes component
   state and may close a rail. It cannot clear one; only a person can.
+- `worker-retention` is optional and deletes nothing until an age is set
+  (`deploy/env/worker-retention.env.example`). Its role deletes only old
+  delivery attempts, superseded health transitions and observations no
+  evidence references; see the runbook's "Retention".
 
 ## The network and TLS boundary
 

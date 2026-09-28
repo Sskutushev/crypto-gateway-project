@@ -26,7 +26,9 @@
       "CheckoutToken": { "name": "checkout_token", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^[0-9a-f]{64}$" } },
       "IntentId": { "name": "intent_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
       "AssetId": { "name": "asset_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
-      "TransferId": { "name": "transfer_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+      "TransferId": { "name": "transfer_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+      "ProposalId": { "name": "proposal_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+      "EventId": { "name": "event_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "description": "The outbox event id, which is the id a merchant receives and deduplicates by." }
     },
     "headers": {
       "RetryAfter": { "schema": { "type": "integer", "minimum": 1 }, "description": "Whole seconds to wait before retrying." },
@@ -38,7 +40,7 @@
       "Error": {
         "type": "object", "required": ["error"],
         "properties": { "error": { "type": "object", "required": ["code", "message"], "properties": {
-          "code": { "type": "string", "enum": ["authentication_failed", "invalid_request", "invalid_idempotency_key", "payment_intent_not_found", "idempotency_conflict", "payment_intent_reference_conflict", "payment_intent_not_quotable", "payment_intent_not_cancellable", "quote_unavailable", "quote_capacity_exhausted", "rail_stopped", "rate_limited", "checkout_not_found", "missing_scope", "no_price_policy", "no_open_rail_stop", "price_not_agreed", "invalid_risk_evaluation", "risk_provider_not_allowed", "manual_resolution_conflict", "manual_resolution_not_found", "storage_unavailable", "internal_error"] },
+          "code": { "type": "string", "enum": ["authentication_failed", "invalid_request", "invalid_idempotency_key", "payment_intent_not_found", "idempotency_conflict", "payment_intent_reference_conflict", "payment_intent_not_quotable", "payment_intent_not_cancellable", "quote_unavailable", "quote_capacity_exhausted", "rail_stopped", "rate_limited", "checkout_not_found", "missing_scope", "no_price_policy", "no_open_rail_stop", "price_not_agreed", "invalid_risk_evaluation", "risk_provider_not_allowed", "manual_resolution_conflict", "manual_resolution_not_found", "storage_unavailable", "internal_error", "dual_control_required", "dual_control_same_operator", "honor_proposal_not_found", "honor_proposal_not_pending", "honor_proposal_expired", "webhook_event_not_found", "webhook_endpoint_not_found", "webhook_event_still_queued", "not_a_webhook_event", "export_range_invalid", "export_too_large"] },
           "message": { "type": "string" } } } }
       },
       "FiatAmount": { "type": "object", "required": ["currency", "minor_units"], "properties": { "currency": { "type": "string", "pattern": "^[A-Z]{3}$" }, "minor_units": { "$ref": "#/components/schemas/IntegerString" } } },
@@ -168,6 +170,86 @@
           "merchant_id": { "type": ["string", "null"], "format": "uuid" },
           "allocated_raw": { "oneOf": [{ "$ref": "#/components/schemas/IntegerString" }, { "type": "null" }] },
           "remainder_raw": { "oneOf": [{ "$ref": "#/components/schemas/IntegerString" }, { "type": "null" }] },
+          "replayed": { "type": "boolean" }
+        }
+      },
+      "SettlementExport": {
+        "type": "object", "required": ["from", "to", "merchant_id", "basis", "days", "totals", "control"],
+        "properties": {
+          "from": { "type": "string", "format": "date" },
+          "to": { "type": "string", "format": "date" },
+          "merchant_id": { "type": ["string", "null"], "format": "uuid" },
+          "basis": { "type": "string", "description": "What the numbers count, in words." },
+          "days": { "type": "array", "items": { "type": "object", "required": ["day", "merchant_id", "merchant_external_id", "asset_id", "fiat_currency", "payments", "partial_payments", "overpaid_payments", "allocated_raw", "fiat_minor", "remainder_raw"], "properties": {
+            "day": { "type": "string", "format": "date" }, "merchant_id": { "type": "string", "format": "uuid" }, "merchant_external_id": { "type": "string" }, "asset_id": { "type": "string", "format": "uuid" }, "fiat_currency": { "type": "string" },
+            "payments": { "type": "integer", "minimum": 0 }, "partial_payments": { "type": "integer", "minimum": 0 }, "overpaid_payments": { "type": "integer", "minimum": 0 },
+            "allocated_raw": { "$ref": "#/components/schemas/IntegerString" }, "fiat_minor": { "$ref": "#/components/schemas/IntegerString" }, "remainder_raw": { "$ref": "#/components/schemas/IntegerString" } } } },
+          "totals": { "type": "array", "items": { "type": "object", "required": ["asset_id", "fiat_currency", "payments", "partial_payments", "overpaid_payments", "allocated_raw", "fiat_minor", "remainder_raw"], "properties": {
+            "asset_id": { "type": "string", "format": "uuid" }, "fiat_currency": { "type": "string" },
+            "payments": { "type": "integer", "minimum": 0 }, "partial_payments": { "type": "integer", "minimum": 0 }, "overpaid_payments": { "type": "integer", "minimum": 0 },
+            "allocated_raw": { "$ref": "#/components/schemas/IntegerString" }, "fiat_minor": { "$ref": "#/components/schemas/IntegerString" }, "remainder_raw": { "$ref": "#/components/schemas/IntegerString" } } } },
+          "control": { "type": "object", "required": ["balanced", "allocations"], "properties": {
+            "balanced": { "type": "boolean", "description": "false when the allocation rows and the decisions disagree for any asset: a finding, not a rounding." },
+            "allocations": { "type": "array", "items": { "type": "object", "required": ["asset_id", "allocation_rows", "allocated_raw"], "properties": { "asset_id": { "type": "string", "format": "uuid" }, "allocation_rows": { "type": "integer", "minimum": 0 }, "allocated_raw": { "$ref": "#/components/schemas/IntegerString" } } } } } }
+        }
+      },
+      "HonorProposalRequest": {
+        "type": "object", "additionalProperties": false, "required": ["transfer_id", "payment_intent_id", "attempt_id", "allocate_raw", "reason"],
+        "properties": {
+          "transfer_id": { "type": "string", "format": "uuid" },
+          "payment_intent_id": { "type": "string", "format": "uuid" },
+          "attempt_id": { "type": "string", "format": "uuid" },
+          "allocate_raw": { "$ref": "#/components/schemas/IntegerString" },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 1000 }
+        }
+      },
+      "HonorDecision": {
+        "type": "object", "additionalProperties": false, "required": ["reason"],
+        "properties": { "reason": { "type": "string", "minLength": 1, "maxLength": 1000 } }
+      },
+      "HonorProposal": {
+        "type": "object",
+        "required": ["id", "status", "transfer_id", "payment_intent_id", "attempt_id", "merchant_id", "allocate_raw", "threshold_raw", "reason", "evidence", "proposed_by_key_id", "proposed_by_label", "created_at", "expires_at", "decided_by_key_id", "decided_by_label", "decision_reason", "decided_at", "resolution_id", "replayed"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "status": { "type": "string", "enum": ["pending", "approved", "rejected", "expired"] },
+          "transfer_id": { "type": "string", "format": "uuid" },
+          "payment_intent_id": { "type": "string", "format": "uuid" },
+          "attempt_id": { "type": "string", "format": "uuid" },
+          "merchant_id": { "type": "string", "format": "uuid" },
+          "allocate_raw": { "$ref": "#/components/schemas/IntegerString" },
+          "threshold_raw": { "$ref": "#/components/schemas/IntegerString" },
+          "reason": { "type": "string" },
+          "evidence": { "type": "object", "description": "The locked rows as the proposer saw them: amounts as decimal strings, states, and the outcome the honor would record." },
+          "proposed_by_key_id": { "type": "string", "format": "uuid" },
+          "proposed_by_label": { "type": "string" },
+          "created_at": { "$ref": "#/components/schemas/Timestamp" },
+          "expires_at": { "$ref": "#/components/schemas/Timestamp" },
+          "decided_by_key_id": { "type": ["string", "null"], "format": "uuid" },
+          "decided_by_label": { "type": ["string", "null"] },
+          "decision_reason": { "type": ["string", "null"] },
+          "decided_at": { "oneOf": [{ "type": "null" }, { "$ref": "#/components/schemas/Timestamp" }] },
+          "resolution_id": { "type": ["string", "null"], "format": "uuid" },
+          "replayed": { "type": "boolean" }
+        }
+      },
+      "WebhookRedelivery": {
+        "type": "object", "additionalProperties": false, "required": ["reason"],
+        "properties": {
+          "endpoint_id": { "type": ["string", "null"], "format": "uuid", "description": "One active endpoint of the event's merchant. Omitted means every active endpoint." },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 1000 }
+        }
+      },
+      "WebhookRedeliveryResult": {
+        "type": "object", "required": ["id", "event_id", "merchant_id", "endpoint_id", "previous_state", "previous_attempts", "requested_at", "replayed"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "event_id": { "type": "string", "format": "uuid" },
+          "merchant_id": { "type": "string", "format": "uuid" },
+          "endpoint_id": { "type": ["string", "null"], "format": "uuid" },
+          "previous_state": { "type": "string", "enum": ["delivered", "dead_lettered"] },
+          "previous_attempts": { "type": "integer", "minimum": 0 },
+          "requested_at": { "$ref": "#/components/schemas/Timestamp" },
           "replayed": { "type": "boolean" }
         }
       },
@@ -338,7 +420,76 @@
           "200": { "description": "The result of an identical idempotent replay.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ManualResolutionResult" } } } },
           "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" },
           "404": { "description": "manual_resolution_not_found: the transfer, intent, attempt or overpayment decision does not exist.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "409": { "description": "manual_resolution_conflict or idempotency_conflict: the requested transition is no longer eligible, would violate a money invariant, or reuses a key with a different command.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "manual_resolution_conflict or idempotency_conflict: the requested transition is no longer eligible, would violate a money invariant, or reuses a key with a different command. dual_control_required: an honor at or above GATEWAY_MANUAL_HONOR_DUAL_CONTROL_MIN_RAW (every honor when it is unset) must be proposed at /v1/operator/manual-honor-proposals and approved by a second key.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "503": { "$ref": "#/components/responses/StorageUnavailable" }
+        } }
+    },
+    "/v1/operator/accounting/settlements": {
+      "get": { "tags": ["operator"], "summary": "Settled money per merchant, asset and UTC day", "description": "Requires the read scope. The basis is the settlement decision, the row reconciliation compares with fulfilment: decisions with outcome settled, overpaid or partial count on the UTC day of decided_at. payments and fiat_minor count completed obligations (settled, overpaid) once each; partial allocations add raw units only. remainder_raw is the overpayment recorded, never absorbed. totals add the days per asset and fiat currency; control sums the payment_allocations rows behind the same decisions per asset and reports whether they agree. Rows are ordered by day, merchant, asset and currency. JSON by default; CSV (RFC 4180, formula-leading cells prefixed with a quote) with format=csv or an Accept header naming text/csv. At most 92 days and 20000 rows; a larger answer is refused, never truncated.", "security": [{ "operatorKey": ["read"] }],
+        "parameters": [
+          { "name": "from", "in": "query", "required": true, "schema": { "type": "string", "format": "date" }, "description": "First UTC day, inclusive." },
+          { "name": "to", "in": "query", "required": true, "schema": { "type": "string", "format": "date" }, "description": "Last UTC day, inclusive; at most 91 days after from." },
+          { "name": "merchant_id", "in": "query", "schema": { "type": "string", "format": "uuid" } },
+          { "name": "format", "in": "query", "schema": { "type": "string", "enum": ["json", "csv"] } }
+        ],
+        "responses": {
+          "200": { "description": "The export.", "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/SettlementExport" } },
+            "text/csv": { "schema": { "type": "string" }, "example": "row_type,day,merchant_id,merchant_external_id,asset_id,fiat_currency,payments,partial_payments,overpaid_payments,allocated_raw,fiat_minor,remainder_raw,control_balanced" }
+          } },
+          "400": { "description": "invalid_request, or export_range_invalid: the dates are not YYYY-MM-DD, from is after to, or the range is longer than 92 days.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" },
+          "422": { "description": "export_too_large: more than 20000 rows; narrow the range or name one merchant.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "503": { "$ref": "#/components/responses/StorageUnavailable" }
+        } }
+    },
+    "/v1/operator/manual-honor-proposals": {
+      "post": { "tags": ["operator"], "summary": "Propose an honor for a second operator", "description": "Requires the admin scope and an Idempotency-Key. Every check an honor makes is made against locked rows, and the proposal is stored with the command, a snapshot of those rows and the proposing key; no money is written. Honors allocating at least GATEWAY_MANUAL_HONOR_DUAL_CONTROL_MIN_RAW raw units must go through a proposal (unset: every honor). A proposal expires 24 hours after it is made, and a transfer has at most one pending proposal.", "security": [{ "operatorKey": ["admin"] }], "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HonorProposalRequest" } } } },
+        "responses": {
+          "201": { "description": "Proposed; nothing paid.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HonorProposal" } } } },
+          "200": { "description": "The result of an identical idempotent replay.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HonorProposal" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "description": "manual_resolution_not_found.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "manual_resolution_conflict (the honor would be refused now, or another proposal for the transfer is pending) or idempotency_conflict.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "503": { "$ref": "#/components/responses/StorageUnavailable" }
+        } },
+      "get": { "tags": ["operator"], "summary": "Honor proposals waiting for a second operator", "description": "Pending proposals that have not expired, newest first.", "security": [{ "operatorKey": ["read"] }], "parameters": [{ "$ref": "#/components/parameters/Limit" }, { "$ref": "#/components/parameters/Before" }],
+        "responses": { "200": { "description": "A keyset page.", "content": { "application/json": { "schema": { "type": "object", "required": ["items", "next_before"], "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/HonorProposal" } }, "next_before": { "type": ["string", "null"], "format": "uuid" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "503": { "$ref": "#/components/responses/StorageUnavailable" } } }
+    },
+    "/v1/operator/manual-honor-proposals/{proposal_id}/approve": {
+      "post": { "tags": ["operator"], "summary": "Approve a proposed honor with a second, different key", "description": "Requires the admin scope and an Idempotency-Key. The key that proposed cannot approve. The transfer, attempt and intent are locked and re-read, and every honor check runs again, so a proposal whose facts changed (an intent cancelled or paid, money allocated elsewhere, the late window closed) is refused and nothing is written. On success the honor is recorded under the approving key, the proposal names both keys, and exactly one payment_intent.paid webhook is queued.", "security": [{ "operatorKey": ["admin"] }], "parameters": [{ "$ref": "#/components/parameters/ProposalId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HonorDecision" } } } },
+        "responses": {
+          "201": { "description": "Approved and paid atomically.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ManualResolutionResult" } } } },
+          "200": { "description": "The result of an identical idempotent replay.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ManualResolutionResult" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "description": "missing_scope, or dual_control_same_operator: the approving key is the proposing key.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "honor_proposal_not_found or manual_resolution_not_found.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "honor_proposal_not_pending, honor_proposal_expired, manual_resolution_conflict (the facts changed since the proposal) or idempotency_conflict.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "503": { "$ref": "#/components/responses/StorageUnavailable" }
+        } }
+    },
+    "/v1/operator/manual-honor-proposals/{proposal_id}/reject": {
+      "post": { "tags": ["operator"], "summary": "Refuse a proposed honor", "description": "Requires the admin scope and an Idempotency-Key. Any admin key, the proposer included, may close a pending proposal without paying. Recorded with its reason and audited.", "security": [{ "operatorKey": ["admin"] }], "parameters": [{ "$ref": "#/components/parameters/ProposalId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HonorDecision" } } } },
+        "responses": {
+          "200": { "description": "Rejected, or the replay of the same rejection.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HonorProposal" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "description": "honor_proposal_not_found.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "honor_proposal_not_pending or idempotency_conflict.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "503": { "$ref": "#/components/responses/StorageUnavailable" }
+        } }
+    },
+    "/v1/operator/webhook-events/{event_id}/redeliver": {
+      "post": { "tags": ["operator"], "summary": "Send a webhook event again, as the same event", "description": "Requires the admin scope and an Idempotency-Key. Re-queues a delivered or dead-lettered webhook event in place: the same event id, payload and created_at, so a merchant that already processed it deduplicates it. Aimed at one active endpoint of the event's merchant, or at every active endpoint when endpoint_id is omitted. The retry budget starts again; attempt numbers keep growing, so earlier delivery records are kept. The request, its reason and the operator are recorded with an audit row in the same transaction. The admin command line offers the same operation as webhook-redeliver.", "security": [{ "operatorKey": ["admin"] }], "parameters": [{ "$ref": "#/components/parameters/EventId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebhookRedelivery" } } } },
+        "responses": {
+          "201": { "description": "Queued again.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebhookRedeliveryResult" } } } },
+          "200": { "description": "The result of an identical idempotent replay.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebhookRedeliveryResult" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "description": "webhook_event_not_found, or webhook_endpoint_not_found: the endpoint is not an active endpoint of the event's merchant, or the merchant has none.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "webhook_event_still_queued (the event has not finished; it is not queued twice), not_a_webhook_event (an operator-channel event), or idempotency_conflict.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "503": { "$ref": "#/components/responses/StorageUnavailable" }
         } }
     },

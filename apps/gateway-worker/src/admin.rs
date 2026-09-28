@@ -14,7 +14,8 @@ use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{Context, Result, anyhow, bail};
 use gateway_application::{
-    CollectorPolicy, NewCollector, ProvisioningError, ProvisioningService, RandomBytes, SystemClock,
+    CollectorPolicy, ListRequest, NewCollector, ProvisioningError, ProvisioningService,
+    RandomBytes, SystemClock, WebhookRedelivery,
 };
 use gateway_storage::{PgPoolOptions, PostgresRepository};
 use serde_json::{Value, json};
@@ -37,7 +38,23 @@ commands:
                        | [--merchant <uuid>] --manual-evidence <who checked and how>)
   collector-stop-quoting --collector <uuid> --reason <text>
   collector-retire    --collector <uuid> --reason <text> [--compromised yes]
-                      (refused while a reservation remains, unless compromised)";
+                      (refused while a reservation remains, unless compromised)
+  webhook-redeliver   --event <uuid> --reason <text> --idempotency-key <16-128 chars>
+                      [--endpoint <uuid>]
+                      (the same event id and payload again; one endpoint or all)
+
+read-only commands (no --actor; never print a secret or a hash):
+  merchant-list       [--limit <1..200>] [--cursor <uuid>]
+  api-key-list        --merchant <uuid> [--limit <1..200>] [--cursor <uuid>]
+  webhook-list        --merchant <uuid> [--limit <1..200>] [--cursor <uuid>]
+  collector-list      [--merchant <uuid>] [--limit <1..200>] [--cursor <uuid>]";
+
+const READ_COMMANDS: [&str; 4] = [
+    "merchant-list",
+    "api-key-list",
+    "webhook-list",
+    "collector-list",
+];
 
 struct OsRandom;
 
@@ -54,7 +71,12 @@ pub async fn run(args: &[String]) -> Result<()> {
         // Builds the text to sign; touches no database.
         return print(&statement(&flags)?);
     }
-    let actor = flag(&flags, "actor")?;
+    let read_only = READ_COMMANDS.contains(&command);
+    let actor = if read_only {
+        ""
+    } else {
+        flag(&flags, "actor")?
+    };
     let database_url =
         std::env::var("GATEWAY_DATABASE_URL").context("GATEWAY_DATABASE_URL is required")?;
     let master_key = match std::env::var("GATEWAY_WEBHOOK_MASTER_KEY") {
@@ -75,7 +97,11 @@ pub async fn run(args: &[String]) -> Result<()> {
         OsRandom,
         master_key,
     );
-    let output = execute(&service, command, &flags, actor).await?;
+    let output = if read_only {
+        list(&service, command, &flags).await?
+    } else {
+        execute(&service, command, &flags, actor).await?
+    };
     print(&output)
 }
 
@@ -144,6 +170,7 @@ async fn execute(
             })
         }
         "collector-register" => register_collector(service, flags, actor).await?,
+        "webhook-redeliver" => redeliver(service, flags, actor).await?,
         "collector-stop-quoting" => {
             let collector = uuid(flags, "collector")?;
             service
@@ -169,6 +196,145 @@ async fn execute(
         }
         other => bail!("unknown admin command {other}\n\n{USAGE}"),
     })
+}
+
+async fn redeliver(
+    service: &ProvisioningService<PostgresRepository, SystemClock, OsRandom>,
+    flags: &HashMap<String, String>,
+    actor: &str,
+) -> Result<Value> {
+    let request = WebhookRedelivery {
+        event_id: uuid(flags, "event")?,
+        endpoint_id: flags
+            .get("endpoint")
+            .map(|value| parse_uuid("endpoint", value))
+            .transpose()?,
+        reason: flag(flags, "reason")?.to_owned(),
+    };
+    let result = service
+        .redeliver_webhook(actor, flag(flags, "idempotency-key")?, &request)
+        .await?;
+    Ok(json!({
+        "redelivery_id": result.id,
+        "event_id": result.event_id,
+        "merchant_id": result.merchant_id,
+        "endpoint_id": result.endpoint_id,
+        "previous_state": result.previous_state,
+        "previous_attempts": result.previous_attempts,
+        "requested_at": rfc3339(result.requested_at)?,
+        "replayed": result.replayed,
+        "note": "queued again with the same event id; merchants deduplicate by it",
+    }))
+}
+
+// One flat table of read-only commands; splitting it would scatter it.
+#[allow(clippy::too_many_lines)]
+async fn list(
+    service: &ProvisioningService<PostgresRepository, SystemClock, OsRandom>,
+    command: &str,
+    flags: &HashMap<String, String>,
+) -> Result<Value> {
+    let limit = flags
+        .get("limit")
+        .map(|value| value.parse::<u32>())
+        .transpose()
+        .context("--limit must be a whole number")?;
+    let cursor = flags
+        .get("cursor")
+        .map(|value| parse_uuid("cursor", value))
+        .transpose()?;
+    let page = ListRequest::new(limit, cursor)?;
+    let (items, next_cursor) = match command {
+        "merchant-list" => {
+            let listing = service.list_merchants(page).await?;
+            let items = listing
+                .items
+                .into_iter()
+                .map(|merchant| {
+                    Ok(json!({
+                        "merchant_id": merchant.id,
+                        "external_id": merchant.external_id,
+                        "display_name": merchant.display_name,
+                        "status": merchant.status,
+                        "collector_policy": merchant.collector_policy,
+                        "created_at": rfc3339(merchant.created_at)?,
+                    }))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            (items, listing.next_cursor)
+        }
+        "api-key-list" => {
+            let listing = service
+                .list_api_keys(uuid(flags, "merchant")?, page)
+                .await?;
+            let items = listing
+                .items
+                .into_iter()
+                .map(|key| {
+                    Ok(json!({
+                        "key_id": key.id,
+                        "merchant_id": key.merchant_id,
+                        "prefix": key.prefix,
+                        "label": key.label,
+                        "created_at": rfc3339(key.created_at)?,
+                        "last_used_at": key.last_used_at.map(rfc3339).transpose()?,
+                        "revoked_at": key.revoked_at.map(rfc3339).transpose()?,
+                    }))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            (items, listing.next_cursor)
+        }
+        "webhook-list" => {
+            let listing = service
+                .list_webhook_endpoints(uuid(flags, "merchant")?, page)
+                .await?;
+            let items = listing
+                .items
+                .into_iter()
+                .map(|endpoint| {
+                    Ok(json!({
+                        "endpoint_id": endpoint.id,
+                        "merchant_id": endpoint.merchant_id,
+                        "url": endpoint.url,
+                        "description": endpoint.description,
+                        "status": endpoint.status,
+                        "secret_version": endpoint.secret_version,
+                        "previous_secret_signs_until":
+                            endpoint.previous_secret_valid_until.map(rfc3339).transpose()?,
+                        "created_at": rfc3339(endpoint.created_at)?,
+                        "disabled_at": endpoint.disabled_at.map(rfc3339).transpose()?,
+                    }))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            (items, listing.next_cursor)
+        }
+        "collector-list" => {
+            let merchant = flags
+                .get("merchant")
+                .map(|value| parse_uuid("merchant", value))
+                .transpose()?;
+            let listing = service.list_collectors(merchant, page).await?;
+            let items = listing
+                .items
+                .into_iter()
+                .map(|collector| {
+                    Ok(json!({
+                        "collector_id": collector.id,
+                        "asset_id": collector.asset_id,
+                        "merchant_id": collector.merchant_id,
+                        "address": collector.address,
+                        "state": collector.state,
+                        "open_reservations": collector.open_reservations,
+                        "valid_from": rfc3339(collector.valid_from)?,
+                        "retired_at": collector.retired_at.map(rfc3339).transpose()?,
+                    }))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            (items, listing.next_cursor)
+        }
+        other => bail!("unknown admin command {other}\n\n{USAGE}"),
+    };
+    Ok(json!({ "items": items, "next_cursor": next_cursor }))
 }
 
 async fn add_webhook(

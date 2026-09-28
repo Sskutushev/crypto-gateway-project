@@ -1,8 +1,9 @@
 use std::{error::Error, str::FromStr};
 
 use gateway_application::{
-    ManualResolution, OperationsError, OperationsRepository, OperationsService, OperatorScope,
-    QuoteRepository, RepositoryError, RiskSubmission, SystemClock,
+    HonorApprovalPolicy, ManualResolution, OperationsError, OperationsRepository,
+    OperationsService, OperatorScope, ProposalStatus, QuoteRepository, RepositoryError,
+    RiskSubmission, SystemClock,
 };
 use gateway_domain::{
     CurrencyCode, ManualResolutionAction, PriceReading, RailHealth, RawAmount,
@@ -46,7 +47,7 @@ async fn evidence_is_ingested_with_its_readings_and_a_stop_closes_new_quotes() -
     let pool = connect().await?;
     seed(&pool).await?;
     let repository = Arc::new(PostgresRepository::new(pool.clone()));
-    let service = OperationsService::new(Arc::clone(&repository), SystemClock);
+    let service = single_operator(Arc::clone(&repository));
     let currency = CurrencyCode::new("AED")?;
 
     let ingester = repository
@@ -112,7 +113,7 @@ async fn a_closed_rail_stops_new_quotes_and_only_a_person_reopens_it() -> TestRe
     let pool = connect().await?;
     seed(&pool).await?;
     let repository = Arc::new(PostgresRepository::new(pool.clone()));
-    let service = OperationsService::new(Arc::clone(&repository), SystemClock);
+    let service = single_operator(Arc::clone(&repository));
     let currency = CurrencyCode::new("AED")?;
     let ingester = repository
         .authenticate_operator_key(&digest(INGEST_SECRET))
@@ -207,7 +208,7 @@ async fn manual_honor_is_atomic_idempotent_and_cannot_be_retargeted() -> TestRes
     seed(&pool).await?;
     seed_manual_payment(&pool).await?;
     let repository = Arc::new(PostgresRepository::new(pool.clone()));
-    let service = OperationsService::new(Arc::clone(&repository), SystemClock);
+    let service = single_operator(Arc::clone(&repository));
     let admin = repository
         .authenticate_operator_key(&digest(ADMIN_SECRET))
         .await?
@@ -297,7 +298,7 @@ async fn manual_reject_closes_only_unallocated_parked_money() -> TestResult {
     seed(&pool).await?;
     seed_manual_payment(&pool).await?;
     let repository = Arc::new(PostgresRepository::new(pool.clone()));
-    let service = OperationsService::new(Arc::clone(&repository), SystemClock);
+    let service = single_operator(Arc::clone(&repository));
     let admin = repository
         .authenticate_operator_key(&digest(ADMIN_SECRET))
         .await?
@@ -346,7 +347,7 @@ async fn overpayment_disposition_records_external_action_without_claiming_a_refu
         .execute(&pool)
         .await?;
     let repository = Arc::new(PostgresRepository::new(pool.clone()));
-    let service = OperationsService::new(Arc::clone(&repository), SystemClock);
+    let service = single_operator(Arc::clone(&repository));
     let admin = repository
         .authenticate_operator_key(&digest(ADMIN_SECRET))
         .await?
@@ -419,7 +420,7 @@ async fn only_the_provider_bound_risk_key_can_submit_current_evidence() -> TestR
     seed(&pool).await?;
     seed_manual_payment(&pool).await?;
     let repository = Arc::new(PostgresRepository::new(pool));
-    let service = OperationsService::new(Arc::clone(&repository), SystemClock);
+    let service = single_operator(Arc::clone(&repository));
     let price_key = repository
         .authenticate_operator_key(&digest(INGEST_SECRET))
         .await?
@@ -459,6 +460,18 @@ async fn only_the_provider_bound_risk_key_can_submit_current_evidence() -> TestR
         Err(OperationsError::InvalidRiskEvaluation)
     ));
     Ok(())
+}
+
+/// A deployment that configured a threshold above every amount these
+/// scenarios honor: one operator decides, as before dual control existed.
+fn single_operator(
+    repository: Arc<PostgresRepository>,
+) -> OperationsService<PostgresRepository, SystemClock> {
+    OperationsService::new(repository, SystemClock).with_honor_approval_policy(
+        HonorApprovalPolicy {
+            dual_control_min_raw: RawAmount::from_str("1000000000000").unwrap_or(RawAmount::ZERO),
+        },
+    )
 }
 
 fn digest(secret: &str) -> [u8; 32] {
@@ -809,7 +822,7 @@ async fn admin_service(
         .authenticate_operator_key(&digest(ADMIN_SECRET))
         .await?
         .ok_or("the seeded admin key did not authenticate")?;
-    Ok((OperationsService::new(repository, SystemClock), admin))
+    Ok((single_operator(repository), admin))
 }
 
 #[tokio::test]
@@ -1101,5 +1114,440 @@ async fn the_database_itself_refuses_an_allocation_across_collectors() -> TestRe
 
     let refused = matches!(&written, Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("23503"));
     assert!(refused, "expected a foreign-key refusal, got {written:?}");
+    Ok(())
+}
+
+const SECOND_ADMIN_KEY: Uuid = Uuid::from_u128(9_630);
+const THIRD_ADMIN_KEY: Uuid = Uuid::from_u128(9_631);
+const SECOND_ADMIN_SECRET: &str = "operator-second-admin-secret-00000";
+const THIRD_ADMIN_SECRET: &str = "operator-third-admin-secret-000000";
+
+/// The seeded payment, the seeded admin key, two more admin keys, and a
+/// service with nothing configured: every honor needs a second operator.
+async fn dual_control(
+    pool: &PgPool,
+) -> Result<
+    (
+        OperationsService<PostgresRepository, SystemClock>,
+        [gateway_application::OperatorCredential; 3],
+    ),
+    Box<dyn Error>,
+> {
+    seed(pool).await?;
+    seed_manual_payment(pool).await?;
+    for (id, secret, label) in [
+        (SECOND_ADMIN_KEY, SECOND_ADMIN_SECRET, "second-on-call"),
+        (THIRD_ADMIN_KEY, THIRD_ADMIN_SECRET, "third-on-call"),
+    ] {
+        sqlx::query(
+            "INSERT INTO operator_api_keys (id, key_prefix, secret_hash, label, scopes) VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(id)
+        .bind(&secret[..12])
+        .bind(digest(secret).as_slice())
+        .bind(label)
+        .bind(vec!["read", "admin"])
+        .execute(pool)
+        .await?;
+    }
+    let repository = Arc::new(PostgresRepository::new(pool.clone()));
+    let mut keys = Vec::new();
+    for secret in [ADMIN_SECRET, SECOND_ADMIN_SECRET, THIRD_ADMIN_SECRET] {
+        keys.push(
+            repository
+                .authenticate_operator_key(&digest(secret))
+                .await?
+                .ok_or("a seeded admin key did not authenticate")?,
+        );
+    }
+    let keys: [gateway_application::OperatorCredential; 3] = keys
+        .try_into()
+        .map_err(|_| "three admin keys were seeded")?;
+    Ok((OperationsService::new(repository, SystemClock), keys))
+}
+
+async fn proposal_status(pool: &PgPool, id: Uuid) -> Result<String, Box<dyn Error>> {
+    Ok(
+        sqlx::query_scalar("SELECT status FROM manual_honor_proposals WHERE id=$1")
+            .bind(id)
+            .fetch_one(pool)
+            .await?,
+    )
+}
+
+#[tokio::test]
+#[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+#[allow(clippy::too_many_lines)]
+async fn a_second_operator_approves_an_honor_once_and_the_proposer_cannot() -> TestResult {
+    let _fixture = DATABASE.lock().await;
+    let pool = connect().await?;
+    let (service, [proposer, second, third]) = dual_control(&pool).await?;
+    let command = honor(MANUAL_TRANSFER, MANUAL_INTENT, MANUAL_ATTEMPT)?;
+
+    // Nothing configured: one operator alone cannot honor.
+    assert!(matches!(
+        service
+            .resolve_manual(&proposer, "dual-direct-honor-0001", &command)
+            .await,
+        Err(OperationsError::DualControlRequired)
+    ));
+
+    let proposal = service
+        .propose_honor(&proposer, "dual-proposal-000001", &command)
+        .await?;
+    assert_eq!(proposal.status, ProposalStatus::Pending);
+    assert_eq!(proposal.proposed_by_key_id, ADMIN_KEY);
+    assert_eq!(proposal.evidence["intent_status"], "risk_hold");
+    assert_eq!(proposal.evidence["transfer_raw"], "1000000");
+    let replay = service
+        .propose_honor(&proposer, "dual-proposal-000001", &command)
+        .await?;
+    assert!(replay.replayed);
+    assert_eq!(replay.id, proposal.id);
+    let pending = service.pending_honor_proposals(&second, None, None).await?;
+    assert_eq!(
+        pending.items.iter().map(|item| item.id).collect::<Vec<_>>(),
+        vec![proposal.id]
+    );
+    // A proposal is a question, not a payment.
+    assert_nothing_moved(&pool, MANUAL_TRANSFER, "risk_hold").await?;
+
+    assert!(matches!(
+        service
+            .approve_honor(
+                &proposer,
+                proposal.id,
+                "dual-approve-self-001",
+                "looks right"
+            )
+            .await,
+        Err(OperationsError::SameOperator)
+    ));
+    assert_nothing_moved(&pool, MANUAL_TRANSFER, "risk_hold").await?;
+
+    // Two different approvers at once: one pays, the other finds it decided.
+    let (left, right) = tokio::join!(
+        service.approve_honor(
+            &second,
+            proposal.id,
+            "dual-approve-second-01",
+            "checked the tx"
+        ),
+        service.approve_honor(
+            &third,
+            proposal.id,
+            "dual-approve-third-001",
+            "checked the tx"
+        ),
+    );
+    let (approved, approving_key) = match (left, right) {
+        (Ok(result), Err(OperationsError::HonorProposalNotPending)) => (result, SECOND_ADMIN_KEY),
+        (Err(OperationsError::HonorProposalNotPending), Ok(result)) => (result, THIRD_ADMIN_KEY),
+        other => return Err(format!("expected exactly one approval, got {other:?}").into()),
+    };
+    assert_eq!(approved.allocated_raw, command.allocate_raw);
+    let status: String = sqlx::query_scalar("SELECT status FROM payment_intents WHERE id=$1")
+        .bind(MANUAL_INTENT)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(status, "paid");
+    for (table, expected) in [
+        ("payment_allocations", 1_i64),
+        ("payment_fulfillments", 1_i64),
+        ("manual_resolution_requests", 1_i64),
+    ] {
+        let rows: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(rows, expected, "{table}");
+    }
+    let paid: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM domain_events WHERE event_type='payment_intent.paid' AND aggregate_id=$1",
+    )
+    .bind(MANUAL_INTENT)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(paid, 1);
+    // Both people are on record: the approver executed, the proposer asked.
+    let executed_by: Uuid =
+        sqlx::query_scalar("SELECT operator_key_id FROM manual_resolution_requests WHERE id=$1")
+            .bind(approved.id)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(executed_by, approving_key);
+    let closed: (String, Option<Uuid>, Uuid, Option<Uuid>) = sqlx::query_as(
+        "SELECT status, decided_by_key_id, proposer_key_id, resolution_id FROM manual_honor_proposals WHERE id=$1",
+    )
+    .bind(proposal.id)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(
+        closed,
+        (
+            "approved".to_owned(),
+            Some(approving_key),
+            ADMIN_KEY,
+            Some(approved.id)
+        )
+    );
+    let mut actions: Vec<String> = sqlx::query_scalar(
+        "SELECT action FROM audit_events WHERE actor_type='operator' ORDER BY action",
+    )
+    .fetch_all(&pool)
+    .await?;
+    actions.dedup();
+    assert_eq!(actions, vec!["honor", "honor.approve", "honor.propose"]);
+    assert!(
+        service
+            .pending_honor_proposals(&second, None, None)
+            .await?
+            .items
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+async fn an_expired_proposal_pays_nothing_and_can_be_asked_again() -> TestResult {
+    let _fixture = DATABASE.lock().await;
+    let pool = connect().await?;
+    let (service, [proposer, second, _]) = dual_control(&pool).await?;
+    let command = honor(MANUAL_TRANSFER, MANUAL_INTENT, MANUAL_ATTEMPT)?;
+    let proposal = service
+        .propose_honor(&proposer, "dual-expiring-000001", &command)
+        .await?;
+    sqlx::query(
+        "UPDATE manual_honor_proposals SET created_at = now() - interval '25 hours', expires_at = now() - interval '1 hour' WHERE id=$1",
+    )
+    .bind(proposal.id)
+    .execute(&pool)
+    .await?;
+
+    let late = service
+        .approve_honor(
+            &second,
+            proposal.id,
+            "dual-approve-late-001",
+            "back from leave",
+        )
+        .await;
+
+    assert!(
+        matches!(late, Err(OperationsError::HonorProposalExpired)),
+        "{late:?}"
+    );
+    assert_nothing_moved(&pool, MANUAL_TRANSFER, "risk_hold").await?;
+    // The stale question does not block a fresh one.
+    let fresh = service
+        .propose_honor(&proposer, "dual-expiring-000002", &command)
+        .await?;
+    assert_eq!(proposal_status(&pool, proposal.id).await?, "expired");
+    assert_eq!(fresh.status, ProposalStatus::Pending);
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+async fn an_approval_after_the_facts_changed_is_refused_with_no_money_written() -> TestResult {
+    let _fixture = DATABASE.lock().await;
+    let pool = connect().await?;
+    let (service, [proposer, second, _]) = dual_control(&pool).await?;
+    let command = honor(MANUAL_TRANSFER, MANUAL_INTENT, MANUAL_ATTEMPT)?;
+    let proposal = service
+        .propose_honor(&proposer, "dual-changed-0000001", &command)
+        .await?;
+    // The merchant cancels the order between the question and the answer.
+    sqlx::query("UPDATE payment_intents SET status='cancelled' WHERE id=$1")
+        .bind(MANUAL_INTENT)
+        .execute(&pool)
+        .await?;
+
+    let result = service
+        .approve_honor(
+            &second,
+            proposal.id,
+            "dual-approve-changed1",
+            "looked fine earlier",
+        )
+        .await;
+
+    assert!(
+        matches!(result, Err(OperationsError::ManualResolutionConflict)),
+        "{result:?}"
+    );
+    assert_nothing_moved(&pool, MANUAL_TRANSFER, "cancelled").await?;
+    assert_eq!(proposal_status(&pool, proposal.id).await?, "pending");
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+async fn a_rejected_proposal_cannot_be_approved_and_below_the_threshold_one_operator_decides()
+-> TestResult {
+    let _fixture = DATABASE.lock().await;
+    let pool = connect().await?;
+    let (service, [proposer, second, third]) = dual_control(&pool).await?;
+    let command = honor(MANUAL_TRANSFER, MANUAL_INTENT, MANUAL_ATTEMPT)?;
+    let proposal = service
+        .propose_honor(&proposer, "dual-rejected-000001", &command)
+        .await?;
+    let rejected = service
+        .reject_honor(&second, proposal.id, "dual-reject-00000001", "wrong payer")
+        .await?;
+    assert_eq!(rejected.status, ProposalStatus::Rejected);
+    let again = service
+        .reject_honor(&second, proposal.id, "dual-reject-00000001", "wrong payer")
+        .await?;
+    assert!(again.replayed);
+    assert!(matches!(
+        service
+            .approve_honor(&third, proposal.id, "dual-approve-rejected", "overrule")
+            .await,
+        Err(OperationsError::HonorProposalNotPending)
+    ));
+    assert_nothing_moved(&pool, MANUAL_TRANSFER, "risk_hold").await?;
+
+    // With a threshold above the amount, the same honor needs one operator.
+    let below =
+        OperationsService::new(Arc::new(PostgresRepository::new(pool.clone())), SystemClock)
+            .with_honor_approval_policy(HonorApprovalPolicy {
+                dual_control_min_raw: RawAmount::from_str("1000001")?,
+            });
+    let paid = below
+        .resolve_manual(&proposer, "dual-below-threshold-1", &command)
+        .await?;
+    assert_eq!(paid.allocated_raw, command.allocate_raw);
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires GATEWAY_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+#[allow(clippy::too_many_lines)]
+async fn the_settlement_export_adds_up_to_the_money_that_was_allocated() -> TestResult {
+    let _fixture = DATABASE.lock().await;
+    let pool = connect().await?;
+    seed(&pool).await?;
+    seed_manual_payment(&pool).await?;
+    sqlx::query("UPDATE chain_transfers SET amount_raw=1200000 WHERE id=$1")
+        .bind(MANUAL_TRANSFER)
+        .execute(&pool)
+        .await?;
+    let repository = Arc::new(PostgresRepository::new(pool.clone()));
+    let (operations, admin) = admin_service(&pool).await?;
+    operations
+        .resolve_manual(
+            &admin,
+            "export-honor-overpaid-1",
+            &honor(MANUAL_TRANSFER, MANUAL_INTENT, MANUAL_ATTEMPT)?,
+        )
+        .await?;
+    // A decision that moved no money is not settled money.
+    seed_transfer(
+        &pool,
+        FOREIGN_TRANSFER,
+        ASSET_ID,
+        COLLECTOR_ID,
+        [11_u8; 20],
+        [12_u8; 21],
+        OffsetDateTime::now_utc(),
+    )
+    .await?;
+    sqlx::query(
+        r"INSERT INTO payment_settlement_decisions(id,payment_intent_id,attempt_id,transfer_id,merchant_id,
+              fiat_amount_minor,required_policy,distinct_groups,had_own_node,finality_state,risk_decision,
+              attestation_ids,match_strategy,allocated_raw,remainder_raw,outcome,decided_by,decided_at)
+          VALUES($1,$2,$3,$4,$5,100,'test',2,false,'finalized','review','{}','exact_amount',0,0,'held','test',now())",
+    )
+    .bind(Uuid::now_v7())
+    .bind(MANUAL_INTENT)
+    .bind(MANUAL_ATTEMPT)
+    .bind(FOREIGN_TRANSFER)
+    .bind(MANUAL_MERCHANT)
+    .execute(&pool)
+    .await?;
+
+    let reads = gateway_application::OperatorReadService::new(Arc::clone(&repository));
+    let today = OffsetDateTime::now_utc().date();
+    let yesterday = today.previous_day().ok_or("no yesterday")?;
+    let export = reads
+        .settlement_export(&admin, &today.to_string(), &today.to_string(), None)
+        .await?;
+
+    assert_eq!(export.days.len(), 1, "{export:?}");
+    let row = &export.days[0];
+    assert_eq!(
+        (row.merchant_id, row.asset_id, row.fiat_currency.as_str()),
+        (MANUAL_MERCHANT, ASSET_ID, "AED")
+    );
+    assert_eq!(row.merchant_external_id, "manual-merchant");
+    assert_eq!(
+        (row.payments, row.partial_payments, row.overpaid_payments),
+        (1, 0, 1)
+    );
+    assert_eq!(row.allocated_raw.to_string(), "1000000");
+    assert_eq!(row.fiat_minor, 100);
+    assert_eq!(row.remainder_raw.to_string(), "200000");
+    assert_eq!(export.totals.len(), 1);
+    assert_eq!(export.totals[0].allocated_raw, row.allocated_raw);
+    // The control sum is the allocation table's own, and it agrees.
+    let allocated: String =
+        sqlx::query_scalar("SELECT sum(allocated_raw)::text FROM payment_allocations")
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(export.control.allocations.len(), 1);
+    assert_eq!(
+        export.control.allocations[0].allocated_raw.to_string(),
+        allocated
+    );
+    assert_eq!(export.control.allocations[0].allocation_rows, 1);
+    assert!(export.control.balanced);
+
+    // Nothing was settled yesterday, and nothing for another merchant.
+    assert!(
+        reads
+            .settlement_export(&admin, &yesterday.to_string(), &yesterday.to_string(), None)
+            .await?
+            .days
+            .is_empty()
+    );
+    assert!(
+        reads
+            .settlement_export(
+                &admin,
+                &today.to_string(),
+                &today.to_string(),
+                Some(OTHER_MERCHANT)
+            )
+            .await?
+            .days
+            .is_empty()
+    );
+    // A key without read, and a range past the ceiling, are refused.
+    let ingester = repository
+        .authenticate_operator_key(&digest(INGEST_SECRET))
+        .await?
+        .ok_or("the seeded ingest key did not authenticate")?;
+    assert!(matches!(
+        reads
+            .settlement_export(&ingester, &today.to_string(), &today.to_string(), None)
+            .await,
+        Err(OperationsError::MissingScope(OperatorScope::Read))
+    ));
+    assert!(matches!(
+        reads
+            .settlement_export(&admin, "2026-01-01", "2026-06-01", None)
+            .await,
+        Err(OperationsError::ExportRangeInvalid)
+    ));
+
+    // An allocation row that disagrees with its decision is shown, not hidden.
+    sqlx::query("UPDATE payment_allocations SET allocated_raw = allocated_raw - 1")
+        .execute(&pool)
+        .await?;
+    let drifted = reads
+        .settlement_export(&admin, &today.to_string(), &today.to_string(), None)
+        .await?;
+    assert!(!drifted.control.balanced);
     Ok(())
 }

@@ -4,9 +4,10 @@ use async_trait::async_trait;
 use gateway_application::{
     ChainReader, Clock, ComponentLease, HealthRepository, ObservationRepository,
     OperationsRepository, OutboxError, OutboxRepository, OutboxService, ReconciliationError,
-    ReconciliationKind, ReconciliationRepository, ReconciliationService, SettlementRepository,
-    SettlementService, SettlementServiceError, VerificationRepository, VerificationService,
-    VerificationServiceError, WebhookSender,
+    ReconciliationKind, ReconciliationRepository, ReconciliationService, RetentionError,
+    RetentionRepository, RetentionService, SettlementRepository, SettlementService,
+    SettlementServiceError, VerificationRepository, VerificationService, VerificationServiceError,
+    WebhookSender,
 };
 
 use crate::worker::{BatchOutcome, LeasedWorker, WorkerError};
@@ -251,6 +252,63 @@ where
 
 #[allow(clippy::needless_pass_by_value)]
 fn classify_reconciliation(error: ReconciliationError) -> WorkerError {
+    if error.is_transient() {
+        return WorkerError::Transient(error.to_string());
+    }
+    WorkerError::Permanent(error.to_string())
+}
+
+/// Deletes what retention allows, one bounded batch at a time.
+#[derive(Debug)]
+pub struct RetentionWorker<R, C> {
+    service: Arc<RetentionService<R, C>>,
+    component: String,
+    batch_limit: u32,
+}
+
+impl<R, C> RetentionWorker<R, C> {
+    pub fn new(
+        service: Arc<RetentionService<R, C>>,
+        component: impl Into<String>,
+        batch_limit: u32,
+    ) -> Self {
+        Self {
+            service,
+            component: component.into(),
+            batch_limit,
+        }
+    }
+}
+
+#[async_trait]
+impl<R, C> LeasedWorker for RetentionWorker<R, C>
+where
+    R: RetentionRepository,
+    C: Clock,
+{
+    fn component(&self) -> &str {
+        &self.component
+    }
+
+    fn name(&self) -> &'static str {
+        "retention"
+    }
+
+    async fn run_batch(&self, _lease: &ComponentLease) -> Result<BatchOutcome, WorkerError> {
+        let report = self
+            .service
+            .purge_batch(self.batch_limit)
+            .await
+            .map_err(classify_retention)?;
+        Ok(BatchOutcome {
+            processed: u32::try_from(report.deleted()).unwrap_or(u32::MAX),
+            drained: report.drained,
+        })
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn classify_retention(error: RetentionError) -> WorkerError {
     if error.is_transient() {
         return WorkerError::Transient(error.to_string());
     }

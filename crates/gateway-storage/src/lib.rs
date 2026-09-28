@@ -1,5 +1,7 @@
+mod accounting;
 mod capacity;
 mod checkout;
+mod honor_proposals;
 mod observations;
 mod operations;
 mod operator_reads;
@@ -7,6 +9,9 @@ mod outbox;
 mod oversight;
 mod postgres;
 mod provisioning;
+mod provisioning_reads;
+mod redelivery;
+mod retention;
 mod roles;
 mod self_check;
 mod settlement;

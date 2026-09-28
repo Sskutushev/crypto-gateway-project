@@ -20,6 +20,8 @@ struct OutboxEventRow {
     payload: Value,
     attempts: i32,
     created_at: OffsetDateTime,
+    target_endpoint_id: Option<Uuid>,
+    attempt_floor: i32,
 }
 
 impl From<OutboxEventRow> for OutboxEvent {
@@ -33,6 +35,8 @@ impl From<OutboxEventRow> for OutboxEvent {
             payload: row.payload,
             attempts: row.attempts,
             created_at: row.created_at,
+            target_endpoint_id: row.target_endpoint_id,
+            attempt_floor: row.attempt_floor,
         }
     }
 }
@@ -82,6 +86,7 @@ impl OutboxRepository for PostgresRepository {
         &self,
         holder: &str,
         limit: u32,
+        per_merchant_limit: u32,
         visibility_seconds: i64,
         now: OffsetDateTime,
     ) -> Result<Vec<OutboxEvent>, RepositoryError> {
@@ -95,33 +100,53 @@ impl OutboxRepository for PostgresRepository {
             .ok_or_else(|| corrupt("the delivery visibility window overflowed"))?;
 
         // Claiming under SKIP LOCKED lets several delivery workers share the
-        // queue without ever handing the same event to two of them.
+        // queue without ever handing the same event to two of them. The rank
+        // bounds each merchant's share of one batch: taking the oldest events
+        // alone would give a merchant with a deep backlog every batch, and a
+        // slow endpoint of theirs every other merchant's delivery time. The
+        // outer query repeats the due conditions because a row locked after
+        // the rank was taken is re-checked against its newest version only.
         let rows = sqlx::query_as::<_, OutboxEventRow>(
             r"
-            WITH due AS (
-                SELECT id
+            WITH ranked AS (
+                SELECT id,
+                       row_number() OVER (PARTITION BY merchant_id
+                                          ORDER BY available_at, id) AS position
                   FROM domain_events
                  WHERE channel = 'webhook'
                    AND delivered_at IS NULL
                    AND dead_lettered_at IS NULL
                    AND available_at <= $3
                    AND (claimed_until IS NULL OR claimed_until < $3)
-                 ORDER BY available_at
+            ),
+            due AS (
+                SELECT event.id
+                  FROM domain_events AS event
+                  JOIN ranked ON ranked.id = event.id
+                 WHERE ranked.position <= $5
+                   AND event.channel = 'webhook'
+                   AND event.delivered_at IS NULL
+                   AND event.dead_lettered_at IS NULL
+                   AND event.available_at <= $3
+                   AND (event.claimed_until IS NULL OR event.claimed_until < $3)
+                 ORDER BY event.available_at, event.id
                  LIMIT $2
-                 FOR UPDATE SKIP LOCKED
+                 FOR UPDATE OF event SKIP LOCKED
             )
             UPDATE domain_events AS event
                SET claimed_by = $1, claimed_until = $4
               FROM due
              WHERE event.id = due.id
             RETURNING event.id, event.merchant_id, event.event_type, event.aggregate_type,
-                      event.aggregate_id, event.payload, event.attempts, event.created_at
+                      event.aggregate_id, event.payload, event.attempts, event.created_at,
+                      event.target_endpoint_id, event.attempt_floor
             ",
         )
         .bind(holder)
         .bind(i64::from(limit))
         .bind(now)
         .bind(claimed_until)
+        .bind(i64::from(per_merchant_limit))
         .fetch_all(self.pool())
         .await
         .map_err(unavailable)?;

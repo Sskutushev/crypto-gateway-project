@@ -22,7 +22,11 @@ use thiserror::Error;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{Clock, RepositoryError};
+use crate::{
+    Clock, HONOR_PROPOSAL_TTL, HonorApprovalPolicy, HonorProposal, HonorProposalRepository, Page,
+    PageRequest, RedeliveryActor, RedeliveryError, RedeliveryRepository, RedeliveryResult,
+    RepositoryError, WebhookRedelivery, validate_redelivery,
+};
 
 /// What an operator key is allowed to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -242,6 +246,7 @@ pub trait OperationsRepository: Send + Sync {
 pub struct OperationsService<R, C> {
     repository: Arc<R>,
     clock: C,
+    honor_policy: HonorApprovalPolicy,
 }
 
 impl<R, C> OperationsService<R, C>
@@ -249,8 +254,28 @@ where
     R: OperationsRepository,
     C: Clock,
 {
+    /// Builds the service with the safe default: every honor needs a second
+    /// operator until a threshold is configured.
     pub const fn new(repository: Arc<R>, clock: C) -> Self {
-        Self { repository, clock }
+        Self {
+            repository,
+            clock,
+            honor_policy: HonorApprovalPolicy {
+                dual_control_min_raw: RawAmount::ZERO,
+            },
+        }
+    }
+
+    /// Replaces which honors need a second operator.
+    #[must_use]
+    pub const fn with_honor_approval_policy(mut self, policy: HonorApprovalPolicy) -> Self {
+        self.honor_policy = policy;
+        self
+    }
+
+    #[must_use]
+    pub const fn honor_approval_policy(&self) -> HonorApprovalPolicy {
+        self.honor_policy
     }
 
     /// Aggregates submitted readings into one immutable price snapshot.
@@ -452,17 +477,16 @@ where
         resolution: &ManualResolution,
     ) -> Result<ManualResolutionResult, OperationsError> {
         Self::require(credential, OperatorScope::Admin)?;
-        let valid_key = (16..=128).contains(&idempotency_key.len())
-            && idempotency_key
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
-        if !valid_key {
-            return Err(OperationsError::InvalidIdempotencyKey);
-        }
-        if !(1..=1000).contains(&resolution.reason.trim().len()) {
-            return Err(OperationsError::ReasonRequired);
-        }
+        validate_idempotency_key(idempotency_key)?;
+        validate_reason(&resolution.reason)?;
         validate_manual_resolution(resolution)?;
+        if resolution.action == ManualResolutionAction::Honor
+            && resolution
+                .allocate_raw
+                .is_some_and(|amount| self.honor_policy.requires_second_operator(amount))
+        {
+            return Err(OperationsError::DualControlRequired);
+        }
         let request_hash = manual_resolution_hash(resolution);
         self.repository
             .resolve_manual(
@@ -485,6 +509,161 @@ where
         } else {
             Err(OperationsError::MissingScope(scope))
         }
+    }
+}
+
+impl<R, C> OperationsService<R, C>
+where
+    R: OperationsRepository + HonorProposalRepository,
+    C: Clock,
+{
+    /// Proposes an honor for a second operator to approve. Nothing is paid:
+    /// the rows are checked exactly as an honor would check them, and the
+    /// command, the evidence and the proposer are stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OperationsError`] when the key lacks `admin`, the command is
+    /// malformed or not an honor, the honor would be refused right now, or
+    /// storage fails.
+    pub async fn propose_honor(
+        &self,
+        credential: &OperatorCredential,
+        idempotency_key: &str,
+        resolution: &ManualResolution,
+    ) -> Result<HonorProposal, OperationsError> {
+        Self::require(credential, OperatorScope::Admin)?;
+        validate_idempotency_key(idempotency_key)?;
+        validate_reason(&resolution.reason)?;
+        if resolution.action != ManualResolutionAction::Honor {
+            return Err(OperationsError::InvalidManualResolution);
+        }
+        validate_manual_resolution(resolution)?;
+        let now = self.clock.now();
+        let expires_at = now
+            .checked_add(HONOR_PROPOSAL_TTL)
+            .ok_or(OperationsError::InvalidManualResolution)?;
+        self.repository
+            .propose_honor(
+                credential,
+                idempotency_key,
+                &manual_resolution_hash(resolution),
+                resolution,
+                self.honor_policy.dual_control_min_raw,
+                now,
+                expires_at,
+            )
+            .await
+    }
+
+    /// Approves a proposal under a second, different operator key. The honor
+    /// runs as if this key had issued it, after every check is made again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OperationsError`] when the key lacks `admin`, is the key that
+    /// proposed, the proposal is unknown, decided or expired, the honor is no
+    /// longer eligible, or storage fails.
+    pub async fn approve_honor(
+        &self,
+        credential: &OperatorCredential,
+        proposal_id: Uuid,
+        idempotency_key: &str,
+        reason: &str,
+    ) -> Result<ManualResolutionResult, OperationsError> {
+        Self::require(credential, OperatorScope::Admin)?;
+        validate_idempotency_key(idempotency_key)?;
+        validate_reason(reason)?;
+        self.repository
+            .approve_honor(
+                credential,
+                proposal_id,
+                idempotency_key,
+                reason,
+                self.clock.now(),
+            )
+            .await
+    }
+
+    /// Closes a pending proposal without paying anything. The proposer may
+    /// withdraw its own proposal; any admin key may refuse one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OperationsError`] when the key lacks `admin`, the proposal is
+    /// unknown or already decided, or storage fails.
+    pub async fn reject_honor(
+        &self,
+        credential: &OperatorCredential,
+        proposal_id: Uuid,
+        idempotency_key: &str,
+        reason: &str,
+    ) -> Result<HonorProposal, OperationsError> {
+        Self::require(credential, OperatorScope::Admin)?;
+        validate_idempotency_key(idempotency_key)?;
+        validate_reason(reason)?;
+        self.repository
+            .reject_honor(
+                credential,
+                proposal_id,
+                idempotency_key,
+                reason,
+                self.clock.now(),
+            )
+            .await
+    }
+
+    /// Proposals waiting for a second operator.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OperationsError`] when the key lacks `read`, the page is
+    /// invalid, or storage fails.
+    pub async fn pending_honor_proposals(
+        &self,
+        credential: &OperatorCredential,
+        limit: Option<u32>,
+        before: Option<Uuid>,
+    ) -> Result<Page<HonorProposal>, OperationsError> {
+        Self::require(credential, OperatorScope::Read)?;
+        let page = PageRequest::new(limit, before)?;
+        Ok(Page::from_items(
+            self.repository
+                .pending_honor_proposals(page, self.clock.now())
+                .await?,
+            page.limit,
+        ))
+    }
+}
+
+impl<R, C> OperationsService<R, C>
+where
+    R: OperationsRepository + RedeliveryRepository,
+    C: Clock,
+{
+    /// Re-queues one delivered or dead-lettered webhook event as the same
+    /// event, for one endpoint of its merchant or for all of them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OperationsError`] when the key lacks `admin`, the request is
+    /// malformed, the event cannot be redelivered, or storage fails.
+    pub async fn redeliver_webhook(
+        &self,
+        credential: &OperatorCredential,
+        idempotency_key: &str,
+        request: &WebhookRedelivery,
+    ) -> Result<RedeliveryResult, OperationsError> {
+        Self::require(credential, OperatorScope::Admin)?;
+        let hash = validate_redelivery(idempotency_key, request)?;
+        let actor = RedeliveryActor::OperatorKey {
+            key_id: credential.key_id,
+            label: credential.label.clone(),
+        };
+        Ok(self
+            .repository
+            .redeliver_webhook_event(&actor, idempotency_key, &hash, request, self.clock.now())
+            .await?)
     }
 }
 
@@ -533,12 +712,50 @@ pub enum OperationsError {
     ManualResolutionNotFound,
     #[error("the risk evaluation is stale, future-dated or malformed")]
     InvalidRiskEvaluation,
+    #[error(
+        "this honor needs a second operator: propose it at /v1/operator/manual-honor-proposals"
+    )]
+    DualControlRequired,
+    #[error("the honor proposal does not exist")]
+    HonorProposalNotFound,
+    #[error("the honor proposal was already approved, rejected or expired")]
+    HonorProposalNotPending,
+    #[error("the honor proposal expired before it was approved; propose it again")]
+    HonorProposalExpired,
+    #[error("the operator key that proposed an honor cannot approve it")]
+    SameOperator,
+    #[error("the export range must be YYYY-MM-DD dates, from not after to, at most 92 days")]
+    ExportRangeInvalid,
+    #[error("the export would exceed its row ceiling; narrow the range or name one merchant")]
+    ExportTooLarge,
     #[error("this operator key is not bound to the named risk provider")]
     RiskProviderNotAllowed,
+    #[error(transparent)]
+    Redelivery(#[from] RedeliveryError),
     #[error(transparent)]
     Price(#[from] PriceAggregationError),
     #[error(transparent)]
     Repository(#[from] RepositoryError),
+}
+
+fn validate_idempotency_key(key: &str) -> Result<(), OperationsError> {
+    let valid = (16..=128).contains(&key.len())
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+    if valid {
+        Ok(())
+    } else {
+        Err(OperationsError::InvalidIdempotencyKey)
+    }
+}
+
+fn validate_reason(reason: &str) -> Result<(), OperationsError> {
+    if (1..=1000).contains(&reason.trim().len()) {
+        Ok(())
+    } else {
+        Err(OperationsError::ReasonRequired)
+    }
 }
 
 fn validate_manual_resolution(resolution: &ManualResolution) -> Result<(), OperationsError> {
@@ -618,7 +835,9 @@ impl OperationsError {
     #[must_use]
     pub const fn is_transient(&self) -> bool {
         match self {
-            Self::Repository(error) => error.is_transient(),
+            Self::Repository(error) | Self::Redelivery(RedeliveryError::Repository(error)) => {
+                error.is_transient()
+            }
             _ => false,
         }
     }

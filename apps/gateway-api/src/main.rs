@@ -4,7 +4,7 @@ mod limit_settings;
 use std::{env, net::SocketAddr, sync::Arc};
 
 use anyhow::{Context, Result, bail};
-use gateway_application::{SelfCheckConfig, SelfCheckService, SystemClock};
+use gateway_application::{HonorApprovalPolicy, SelfCheckConfig, SelfCheckService, SystemClock};
 use gateway_http::{AppState, router};
 use gateway_scheduler::ExpiryScheduler;
 use gateway_storage::{PgPoolOptions, PostgresRepository, migrate};
@@ -61,9 +61,15 @@ async fn main() -> Result<()> {
         error!(report = ?startup_report, "startup self-check failed");
         bail!("startup self-check failed");
     }
+    let honor_policy = honor_approval_policy()?;
+    info!(
+        dual_control_min_raw = %honor_policy.dual_control_min_raw,
+        "manual honors at or above this raw amount need a second operator"
+    );
     let mut state = AppState::new(pool)
         .with_self_check(self_check_config)
-        .with_rate_limits(rate_limits);
+        .with_rate_limits(rate_limits)
+        .with_honor_approval_policy(honor_policy);
     if let Some(limit) = lease_cap {
         state = state.with_max_open_leases_per_collector(limit);
     }
@@ -167,6 +173,15 @@ fn required_env(name: &str) -> Result<String> {
         Ok(value) if !value.is_empty() => Ok(value),
         _ => bail!("{name} is required"),
     }
+}
+
+/// Reads `GATEWAY_MANUAL_HONOR_DUAL_CONTROL_MIN_RAW`. Unset means every
+/// manual honor needs a second operator; a malformed value stops the process
+/// instead of quietly lowering the bar.
+fn honor_approval_policy() -> Result<HonorApprovalPolicy> {
+    let value = env::var("GATEWAY_MANUAL_HONOR_DUAL_CONTROL_MIN_RAW").ok();
+    HonorApprovalPolicy::from_setting(value.as_deref())
+        .context("GATEWAY_MANUAL_HONOR_DUAL_CONTROL_MIN_RAW")
 }
 
 fn self_check_config() -> Result<SelfCheckConfig> {

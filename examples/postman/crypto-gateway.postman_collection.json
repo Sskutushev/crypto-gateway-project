@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Crypto Gateway API",
-    "description": "Every route in docs/openapi.json. Set baseUrl, merchantKey, operatorKey and assetId. Writes to /v1/payment-intents, /v1/payment-intents/{id}/quotes and /v1/operator/manual-resolutions send a generated Idempotency-Key (16 to 128 characters of A-Z a-z 0-9 _ -). Amounts are decimal strings, never JSON numbers.",
+    "description": "Every route in docs/openapi.json. Set baseUrl, merchantKey, operatorKey and assetId. Writes to /v1/payment-intents, /v1/payment-intents/{id}/quotes and the operator writes (manual resolutions, honor proposals and their decisions, redeliveries) send a generated Idempotency-Key (16 to 128 characters of A-Z a-z 0-9 _ -). Amounts are decimal strings, never JSON numbers.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -52,6 +52,14 @@
     },
     {
       "key": "transferId",
+      "value": ""
+    },
+    {
+      "key": "proposalId",
+      "value": ""
+    },
+    {
+      "key": "eventId",
       "value": ""
     },
     {
@@ -454,6 +462,256 @@
                 }
               }
             }
+          },
+          "response": []
+        },
+        {
+          "name": "Propose an honor for a second operator",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/operator/manual-honor-proposals",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "operator",
+                "manual-honor-proposals"
+              ]
+            },
+            "description": "Scope: admin, with an Idempotency-Key. Required for an honor at or above GATEWAY_MANUAL_HONOR_DUAL_CONTROL_MIN_RAW (every honor when unset). Checks the honor against locked rows and stores it with an evidence snapshot; pays nothing. Expires after 24 hours.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transfer_id\": \"{{transferId}}\",\n  \"payment_intent_id\": \"{{intentId}}\",\n  \"attempt_id\": \"{{attemptId}}\",\n  \"allocate_raw\": \"49990000\",\n  \"reason\": \"operator verified the evidence\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Honor proposals waiting for approval",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/operator/manual-honor-proposals?limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "operator",
+                "manual-honor-proposals"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50"
+                }
+              ]
+            },
+            "description": "Scope: read. Pending, unexpired proposals, newest first; keyset page with limit and before."
+          },
+          "response": []
+        },
+        {
+          "name": "Approve a proposed honor",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/operator/manual-honor-proposals/{{proposalId}}/approve",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "operator",
+                "manual-honor-proposals",
+                "{{proposalId}}",
+                "approve"
+              ]
+            },
+            "description": "Scope: admin, with an Idempotency-Key, from a key other than the proposer's (403 dual_control_same_operator otherwise). Re-checks every honor condition against locked rows; a change since the proposal is a 409 and nothing is written.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"second pair of eyes on the evidence bundle\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Reject a proposed honor",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/operator/manual-honor-proposals/{{proposalId}}/reject",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "operator",
+                "manual-honor-proposals",
+                "{{proposalId}}",
+                "reject"
+              ]
+            },
+            "description": "Scope: admin, with an Idempotency-Key. Closes a pending proposal without paying.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"the payer could not be identified\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Redeliver a webhook event",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/operator/webhook-events/{{eventId}}/redeliver",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "operator",
+                "webhook-events",
+                "{{eventId}}",
+                "redeliver"
+              ]
+            },
+            "description": "Scope: admin, with an Idempotency-Key. Re-queues a delivered or dead-lettered event with the same id and payload; merchants deduplicate by id. Omit endpoint_id to send to every active endpoint of the event's merchant.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpoint_id\": null,\n  \"reason\": \"merchant restored its endpoint after an outage\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Settlement export (JSON)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/operator/accounting/settlements?from=2026-09-01&to=2026-09-30",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "operator",
+                "accounting",
+                "settlements"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "2026-09-01"
+                },
+                {
+                  "key": "to",
+                  "value": "2026-09-30"
+                }
+              ]
+            },
+            "description": "Scope: read. Settled money per merchant, asset and UTC day over an inclusive range of at most 92 days, with totals and a control sum from the allocation rows."
+          },
+          "response": []
+        },
+        {
+          "name": "Settlement export (CSV)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/operator/accounting/settlements?from=2026-09-01&to=2026-09-30&format=csv",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "operator",
+                "accounting",
+                "settlements"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "2026-09-01"
+                },
+                {
+                  "key": "to",
+                  "value": "2026-09-30"
+                },
+                {
+                  "key": "format",
+                  "value": "csv"
+                }
+              ]
+            },
+            "description": "Scope: read. The same export as RFC 4180 CSV; Accept: text/csv works too."
           },
           "response": []
         },
