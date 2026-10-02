@@ -134,7 +134,7 @@ impl OperationsRepository for PostgresRepository {
         &self,
         ingestion: &PriceIngestion,
     ) -> Result<Option<RecordedPrice>, RepositoryError> {
-        let mut transaction = self.pool().begin().await.map_err(unavailable)?;
+        let mut transaction = self.begin().await.map_err(unavailable)?;
 
         let recorded = match &ingestion.outcome {
             PriceOutcome::Aggregated(aggregated) => {
@@ -371,7 +371,7 @@ impl OperationsRepository for PostgresRepository {
         resolution: &ManualResolution,
         decided_at: OffsetDateTime,
     ) -> Result<ManualResolutionResult, OperationsError> {
-        let mut tx = self.pool().begin().await.map_err(unavailable)?;
+        let mut tx = self.begin().await.map_err(unavailable)?;
         // Serialize commands in the same operator/idempotency scope before
         // inspecting business state. A concurrent replay must observe the
         // first committed result instead of racing it for the transfer row.

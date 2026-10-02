@@ -373,7 +373,7 @@ impl SettlementRepository for PostgresRepository {
         lease: &ComponentLease,
         command: &SettlementCommand,
     ) -> Result<SettlementRecord, RepositoryError> {
-        let mut transaction = self.pool().begin().await.map_err(unavailable)?;
+        let mut transaction = self.begin().await.map_err(unavailable)?;
         hold_lease(&mut transaction, lease).await?;
 
         let processing = sqlx::query_as::<_, (String, String)>(
@@ -405,7 +405,7 @@ impl SettlementRepository for PostgresRepository {
                 // The money is real and stays visible: roll everything back and
                 // hand the transfer to an operator instead of retrying forever.
                 transaction.rollback().await.map_err(unavailable)?;
-                return park_refused(self.pool(), lease, command, &reason).await;
+                return park_refused(self, lease, command, &reason).await;
             }
             Err(error) => return Err(error),
         };
@@ -420,7 +420,7 @@ impl SettlementRepository for PostgresRepository {
         transfer: &PendingTransfer,
         unresolved: &UnresolvedTransfer,
     ) -> Result<(), RepositoryError> {
-        let mut transaction = self.pool().begin().await.map_err(unavailable)?;
+        let mut transaction = self.begin().await.map_err(unavailable)?;
         hold_lease(&mut transaction, lease).await?;
         let now = OffsetDateTime::now_utc();
 
@@ -523,12 +523,12 @@ async fn hold_lease(
 /// The processing row is locked again and must still be pending: if another
 /// worker finished the transfer in between, that decision stands.
 async fn park_refused(
-    pool: &sqlx::PgPool,
+    repository: &PostgresRepository,
     lease: &ComponentLease,
     command: &SettlementCommand,
     refusal: &str,
 ) -> Result<SettlementRecord, RepositoryError> {
-    let mut transaction = pool.begin().await.map_err(unavailable)?;
+    let mut transaction = repository.begin().await.map_err(unavailable)?;
     hold_lease(&mut transaction, lease).await?;
     let state = sqlx::query_scalar::<_, String>(
         "SELECT processing_state FROM chain_transfer_processing WHERE transfer_id = $1 FOR UPDATE",

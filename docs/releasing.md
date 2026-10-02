@@ -1,8 +1,9 @@
 # Releasing and upgrading
 
 How versions are numbered, which image runs against which schema, how an
-operator upgrades and rolls back, and how a release is cut. No release has
-been tagged yet; the first one will be `v0.1.0`.
+operator upgrades and rolls back, and how a release is cut. The first tag
+is `v0.1.0-rc.1`, a release candidate that exists to run the publish, sign
+and release path once end to end; `v0.1.0` follows the owner's testnet run.
 
 ## Versioning
 
@@ -30,7 +31,7 @@ Every release adds its row in the same pull request that moves its
 
 | Image version | Migrations | HTTP API | Webhook signature | Upgrades from |
 |---|---|---|---|---|
-| unreleased (`main`) | `0001`–`0017` | `/v1`, OpenAPI `0.1.0` | `v1` (HMAC-SHA256; several `v1` values during a rotation) | — |
+| `0.1.0-rc.1` | `0001`–`0021` | `/v1`, OpenAPI `0.1.0` | `v1` (HMAC-SHA256; several `v1` values during a rotation) | — (first tag) |
 
 How an image and a schema meet:
 

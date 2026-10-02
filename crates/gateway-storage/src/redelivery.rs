@@ -65,7 +65,7 @@ impl RedeliveryRepository for PostgresRepository {
         now: OffsetDateTime,
     ) -> Result<RedeliveryResult, RedeliveryError> {
         let principal = actor.principal();
-        let mut tx = self.pool().begin().await.map_err(storage)?;
+        let mut tx = self.begin().await.map_err(storage)?;
         // Two identical requests racing each other must see one result: the
         // second waits here and then finds the first one's row.
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")

@@ -258,7 +258,7 @@ impl ObservationRepository for PostgresRepository {
         observations: &[ResolvedObservation],
         cursor: Option<(Uuid, gateway_domain::ObservationKind, CursorPosition)>,
     ) -> Result<IntakeReport, RepositoryError> {
-        let mut transaction = self.pool().begin().await.map_err(unavailable)?;
+        let mut transaction = self.begin().await.map_err(unavailable)?;
         hold_lease(&mut transaction, lease).await?;
 
         let mut recorded = 0_u32;

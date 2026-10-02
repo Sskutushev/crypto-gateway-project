@@ -21,7 +21,7 @@ mod test_support;
 mod verification;
 
 pub use capacity::CollectorOccupancy;
-pub use pool_telemetry::{record_pool, sample_pool};
+pub use pool_telemetry::{probe_pool, record_pool, sample_pool};
 pub use postgres::PostgresRepository;
 pub use roles::{GRANTS_SQL, ROLES_SQL};
 

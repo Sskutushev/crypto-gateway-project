@@ -169,7 +169,7 @@ impl HonorProposalRepository for PostgresRepository {
         ) else {
             return Err(OperationsError::InvalidManualResolution);
         };
-        let mut tx = self.pool().begin().await.map_err(storage)?;
+        let mut tx = self.begin().await.map_err(storage)?;
         lock_scope(
             &mut tx,
             &format!("honor_proposal:{}:{idempotency_key}", proposer.key_id),
@@ -275,7 +275,7 @@ impl HonorProposalRepository for PostgresRepository {
         reason: &str,
         now: OffsetDateTime,
     ) -> Result<ManualResolutionResult, OperationsError> {
-        let mut tx = self.pool().begin().await.map_err(storage)?;
+        let mut tx = self.begin().await.map_err(storage)?;
         // The same scope as a direct manual resolution under this key, so the
         // key cannot be spent twice on two different decisions at once.
         lock_scope(&mut tx, &format!("{}:{idempotency_key}", approver.key_id)).await?;
@@ -369,7 +369,7 @@ impl HonorProposalRepository for PostgresRepository {
         reason: &str,
         now: OffsetDateTime,
     ) -> Result<HonorProposal, OperationsError> {
-        let mut tx = self.pool().begin().await.map_err(storage)?;
+        let mut tx = self.begin().await.map_err(storage)?;
         let proposal = locked_proposal(&mut tx, proposal_id).await?;
         let status = ProposalStatus::parse(&proposal.status)?;
         if status == ProposalStatus::Rejected

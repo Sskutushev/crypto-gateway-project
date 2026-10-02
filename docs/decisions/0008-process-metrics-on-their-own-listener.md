@@ -42,15 +42,19 @@ What is measured:
 - `gateway_outbox_first_attempt_delay_seconds` and
   `gateway_webhook_delivery_duration_seconds{outcome}`.
 - `gateway_db_pool_connections{state}` and
-  `gateway_db_pool_max_connections`, sampled every five seconds.
+  `gateway_db_pool_max_connections`, sampled every five seconds, and
+  `gateway_db_pool_acquire_wait_seconds{path,outcome}`: the hand-over wait
+  at every transaction's start (`path="transaction"`) and for one probe
+  acquisition per sample (`path="probe"`).
 
 ## Consequences
 
 - The database-backed series and their alert rules are unchanged; the new
   rules on latency are warnings that point at a cause, not pages.
-- The wait for a pool connection is not measured: `sqlx` offers no acquire
-  hook. The pool's shape is published instead, and `sqlx` logs an acquire
-  above its slow threshold. A pool pinned at its ceiling is visible; the
-  queue behind it is inferred, not read.
+- `sqlx` offers no acquire hook, so the wait for a connection is measured
+  where this code reaches the pool: every transaction begins through one
+  method that times the hand-over, and the sampler probes one acquisition
+  per tick. Single statements executed straight on the pool are not timed
+  individually; the probe stands in for them.
 - A capacity statement can now cite the gateway's own measurements. None is
   made until a sustained run has been measured.

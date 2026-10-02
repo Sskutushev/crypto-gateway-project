@@ -38,13 +38,13 @@ The Rust items the first slice deferred.
 - Lease failover: `a_frozen_holder_cannot_write_after_a_takeover` in
   `gateway-storage` already proves the takeover and the refused stale write
   that ADR 0006 asks for; no second test was added.
-- Not measured: pool acquire wait (`sqlx` has no hook; ADR 0008 says so).
-  No capacity statement is made.
-- Blocked on the owner: the branch protection of `main` still requires a
-  status check named `image, SBOM, scan, publish`, the name the first slice
-  split into `image, SBOM, scan` (every run) and `publish and sign` (tags).
-  Until the required check is renamed in the repository settings, no pull
-  request can merge; the runtime refuses to change protection itself.
+- Pool acquire wait: measured at every transaction's start
+  (`PostgresRepository::begin`) and by a probe acquisition per sample,
+  `gateway_db_pool_acquire_wait_seconds{path,outcome}`. Single statements
+  on the pool are not timed individually. No capacity statement is made.
+- The branch protection of `main` now requires `image, SBOM, scan` (the
+  first slice had split the old `image, SBOM, scan, publish` job); renamed
+  with the owner's grant after #35 and #36 merged.
 - Verified locally in the container: `cargo fmt --check`, `cargo clippy
   --workspace --all-targets -D warnings`, `cargo deny check`, `cargo test
   --workspace`, the ignored PostgreSQL scenarios, `kubectl kustomize` of

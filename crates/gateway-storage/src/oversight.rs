@@ -42,7 +42,7 @@ impl HealthRepository for PostgresRepository {
         detail: Option<&str>,
         now: OffsetDateTime,
     ) -> Result<bool, RepositoryError> {
-        let mut transaction = self.pool().begin().await.map_err(unavailable)?;
+        let mut transaction = self.begin().await.map_err(unavailable)?;
         let previous = sqlx::query_scalar::<_, String>(
             "SELECT state FROM component_health WHERE component = $1 FOR UPDATE",
         )
@@ -198,7 +198,7 @@ impl ReconciliationRepository for PostgresRepository {
             .iter()
             .filter(|discrepancy| discrepancy.kind.affects_money())
             .count();
-        let mut transaction = self.pool().begin().await.map_err(unavailable)?;
+        let mut transaction = self.begin().await.map_err(unavailable)?;
         sqlx::query(
             r"
             INSERT INTO reconciliation_runs (

@@ -83,7 +83,7 @@ impl ProvisioningRepository for PostgresRepository {
         display_name: &str,
         policy: CollectorPolicy,
     ) -> Result<MerchantRecord, ProvisioningError> {
-        let mut tx = self.pool().begin().await.map_err(storage)?;
+        let mut tx = self.begin().await.map_err(storage)?;
         let inserted = sqlx::query_scalar::<_, Uuid>(
             r"INSERT INTO merchants (id, external_id, display_name, status, collector_policy)
               VALUES ($1, $2, $3, 'active', $4)
@@ -150,7 +150,7 @@ impl ProvisioningRepository for PostgresRepository {
         secret_hash: &[u8; 32],
         label: &str,
     ) -> Result<(), ProvisioningError> {
-        let mut tx = self.pool().begin().await.map_err(storage)?;
+        let mut tx = self.begin().await.map_err(storage)?;
         active_merchant(&mut tx, merchant_id).await?;
         sqlx::query(
             r"INSERT INTO merchant_api_keys (id, merchant_id, key_prefix, secret_hash, label)
@@ -184,7 +184,7 @@ impl ProvisioningRepository for PostgresRepository {
         key_id: Uuid,
         reason: &str,
     ) -> Result<(), ProvisioningError> {
-        let mut tx = self.pool().begin().await.map_err(storage)?;
+        let mut tx = self.begin().await.map_err(storage)?;
         let merchant_id = sqlx::query_scalar::<_, Uuid>(
             r"UPDATE merchant_api_keys SET revoked_at = now()
                WHERE id = $1 AND revoked_at IS NULL
@@ -218,7 +218,7 @@ impl ProvisioningRepository for PostgresRepository {
         description: Option<&str>,
         fingerprint: &[u8; 32],
     ) -> Result<(), ProvisioningError> {
-        let mut tx = self.pool().begin().await.map_err(storage)?;
+        let mut tx = self.begin().await.map_err(storage)?;
         active_merchant(&mut tx, merchant_id).await?;
         sqlx::query(
             r"INSERT INTO webhook_endpoints (id, merchant_id, url, secret_version,
@@ -284,7 +284,7 @@ impl ProvisioningRepository for PostgresRepository {
         previous_valid_until: OffsetDateTime,
         reason: &str,
     ) -> Result<(), ProvisioningError> {
-        let mut tx = self.pool().begin().await.map_err(storage)?;
+        let mut tx = self.begin().await.map_err(storage)?;
         // Guarded by the version the caller derived from: a concurrent
         // rotation has moved it, and this one must not overwrite that.
         let merchant_id = sqlx::query_scalar::<_, Uuid>(
@@ -332,7 +332,7 @@ impl ProvisioningRepository for PostgresRepository {
         endpoint_id: Uuid,
         reason: &str,
     ) -> Result<(), ProvisioningError> {
-        let mut tx = self.pool().begin().await.map_err(storage)?;
+        let mut tx = self.begin().await.map_err(storage)?;
         let merchant_id = sqlx::query_scalar::<_, Uuid>(
             r"UPDATE webhook_endpoints SET status = 'disabled', disabled_at = now()
                WHERE id = $1 AND status = 'active'
@@ -363,7 +363,7 @@ impl ProvisioningRepository for PostgresRepository {
         endpoint_id: Uuid,
         event_id: Uuid,
     ) -> Result<(), ProvisioningError> {
-        let mut tx = self.pool().begin().await.map_err(storage)?;
+        let mut tx = self.begin().await.map_err(storage)?;
         let merchant_id = sqlx::query_scalar::<_, Uuid>(
             "SELECT merchant_id FROM webhook_endpoints WHERE id = $1 AND status = 'active'",
         )
@@ -406,7 +406,7 @@ impl ProvisioningRepository for PostgresRepository {
         actor: &str,
         collector: &NewCollector,
     ) -> Result<(), ProvisioningError> {
-        let mut tx = self.pool().begin().await.map_err(storage)?;
+        let mut tx = self.begin().await.map_err(storage)?;
         if let Some(merchant_id) = collector.merchant_id {
             // An address registered to a merchant receives that merchant's
             // money only; a merchant on shared collectors is never given one.
@@ -471,7 +471,7 @@ impl ProvisioningRepository for PostgresRepository {
         collector_id: Uuid,
         reason: &str,
     ) -> Result<(), ProvisioningError> {
-        let mut tx = self.pool().begin().await.map_err(storage)?;
+        let mut tx = self.begin().await.map_err(storage)?;
         // Quote issuance locks the collector row and requires 'active', so
         // once this commits no new reservation can be written on it.
         let merchant_id = sqlx::query_scalar::<_, Option<Uuid>>(
@@ -505,7 +505,7 @@ impl ProvisioningRepository for PostgresRepository {
         reason: &str,
         compromised: bool,
     ) -> Result<(), ProvisioningError> {
-        let mut tx = self.pool().begin().await.map_err(storage)?;
+        let mut tx = self.begin().await.map_err(storage)?;
         // The row lock waits for any quote being issued on this collector; the
         // lease count below is a later statement and sees what it committed.
         let merchant_id = sqlx::query_scalar::<_, Option<Uuid>>(

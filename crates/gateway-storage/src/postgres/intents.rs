@@ -51,7 +51,7 @@ impl PaymentIntentRepository for PostgresRepository {
         idempotency_key: &str,
         request_hash: &[u8; 32],
     ) -> Result<IdempotentCreate, RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(unavailable)?;
+        let mut transaction = self.begin().await.map_err(unavailable)?;
         let inserted = sqlx::query_scalar::<_, Uuid>(
             r"
             INSERT INTO api_idempotency_records (
@@ -151,7 +151,7 @@ impl PaymentIntentRepository for PostgresRepository {
         request_hash: &[u8; 32],
         reason: Option<&str>,
     ) -> Result<Option<IdempotentCreate>, RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(unavailable)?;
+        let mut transaction = self.begin().await.map_err(unavailable)?;
         let recorded = sqlx::query_scalar::<_, Uuid>(
             r"
             INSERT INTO api_idempotency_records (

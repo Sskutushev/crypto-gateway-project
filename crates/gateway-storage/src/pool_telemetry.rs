@@ -1,15 +1,24 @@
 //! The connection pool as the process sees it.
 //!
-//! `sqlx` offers no hook on acquire, so the wait for a connection is not
-//! measured here; it is logged by `sqlx` itself above its slow-acquire
-//! threshold. What is published is the pool's shape at each sample, which is
-//! enough to see a pool that is pinned at its ceiling.
+//! `sqlx` offers no hook on acquire, so the wait for a connection is
+//! measured at the two places this crate reaches the pool: every
+//! transaction begins through [`crate::PostgresRepository::begin`], which
+//! times the hand-over, and the sampler acquires one connection on each
+//! tick as a probe of what a new caller would wait right now. The pool's
+//! shape is published beside it, so a pool pinned at its ceiling and the
+//! queue behind it are both visible.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use gateway_telemetry::{Gauge, Labels};
+use gateway_telemetry::{Gauge, Histogram, LATENCY_BUCKETS_MICROS, Labels};
 use sqlx::PgPool;
 use tokio::{sync::watch, time::interval};
+
+static ACQUIRE_WAIT: Histogram = Histogram::new(
+    "gateway_db_pool_acquire_wait_seconds",
+    "How long the pool took to hand over a connection: at a transaction's start, or for the sampler's probe.",
+    &LATENCY_BUCKETS_MICROS,
+);
 
 static CONNECTIONS: Gauge = Gauge::new(
     "gateway_db_pool_connections",
@@ -21,8 +30,27 @@ static MAX_CONNECTIONS: Gauge = Gauge::new(
     "The pool's configured ceiling.",
 );
 
-/// How often the pool is sampled.
+/// How often the pool is sampled and probed.
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Records one wait for a connection. `path` says where it was measured.
+pub(crate) fn record_acquire(path: &str, waited: Duration, acquired: bool) {
+    ACQUIRE_WAIT.observe(
+        &Labels::new(&[
+            ("path", path),
+            ("outcome", if acquired { "acquired" } else { "failed" }),
+        ]),
+        waited,
+    );
+}
+
+/// Acquires and releases one connection, recording the wait. A failure is
+/// recorded as such and not retried: the probe reports, it does not heal.
+pub async fn probe_pool(pool: &PgPool) {
+    let started = Instant::now();
+    let acquired = pool.acquire().await.is_ok();
+    record_acquire("probe", started.elapsed(), acquired);
+}
 
 /// Records the pool's current shape.
 pub fn record_pool(pool: &PgPool) {
@@ -40,13 +68,16 @@ pub fn record_pool(pool: &PgPool) {
     );
 }
 
-/// Samples the pool every few seconds until `shutdown` is set or its sender
-/// is dropped.
+/// Samples and probes the pool every few seconds until `shutdown` is set or
+/// its sender is dropped.
 pub async fn sample_pool(pool: PgPool, mut shutdown: watch::Receiver<bool>) {
     let mut ticker = interval(SAMPLE_INTERVAL);
     loop {
         tokio::select! {
-            _ = ticker.tick() => record_pool(&pool),
+            _ = ticker.tick() => {
+                record_pool(&pool);
+                probe_pool(&pool).await;
+            }
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
                     break;
@@ -60,14 +91,17 @@ pub async fn sample_pool(pool: PgPool, mut shutdown: watch::Receiver<bool>) {
 mod tests {
     use sqlx::postgres::PgPoolOptions;
 
-    use super::record_pool;
+    use super::{probe_pool, record_pool};
 
     #[tokio::test]
-    async fn the_pool_shape_is_published_without_a_connection() -> Result<(), sqlx::Error> {
+    async fn the_pool_shape_is_published_and_a_failed_probe_is_counted_as_failed()
+    -> Result<(), sqlx::Error> {
         let pool = PgPoolOptions::new()
             .max_connections(7)
+            .acquire_timeout(std::time::Duration::from_millis(200))
             .connect_lazy("postgres://nobody:nobody@127.0.0.1:1/nowhere")?;
         record_pool(&pool);
+        probe_pool(&pool).await;
         let text = gateway_telemetry::render();
         assert!(
             text.contains("gateway_db_pool_max_connections 7\n"),
@@ -75,6 +109,12 @@ mod tests {
         );
         assert!(
             text.contains("gateway_db_pool_connections{state=\"open\"} 0\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "gateway_db_pool_acquire_wait_seconds_count{path=\"probe\",outcome=\"failed\"} "
+            ),
             "{text}"
         );
         Ok(())
