@@ -2,6 +2,36 @@
 
 Last updated: 2026-10-02
 
+## Session 2026-10-02 (evening): rc.1 tagged and failed, rc.2, live Nile run
+
+- `v0.1.0-rc.1` was pushed by the owner. `image, SBOM, scan` passed, the
+  publish job pushed `ghcr.io/sskutushev/crypto-gateway-project:0.1.0-rc.1`
+  (digest `sha256:63af78dc…`), then its SBOM step failed: the reference used
+  `github.repository_owner` (`Sskutushev`), and a capital letter is not a
+  valid image reference. No signature, no attestation, `release.yml` failed
+  waiting for a successful run. The pushed image is unsigned; it is not to
+  be deployed. Fix: one `image` step computes the lower-case reference from
+  the pushed digest and feeds the SBOM, the scan and cosign. Version moves
+  to `0.1.0-rc.2`; the owner tags it (the runtime refuses to push tags).
+- Live Nile run, from the current tree: the dev database was rebuilt
+  (the ignored scenarios had been run against `gateway` instead of
+  `gateway_test` and had replaced its rows), the rail seeded, an operator
+  key and the merchant `nile-shop` issued, the owner's sub-wallet
+  `TUKcFJDPnrhYTGArcywrERu3JXE7yHiVQ2` registered as the operator collector
+  with manual evidence, the seed placeholder retired. Self-check passed;
+  TronGrid and nileex observers (two provider groups) and the verifier ran
+  without errors; the process-metrics listener served every new series.
+  Quote `01a0fd56-5534-703e-bd6c-080efb26c6a5` for 1 500 000 raw; the owner
+  paid it from TronLink (tx `833c9b06…a3201b`, block 71476381, 16:04:48 UTC).
+  Observed by TronGrid at 16:10:25 as `finalized`, attested by both groups,
+  one verdict, one allocation, `chain_transfer_processing = settled` and
+  the intent `paid` at 16:10:34, reconciliation `ok`. The
+  `payment_intent.paid` event dead-lettered as `no_active_endpoint`: the
+  merchant has no webhook endpoint yet, which is the recorded, correct
+  outcome; a redelivery to an endpoint the owner names closes that leg.
+- Still the owner's: a second provider account for production (an
+  operational fact, not code), `v0.1.0` after a sustained run.
+
 ## Session 2026-10-02 (second slice): process metrics, lints, storage split
 
 Branch `feat/process-metrics-and-storage-split`, from `main` at `2fb3c5f`

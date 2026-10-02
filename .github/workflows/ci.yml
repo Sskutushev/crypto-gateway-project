@@ -319,17 +319,31 @@ jobs:
           cache-from: type=gha
           provenance: true
           sbom: false
+      # The registry path is lower case (metadata-action lowers it before
+      # the push); `github.repository_owner` keeps its capitals, and an image
+      # reference with a capital letter is not a reference. v0.1.0-rc.1 failed
+      # exactly here, after the push and before the signature.
+      - name: published image, by digest
+        id: image
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          case "$DIGEST" in
+            sha256:*) ;;
+            *) echo "::error::the push reported no digest"; exit 1 ;;
+          esac
+          echo "ref=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/crypto-gateway-project@${DIGEST}" >> "$GITHUB_OUTPUT"
       - name: SBOM of the published digest
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
-          image: ghcr.io/${{ github.repository_owner }}/crypto-gateway-project@${{ steps.publish.outputs.digest }}
+          image: ${{ steps.image.outputs.ref }}
           format: spdx-json
           output-file: sbom.spdx.json
           artifact-name: sbom.spdx.json
       - name: scan of the published digest
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ghcr.io/${{ github.repository_owner }}/crypto-gateway-project@${{ steps.publish.outputs.digest }}
+          image-ref: ${{ steps.image.outputs.ref }}
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
@@ -340,9 +354,8 @@ jobs:
       # it from the registry rather than from a workflow artifact.
       - name: sign and attest
         env:
-          DIGEST: ${{ steps.publish.outputs.digest }}
+          IMAGE: ${{ steps.image.outputs.ref }}
         run: |
-          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/crypto-gateway-project@${DIGEST}"
-          cosign sign --yes "$image"
-          cosign attest --yes --type spdxjson --predicate sbom.spdx.json "$image"
-          echo "signed $image" >> "$GITHUB_STEP_SUMMARY"
+          cosign sign --yes "$IMAGE"
+          cosign attest --yes --type spdxjson --predicate sbom.spdx.json "$IMAGE"
+          echo "signed $IMAGE" >> "$GITHUB_STEP_SUMMARY"
