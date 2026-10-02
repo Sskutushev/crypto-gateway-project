@@ -4,8 +4,8 @@ Last updated: 2026-10-02
 
 ## Session 2026-10-02 (second slice): process metrics, lints, storage split
 
-Branch `feat/process-metrics-and-storage-split`, from
-`feat/supply-chain-release-ha` (PR #35; rebased on `main` once that merges).
+Branch `feat/process-metrics-and-storage-split`, from `main` at `2fb3c5f`
+(#35 merged). Pull request #37.
 The Rust items the first slice deferred.
 
 - `crates/gateway-telemetry`: a dependency-free registry (counters, gauges,
