@@ -103,6 +103,33 @@ spec:
             summary: "No successful expiry sweep for 15 minutes"
             description: "Quotes past their deadline are not being closed; exact-amount leases are not being released."
 
+    - name: gateway.latency
+      rules:
+        - alert: GatewayApiSlow
+          expr: histogram_quantile(0.99, sum by (le) (rate(gateway_http_request_duration_seconds_bucket{route!="unmatched"}[5m]))) > 2
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "API p99 latency above 2 s for 10 minutes"
+            description: "Check gateway_db_pool_connections against gateway_db_pool_max_connections and the provider latency series before scaling the API."
+        - alert: GatewayProviderSlow
+          expr: histogram_quantile(0.95, sum by (le, provider) (rate(gateway_chain_source_request_duration_seconds_bucket[5m]))) > 5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Provider {{ $labels.provider }} p95 above 5 s"
+            description: "Observation lags the chain while the provider is slow; the verifier's second provider is unaffected unless it is the same company."
+        - alert: GatewayOutboxFirstAttemptLate
+          expr: histogram_quantile(0.95, sum by (le) (rate(gateway_outbox_first_attempt_delay_seconds_bucket[15m]))) > 30
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Webhook events wait more than 30 s for their first attempt"
+            description: "The outbox worker is behind: raise GATEWAY_OUTBOX_BATCH_LIMIT or shorten its interval."
+
     - name: gateway.capacity
       rules:
         - alert: GatewayCollectorNearlyFull

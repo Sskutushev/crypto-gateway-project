@@ -7,6 +7,7 @@ mod operations;
 mod operator_reads;
 mod outbox;
 mod oversight;
+mod pool_telemetry;
 mod postgres;
 mod provisioning;
 mod provisioning_reads;
@@ -20,6 +21,7 @@ mod test_support;
 mod verification;
 
 pub use capacity::CollectorOccupancy;
+pub use pool_telemetry::{record_pool, sample_pool};
 pub use postgres::PostgresRepository;
 pub use roles::{GRANTS_SQL, ROLES_SQL};
 

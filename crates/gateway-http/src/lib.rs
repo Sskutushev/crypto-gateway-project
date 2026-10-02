@@ -3,6 +3,7 @@ mod error;
 mod handlers;
 mod metrics;
 mod rate_limit;
+mod telemetry;
 
 use std::{sync::Arc, time::Duration};
 
@@ -160,6 +161,9 @@ pub fn router(state: AppState) -> Router {
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(15),
         ))
+        // Outside the timeout, so a request that timed out is observed as a
+        // 408 rather than as a future that never finished.
+        .layer(middleware::from_fn(telemetry::observe))
         .layer(ConcurrencyLimitLayer::new(128))
         .layer(CatchPanicLayer::new())
         .layer(TraceLayer::new_for_http())

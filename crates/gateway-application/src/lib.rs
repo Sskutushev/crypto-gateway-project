@@ -17,6 +17,7 @@ mod redelivery;
 mod retention;
 mod self_check;
 mod settlement;
+mod telemetry;
 mod verification;
 
 pub use accounting::{

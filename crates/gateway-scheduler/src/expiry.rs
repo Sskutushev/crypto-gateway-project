@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use gateway_application::{ExpiryResult, ExpirySweeper, QuoteServiceError};
 use thiserror::Error;
@@ -12,6 +12,7 @@ use tracing::{error, info, warn};
 use crate::{
     config::{BatchConfig, SchedulerConfigError},
     metrics::RunMetrics,
+    telemetry,
 };
 
 /// Drives bounded quote-expiry and amount-lease archival batches.
@@ -80,7 +81,18 @@ where
             if *shutdown.borrow() {
                 break;
             }
-            match self.sweep(Some(&shutdown)).await {
+            let started = Instant::now();
+            let outcome = self.sweep(Some(&shutdown)).await;
+            telemetry::record_run(
+                "expiry",
+                match &outcome {
+                    Ok(_) => "succeeded",
+                    Err(SweepError::Overlapping) => "overlapping",
+                    Err(SweepError::Sweep(_)) => "failed",
+                },
+                started.elapsed(),
+            );
+            match outcome {
                 Ok(report) => {
                     if report.did_work() {
                         info!(

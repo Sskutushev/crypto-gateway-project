@@ -12,6 +12,7 @@ gateway-application.workspace = true
 gateway-domain.workspace = true
 gateway-scheduler.workspace = true
 gateway-storage.workspace = true
+gateway-telemetry = { workspace = true, features = ["server"] }
 gateway-tron.workspace = true
 gateway-webhook.workspace = true
 getrandom.workspace = true

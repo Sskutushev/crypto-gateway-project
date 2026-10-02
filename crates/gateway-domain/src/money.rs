@@ -168,8 +168,8 @@ impl RawAmount {
         if decimals == 0 {
             return digits;
         }
-        let padded = format!("{digits:0>width$}", width = decimals + 1);
-        let (whole, fraction) = padded.split_at(padded.len() - decimals);
+        let padded = format!("{digits:0>width$}", width = decimals.saturating_add(1));
+        let (whole, fraction) = padded.split_at(padded.len().saturating_sub(decimals));
         let fraction = fraction.trim_end_matches('0');
         if fraction.is_empty() {
             whole.to_owned()
@@ -206,17 +206,29 @@ impl RawAmount {
     ///
     /// # Errors
     ///
-    /// Returns an error for zero denominators, overflow, or a zero result.
+    /// Returns [`MoneyError::DivisionByZero`] for a zero denominator,
+    /// [`MoneyError::RawAmountOverflow`] when the product or the rounding
+    /// exceeds 256 bits, and [`MoneyError::AmountMustBePositive`] when the
+    /// result is zero.
     pub fn mul_div_ceil(
         multiplier: u64,
         numerator: Self,
         denominator: Self,
     ) -> Result<Self, MoneyError> {
+        // `U256` division by zero panics, and a panic inside a price
+        // conversion would take the request down instead of refusing it.
+        if denominator.0.is_zero() {
+            return Err(MoneyError::DivisionByZero);
+        }
         let product = U256::from(multiplier)
             .checked_mul(numerator.0)
             .ok_or(MoneyError::RawAmountOverflow)?;
-        let quotient = product / denominator.0;
-        let remainder = product % denominator.0;
+        let quotient = product
+            .checked_div(denominator.0)
+            .ok_or(MoneyError::DivisionByZero)?;
+        let remainder = product
+            .checked_rem(denominator.0)
+            .ok_or(MoneyError::DivisionByZero)?;
         let rounded = if remainder.is_zero() {
             quotient
         } else {
@@ -277,11 +289,21 @@ pub enum MoneyError {
     InvalidRawAmount,
     #[error("raw amount arithmetic overflowed 256 bits")]
     RawAmountOverflow,
+    #[error("raw amount division by zero")]
+    DivisionByZero,
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        clippy::integer_division,
+        clippy::string_slice
+    )]
     use std::str::FromStr;
+
+    use alloy_primitives::U256;
 
     use super::{CurrencyCode, FiatAmount, MoneyError, RawAmount};
 
@@ -356,6 +378,31 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn a_zero_denominator_is_refused_and_an_overflow_is_named() -> Result<(), MoneyError> {
+        let numerator = RawAmount::from_str("5")?;
+        assert_eq!(
+            RawAmount::mul_div_ceil(3, numerator, RawAmount::ZERO),
+            Err(MoneyError::DivisionByZero)
+        );
+        let max = RawAmount::from_str(&U256::MAX.to_string())?;
+        assert_eq!(
+            RawAmount::mul_div_ceil(2, max, numerator),
+            Err(MoneyError::RawAmountOverflow)
+        );
+        // The quotient is exact and one short of the ceiling of 256 bits, so
+        // the round-up itself is the overflow.
+        assert_eq!(
+            RawAmount::mul_div_ceil(1, max, RawAmount::from_str("2")?)?.to_string(),
+            (U256::MAX / U256::from(2_u8) + U256::from(1_u8)).to_string()
+        );
+        assert_eq!(
+            RawAmount::mul_div_ceil(0, numerator, numerator),
+            Err(MoneyError::AmountMustBePositive)
+        );
+        Ok(())
+    }
 }
 
 /// Seeded property tests over the money parsers.
@@ -366,6 +413,12 @@ mod tests {
 /// anywhere is the finding; the invariants are asserted on top.
 #[cfg(test)]
 mod fuzz_smoke {
+    #![allow(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        clippy::integer_division,
+        clippy::string_slice
+    )]
     use std::str::FromStr;
 
     use super::{CurrencyCode, FiatAmount, MoneyError, RawAmount};

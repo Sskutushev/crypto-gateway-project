@@ -546,6 +546,20 @@ or every client shares the proxy's address and one caller's failed keys
 lock out everyone. Request bodies above 64 KiB are refused with `413`, and
 `metadata` above 16 KiB serialized with `422`.
 
+## Latency
+
+Every process serves its own latency on `GATEWAY_METRICS_BIND_ADDRESS`
+(no key; cluster-internal). What to read when something is slow:
+
+| Series | Says |
+|---|---|
+| `gateway_http_request_duration_seconds{route,status}` | how long the API took per matched route; `unmatched` is a 404 |
+| `gateway_db_pool_connections{state}` against `gateway_db_pool_max_connections` | a pool pinned at `busy == max` is the API waiting for the database |
+| `gateway_chain_source_request_duration_seconds{provider,endpoint,outcome}` | how long each provider takes; `refused` is a non-2xx answer, `unreachable` a timeout or a connection failure |
+| `gateway_worker_batch_duration_seconds{worker}` and `gateway_worker_run_duration_seconds{worker,outcome}` | how long a worker's batches and whole runs take; a run near its interval is a worker that cannot keep up |
+| `gateway_outbox_first_attempt_delay_seconds` | how long an event waits for its first delivery; the outbox's backlog, as a merchant feels it |
+| `gateway_webhook_delivery_duration_seconds{outcome}` | how long merchant endpoints take to answer |
+
 ## Alerts worth setting
 
 From `/metrics`, scraped with a `read` key:

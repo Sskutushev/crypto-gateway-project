@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use gateway_application::{ComponentLease, LeaseRepository};
@@ -13,6 +13,7 @@ use tracing::{error, info, warn};
 use crate::{
     config::{BatchConfig, SchedulerConfigError},
     metrics::RunMetrics,
+    telemetry,
 };
 
 /// What one batch of a worker did.
@@ -204,16 +205,24 @@ where
         };
 
         self.metrics.record_run_started();
+        let run_started = Instant::now();
         let mut report = RunReport::default();
         for _ in 0..self.config.max_batches_per_tick {
+            let batch_started = Instant::now();
             let outcome = match self.run_batch(&lease, &mut report).await {
                 Ok(outcome) => outcome,
                 Err(error) => {
                     self.metrics.record_run_failed();
+                    telemetry::record_run(self.worker.name(), "failed", run_started.elapsed());
                     return Err(RunError::Work(error));
                 }
             };
             self.metrics.record_batch(u64::from(outcome.processed));
+            telemetry::record_batch(
+                self.worker.name(),
+                outcome.processed,
+                batch_started.elapsed(),
+            );
             report.batches = report.batches.saturating_add(1);
             report.processed = report.processed.saturating_add(outcome.processed);
             if outcome.drained {
@@ -235,6 +244,7 @@ where
         }
         self.metrics
             .record_run_succeeded(OffsetDateTime::now_utc().unix_timestamp());
+        telemetry::record_run(self.worker.name(), "succeeded", run_started.elapsed());
         Ok(Some(report))
     }
 

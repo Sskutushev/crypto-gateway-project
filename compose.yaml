@@ -95,6 +95,7 @@ services:
       <<: *rail
       GATEWAY_DATABASE_URL: postgres://gateway:gateway@postgres:5432/gateway
       GATEWAY_BIND_ADDRESS: 0.0.0.0:8080
+      GATEWAY_METRICS_BIND_ADDRESS: 0.0.0.0:9464
       GATEWAY_RUN_MIGRATIONS: "true"
       # The expiry sweep runs in worker-payment when the workers profile is
       # up; the API keeps it for the API-only quickstart.
@@ -102,6 +103,7 @@ services:
       RUST_LOG: gateway_api=info,gateway_http=info,gateway_scheduler=info,tower_http=info
     ports:
       - "127.0.0.1:8080:8080"
+      - "127.0.0.1:9464:9464"
     depends_on:
       postgres:
         condition: service_healthy

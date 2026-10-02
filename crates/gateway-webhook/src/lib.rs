@@ -4,6 +4,18 @@
 //! happened. Retries, backoff and dead-lettering belong to the outbox, so a
 //! hidden retry inside a client cannot turn one obligation into two.
 
+// These crates parse bytes and numbers that arrive from outside: a provider's
+// answer, a merchant's signature, a price. An index past the end or an
+// overflow here is a panic a stranger can cause, so every slice is checked
+// and every operation that can overflow is spelled as the checked, saturating
+// or wrapping form it means. A test module relaxes this for its fixtures.
+#![deny(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    clippy::integer_division,
+    clippy::string_slice
+)]
+
 use std::{
     collections::BTreeSet,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -282,7 +294,8 @@ async fn bounded_response_body(mut response: reqwest::Response) -> Option<String
 /// budget is exhausted. The response reader stops immediately on `true`.
 fn append_bounded(body: &mut Vec<u8>, chunk: &[u8]) -> bool {
     let remaining = MAX_DETAIL_BYTES.saturating_sub(body.len());
-    body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    let (kept, _) = chunk.split_at(chunk.len().min(remaining));
+    body.extend_from_slice(kept);
     body.len() == MAX_DETAIL_BYTES
 }
 
@@ -335,6 +348,12 @@ enum SafeDeliveryError {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        clippy::integer_division,
+        clippy::string_slice
+    )]
     use std::{
         net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
         time::Duration,

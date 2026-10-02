@@ -4,6 +4,18 @@
 //! integer minor units. This crate intentionally has no floating-point money
 //! conversion API.
 
+// These crates parse bytes and numbers that arrive from outside: a provider's
+// answer, a merchant's signature, a price. An index past the end or an
+// overflow here is a panic a stranger can cause, so every slice is checked
+// and every operation that can overflow is spelled as the checked, saturating
+// or wrapping form it means. A test module relaxes this for its fixtures.
+#![deny(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    clippy::integer_division,
+    clippy::string_slice
+)]
+
 mod chain;
 mod money;
 mod payment_intent;
@@ -15,7 +27,7 @@ mod webhook;
 
 pub use chain::{
     AddressKey, ChainEnvironment, ChainError, ExecutionStatus, Memo, ObservationKind,
-    ObservedTransfer, SourceFinality, TransferState, TxHash,
+    ObservedTransfer, SourceFinality, TransferState, TxHash, hex_digit,
 };
 pub use money::{CurrencyCode, FiatAmount, MoneyError, RawAmount};
 pub use payment_intent::{

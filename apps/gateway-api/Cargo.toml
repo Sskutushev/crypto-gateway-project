@@ -13,6 +13,7 @@ gateway-http.workspace = true
 gateway-application.workspace = true
 gateway-scheduler.workspace = true
 gateway-storage.workspace = true
+gateway-telemetry = { workspace = true, features = ["server"] }
 gateway-tron.workspace = true
 http.workspace = true
 tokio.workspace = true

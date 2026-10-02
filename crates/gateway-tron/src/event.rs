@@ -178,8 +178,13 @@ pub fn parse_transfers(info: &TransactionInfo) -> Result<Vec<ParsedTransfer>, Tr
 
 fn parse_transfer_log(event_index: i32, log: &LogEntry) -> Result<ParsedTransfer, TronParseError> {
     let contract = from_hex(&log.address).map_err(|_| TronParseError::InvalidAddress)?;
-    let from = address_from_word(&log.topics[1])?;
-    let to = address_from_word(&log.topics[2])?;
+    // The caller admits only three-topic logs; the pattern restates that
+    // instead of indexing on trust.
+    let [_, from_word, to_word] = log.topics.as_slice() else {
+        return Err(TronParseError::WrongTopicCount(log.topics.len()));
+    };
+    let from = address_from_word(from_word)?;
+    let to = address_from_word(to_word)?;
     let amount = amount_from_word(&log.data)?;
     Ok(ParsedTransfer {
         event_index,
@@ -294,8 +299,10 @@ fn display_of(address: &AddressKey) -> String {
 /// Returns [`TronParseError::InvalidBlockTime`] for a value outside the range
 /// of representable times.
 pub fn block_time(milliseconds: i64) -> Result<OffsetDateTime, TronParseError> {
-    OffsetDateTime::from_unix_timestamp_nanos(i128::from(milliseconds) * 1_000_000)
-        .map_err(|_| TronParseError::InvalidBlockTime)
+    let nanos = i128::from(milliseconds)
+        .checked_mul(1_000_000)
+        .ok_or(TronParseError::InvalidBlockTime)?;
+    OffsetDateTime::from_unix_timestamp_nanos(nanos).map_err(|_| TronParseError::InvalidBlockTime)
 }
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -318,6 +325,8 @@ pub enum TronParseError {
     InvalidBlockTime,
     #[error("a transaction carries more logs than an index can address")]
     TooManyLogs,
+    #[error("a transfer log indexes exactly two addresses, found {0} topics")]
+    WrongTopicCount(usize),
 }
 
 #[cfg(test)]
@@ -327,6 +336,12 @@ mod tests;
 /// in `gateway-domain` for why these stand in for a fuzzer.
 #[cfg(test)]
 mod fuzz_smoke {
+    #![allow(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        clippy::integer_division,
+        clippy::string_slice
+    )]
     use std::fmt::Write as _;
 
     use alloy_primitives::U256;

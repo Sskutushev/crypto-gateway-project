@@ -2,6 +2,54 @@
 
 Last updated: 2026-10-02
 
+## Session 2026-10-02 (second slice): process metrics, lints, storage split
+
+Branch `feat/process-metrics-and-storage-split`, from `main` at `2fb3c5f`
+(#35 merged). Pull request #37.
+The Rust items the first slice deferred.
+
+- `crates/gateway-telemetry`: a dependency-free registry (counters, gauges,
+  histograms in whole microseconds, Prometheus text without floating
+  point) and, behind the `server` feature the two binaries enable, a
+  listener on `GATEWAY_METRICS_BIND_ADDRESS` with no key. ADR 0008.
+- Instrumented: HTTP request duration by matched route and status, requests
+  in flight; worker run and batch duration and items processed (expiry
+  included); provider call duration by host, endpoint and outcome; outbox
+  first-attempt delay; webhook delivery duration; pool open/idle/busy and
+  ceiling, sampled every five seconds. `GATEWAY_DB_MAX_CONNECTIONS` replaces
+  the hard-coded pool sizes.
+- `RawAmount::mul_div_ceil`: a zero denominator is `MoneyError::DivisionByZero`;
+  the division and remainder are the checked forms; a test covers zero,
+  product overflow, round-up at the ceiling and a zero result.
+- `gateway-domain`, `gateway-tron`, `gateway-webhook` deny
+  `arithmetic_side_effects`, `indexing_slicing`, `integer_division` and
+  `string_slice` at the crate root; test modules relax them. Library code
+  was rewritten to checked, saturating or wrapping forms, a total `match`
+  for hex digits, slice patterns for the transfer log's topics (new
+  `TronParseError::WrongTopicCount`), and two targeted allows where the
+  divisor is a literal.
+- `crates/gateway-storage/src/postgres.rs` (2.7k lines) is now `postgres.rs`
+  (repository, row types, error classification) plus `postgres/intents.rs`,
+  `postgres/quotes.rs` and `postgres/tests.rs`.
+- Deployment: `metrics` port 9464 on the API and every worker (overlay
+  included), `process-metrics-ingress` network policy for the monitoring
+  namespace, `PodMonitor`, three latency warnings in the `PrometheusRule`,
+  env examples and both Compose files carry the two new variables.
+- Lease failover: `a_frozen_holder_cannot_write_after_a_takeover` in
+  `gateway-storage` already proves the takeover and the refused stale write
+  that ADR 0006 asks for; no second test was added.
+- Not measured: pool acquire wait (`sqlx` has no hook; ADR 0008 says so).
+  No capacity statement is made.
+- Blocked on the owner: the branch protection of `main` still requires a
+  status check named `image, SBOM, scan, publish`, the name the first slice
+  split into `image, SBOM, scan` (every run) and `publish and sign` (tags).
+  Until the required check is renamed in the repository settings, no pull
+  request can merge; the runtime refuses to change protection itself.
+- Verified locally in the container: `cargo fmt --check`, `cargo clippy
+  --workspace --all-targets -D warnings`, `cargo deny check`, `cargo test
+  --workspace`, the ignored PostgreSQL scenarios, `kubectl kustomize` of
+  the base, the overlay and the monitoring directory.
+
 ## Session 2026-10-02: supply chain, release hygiene, HA, retention, monitoring
 
 Branch `feat/supply-chain-release-ha`, from `main` at `c6db946`. Answers the

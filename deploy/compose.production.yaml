@@ -41,8 +41,10 @@ services:
       - ./env/api.env
     ports:
       # TLS terminates at the edge proxy on this host; the API listens on
-      # loopback only.
+      # loopback only. Process metrics are on loopback too, for a Prometheus
+      # on this host; they are never published through the proxy.
       - "127.0.0.1:8080:8080"
+      - "127.0.0.1:9464:9464"
     cpus: "1.00"
     mem_limit: 512m
     healthcheck:

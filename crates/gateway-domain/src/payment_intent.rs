@@ -129,6 +129,12 @@ pub enum PaymentIntentError {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        clippy::integer_division,
+        clippy::string_slice
+    )]
     use serde_json::json;
     use time::OffsetDateTime;
     use uuid::Uuid;

@@ -24,7 +24,8 @@ use gateway_scheduler::{
     BatchConfig, ExpiryScheduler, LeasedWorker, ObservationWorker, OutboxWorker,
     ReconciliationWorker, RetentionWorker, SettlementWorker, VerificationWorker, WorkerLoop,
 };
-use gateway_storage::{PgPoolOptions, PostgresRepository};
+use gateway_storage::{PgPoolOptions, PostgresRepository, sample_pool};
+use gateway_telemetry::MetricsListener;
 use gateway_tron::{ReqwestTransport, ScanLane, TokenView, TronHttpSource, TronSourceConfig};
 use gateway_webhook::HttpWebhookSender;
 use tokio::{signal, sync::watch, task::JoinHandle};
@@ -47,11 +48,11 @@ async fn main() -> Result<()> {
     init_tracing()?;
     let settings = WorkerSettings::from_env()?;
     let pool = PgPoolOptions::new()
-        .max_connections(10)
+        .max_connections(settings.db_max_connections)
         .connect(&settings.database_url)
         .await
         .context("connect to PostgreSQL")?;
-    let repository = Arc::new(PostgresRepository::new(pool));
+    let repository = Arc::new(PostgresRepository::new(pool.clone()));
     let startup_report = SelfCheckService::new(
         Arc::clone(&repository),
         SystemClock,
@@ -68,6 +69,17 @@ async fn main() -> Result<()> {
     // No lease is requested before the checks above succeed: an incorrectly
     // configured process must not briefly become leader and mutate state.
     let (shutdown, _) = watch::channel(false);
+    let metrics = if let Some(address) = settings.metrics_bind_address {
+        let listener = MetricsListener::bind(address)
+            .await
+            .context("bind the process metrics listener")?;
+        let stop = shutdown.subscribe();
+        Some(tokio::spawn(async move { listener.serve(stop).await }))
+    } else {
+        info!("process metrics listener disabled; GATEWAY_METRICS_BIND_ADDRESS is unset");
+        None
+    };
+    let pool_sampler = tokio::spawn(sample_pool(pool, shutdown.subscribe()));
     let mut handles: Vec<JoinHandle<()>> = Vec::new();
 
     for role in settings.roles.clone() {
@@ -107,6 +119,13 @@ async fn main() -> Result<()> {
     }
     for handle in handles {
         handle.await.context("join a worker role")?;
+    }
+    pool_sampler.await.context("join the pool sampler")?;
+    if let Some(metrics) = metrics {
+        metrics
+            .await
+            .context("join the process metrics listener")?
+            .context("serve process metrics")?;
     }
     info!("every role stopped");
     Ok(())
