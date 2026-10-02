@@ -1,0 +1,52 @@
+# One replica of every two-replica worker survives a voluntary disruption,
+# so a node drain hands the lease over instead of leaving the component
+# without a holder until a pod is rescheduled.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway-worker-observer
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway-worker-observer
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway-worker-verifier
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway-worker-verifier
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway-worker-settlement
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway-worker-settlement
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway-worker-outbox
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway-worker-outbox
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway-worker-reconciler
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway-worker-reconciler

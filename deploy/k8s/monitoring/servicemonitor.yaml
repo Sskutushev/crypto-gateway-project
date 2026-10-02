@@ -1,0 +1,35 @@
+# `/metrics` is an operator endpoint: it is served under an operator key with
+# the `read` scope, from inside the cluster only (the api-ingress network
+# policy admits the `monitoring` namespace). The key lives in a Secret the
+# operator creates, named here and never in a manifest.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gateway-metrics-scrape
+type: Opaque
+stringData:
+  # An operator API key issued with the `read` scope only.
+  token: ""
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: gateway-api
+  labels:
+    app.kubernetes.io/name: gateway-api
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway-api
+  endpoints:
+    - port: http
+      path: /metrics
+      # The endpoint answers from the database; a scrape tighter than this is
+      # load on the money's store for nothing a dashboard can show.
+      interval: 30s
+      scrapeTimeout: 10s
+      authorization:
+        type: Bearer
+        credentials:
+          name: gateway-metrics-scrape
+          key: token

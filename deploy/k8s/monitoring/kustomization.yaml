@@ -1,0 +1,12 @@
+# Prometheus Operator objects for the gateway: how `/metrics` is scraped and
+# which of its series page somebody. Applied beside the base, into the
+# gateway's namespace, by a cluster that runs the Prometheus Operator; a
+# cluster without it skips this directory.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: crypto-gateway
+
+resources:
+  - servicemonitor.yaml
+  - prometheusrule.yaml

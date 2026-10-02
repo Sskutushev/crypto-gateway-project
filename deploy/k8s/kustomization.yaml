@@ -9,6 +9,7 @@ namespace: crypto-gateway
 
 resources:
   - namespace.yaml
+  - priorityclasses.yaml
   - configmap.yaml
   - api.yaml
   - worker-expiry.yaml
@@ -17,10 +18,14 @@ resources:
   - worker-settlement.yaml
   - worker-outbox.yaml
   - worker-reconciler.yaml
+  - worker-retention.yaml
+  - pdb-workers.yaml
   - networkpolicy.yaml
 
 # The image is the same for the API and every worker, so a release is one
-# tag change here.
+# change here. This base names a tag so it builds on its own; a production
+# overlay replaces it with the immutable digest the release names
+# (deploy/overlays/production).
 images:
   - name: ghcr.io/sskutushev/crypto-gateway-project
     newTag: "0.1.0"

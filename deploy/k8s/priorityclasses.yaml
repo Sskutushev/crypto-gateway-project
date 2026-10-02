@@ -1,0 +1,19 @@
+# Who gives way under pressure. The processes that move money or deliver its
+# events are evicted last; the ones that read, reconcile or clean up go first.
+# PriorityClass is cluster-scoped: these names are shared by every namespace
+# the chart is installed in, which is the intent.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: gateway-critical
+value: 100000
+globalDefault: false
+description: "Gateway processes on the money path: API, observers, verifier, settlement, outbox."
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: gateway-standard
+value: 10000
+globalDefault: false
+description: "Gateway processes that can wait: reconciler, retention."

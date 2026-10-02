@@ -1,0 +1,84 @@
+# The retention worker: the only process allowed to delete, under the only
+# database group that can. It drops webhook delivery attempts, component
+# health transitions and observations past the ages below, in bounded
+# batches; what it may not delete (evidence a row policy still needs) it
+# leaves. A deployment that wants to keep everything removes this file from
+# the kustomization rather than setting the ages to a large number.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-worker-retention
+  labels:
+    app.kubernetes.io/name: gateway-worker-retention
+    app.kubernetes.io/component: worker
+    gateway.role: retention
+spec:
+  # One replica is enough: a missed hour of deletion is a backlog, not an
+  # outage, and the lease keeps a second one idle anyway.
+  replicas: 1
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway-worker-retention
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway-worker-retention
+        app.kubernetes.io/component: worker
+        gateway.role: retention
+    spec:
+      automountServiceAccountToken: false
+      priorityClassName: gateway-standard
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: ghcr.io/sskutushev/crypto-gateway-project:0.1.0
+          command: ["/usr/local/bin/gateway-worker"]
+          env:
+            - name: GATEWAY_WORKER_ROLES
+              value: retention
+            - name: GATEWAY_INSTANCE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # Once an hour, a bounded batch per step; the worker refuses to
+            # start when no age is set at all.
+            - name: GATEWAY_RETENTION_INTERVAL_SECONDS
+              value: "3600"
+            - name: GATEWAY_RETENTION_BATCH_LIMIT
+              value: "1000"
+            - name: GATEWAY_RETENTION_MAX_BATCHES_PER_TICK
+              value: "10"
+            - name: GATEWAY_RETENTION_WEBHOOK_DELIVERIES_DAYS
+              value: "90"
+            - name: GATEWAY_RETENTION_KEEP_DELIVERY_ATTEMPTS
+              value: "3"
+            - name: GATEWAY_RETENTION_HEALTH_EVENTS_DAYS
+              value: "90"
+            - name: GATEWAY_RETENTION_OBSERVATIONS_DAYS
+              value: "180"
+          envFrom:
+            - configMapRef:
+                name: gateway-config
+            - secretRef:
+                name: gateway-db-retention
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      terminationGracePeriodSeconds: 60

@@ -22,7 +22,10 @@ allow = [
 ]
 
 [bans]
-multiple-versions = "warn"
+# A second copy of a crate is a second copy of its bugs and its audit surface.
+# Duplicates that the ecosystem has not converged on yet are named here with
+# the reason, so each one is a decision rather than a shrug.
+multiple-versions = "deny"
 wildcards = "deny"
 
 [sources]

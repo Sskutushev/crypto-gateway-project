@@ -9,7 +9,10 @@
 # operator creates from deploy/env/<service>.env.example.
 
 x-gateway: &gateway
-  image: ${GATEWAY_IMAGE:-ghcr.io/sskutushev/crypto-gateway-project:latest}
+  # Required, and immutable: the digest a release names, never a tag that can
+  # move under a running system.
+  #   GATEWAY_IMAGE=ghcr.io/sskutushev/crypto-gateway-project@sha256:...
+  image: ${GATEWAY_IMAGE:?GATEWAY_IMAGE must be the immutable image digest from the release}
   restart: unless-stopped
   read_only: true
   tmpfs:
