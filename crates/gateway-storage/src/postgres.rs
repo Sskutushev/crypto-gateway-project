@@ -7,7 +7,7 @@ mod quotes;
 #[cfg(test)]
 mod tests;
 
-use std::str::FromStr;
+use std::{str::FromStr, time::Instant};
 
 use gateway_application::{CollectorCandidate, QuoteContext, RepositoryError};
 use gateway_domain::{
@@ -33,6 +33,20 @@ impl PostgresRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    /// Starts a transaction and records how long the pool took to hand over
+    /// a connection. Every write path begins here, so the wait a request
+    /// spends queued for the pool is measured where it happens.
+    pub(crate) async fn begin(&self) -> Result<Transaction<'static, Postgres>, sqlx::Error> {
+        let started = Instant::now();
+        let transaction = self.pool.begin().await;
+        crate::pool_telemetry::record_acquire(
+            "transaction",
+            started.elapsed(),
+            transaction.is_ok(),
+        );
+        transaction
     }
 }
 

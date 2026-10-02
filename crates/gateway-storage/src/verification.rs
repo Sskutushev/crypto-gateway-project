@@ -340,7 +340,7 @@ impl VerificationRepository for PostgresRepository {
         verifier_version: &str,
         now: OffsetDateTime,
     ) -> Result<VerdictOutcome, RepositoryError> {
-        let mut transaction = self.pool().begin().await.map_err(unavailable)?;
+        let mut transaction = self.begin().await.map_err(unavailable)?;
         hold_lease(&mut transaction, lease).await?;
 
         let outcome = match verdict {

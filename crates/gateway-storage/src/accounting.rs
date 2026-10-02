@@ -62,7 +62,7 @@ impl AccountingRepository for PostgresRepository {
     ) -> Result<SettlementLedger, RepositoryError> {
         // One snapshot for both questions, so the control sum is taken over
         // exactly the decisions the rows were built from.
-        let mut tx = self.pool().begin().await.map_err(unavailable)?;
+        let mut tx = self.begin().await.map_err(unavailable)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             .execute(&mut *tx)
             .await

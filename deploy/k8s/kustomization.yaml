@@ -28,7 +28,7 @@ resources:
 # (deploy/overlays/production).
 images:
   - name: ghcr.io/sskutushev/crypto-gateway-project
-    newTag: "0.1.0"
+    newTag: "0.1.0-rc.1"
 
 # The label the network policies select on; it reaches pod templates and
 # selectors so every pod in the namespace is covered.

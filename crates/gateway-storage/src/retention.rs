@@ -54,7 +54,7 @@ impl RetentionRepository for PostgresRepository {
         keep_latest: u32,
         limit: u32,
     ) -> Result<u64, RepositoryError> {
-        let mut tx = self.pool().begin().await.map_err(unavailable)?;
+        let mut tx = self.begin().await.map_err(unavailable)?;
         let deleted = sqlx::query(
             r"DELETE FROM webhook_deliveries
                WHERE id IN (
@@ -96,7 +96,7 @@ impl RetentionRepository for PostgresRepository {
         older_than: OffsetDateTime,
         limit: u32,
     ) -> Result<u64, RepositoryError> {
-        let mut tx = self.pool().begin().await.map_err(unavailable)?;
+        let mut tx = self.begin().await.map_err(unavailable)?;
         let deleted = sqlx::query(
             r"DELETE FROM chain_observations
                WHERE id IN (
@@ -154,7 +154,7 @@ impl RetentionRepository for PostgresRepository {
         older_than: OffsetDateTime,
         limit: u32,
     ) -> Result<u64, RepositoryError> {
-        let mut tx = self.pool().begin().await.map_err(unavailable)?;
+        let mut tx = self.begin().await.map_err(unavailable)?;
         let deleted = sqlx::query(
             r"DELETE FROM component_health_events
                WHERE id IN (

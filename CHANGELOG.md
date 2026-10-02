@@ -6,19 +6,29 @@ follows [Semantic Versioning](https://semver.org/) once it is released.
 
 ## [Unreleased]
 
-No version has been released yet. The first groups below are the changes
-since the P0 hardening branch; the last `Added` group is what existed before
-them, by the slice that added it.
+Nothing yet.
+
+## [0.1.0-rc.1] - 2026-10-02
+
+The first tagged build: a release candidate, not a release. It exists so the
+publish-and-sign path, the GitHub Release and the upgrade procedure run once
+end to end before anything is called `0.1.0`. Everything below is what the
+repository held on 2026-10-02; the first groups are the changes since the
+P0 hardening branch, the last `Added` group is what existed before them, by
+the slice that added it. The owner's work in `docs/owner-setup.md` (two
+independent providers, a collector, keys, policies, a sustained testnet
+run) is still ahead of a production deployment.
 
 ### Added
 
 - **Process metrics.** Every process serves request, batch and provider
-  latency histograms, outbox first-attempt delay, webhook delivery duration
-  and the pool's shape on `GATEWAY_METRICS_BIND_ADDRESS`, a listener of its
-  own with no key (`crates/gateway-telemetry`, ADR 0008). The definitions
-  expose port 9464 to the monitoring namespace only and add a `PodMonitor`
-  and latency warnings. `GATEWAY_DB_MAX_CONNECTIONS` sets each process's
-  pool ceiling.
+  latency histograms, outbox first-attempt delay, webhook delivery duration,
+  the pool's shape and the wait for a pool connection (at every
+  transaction's start and by a probe per sample) on
+  `GATEWAY_METRICS_BIND_ADDRESS`, a listener of its own with no key
+  (`crates/gateway-telemetry`, ADR 0008). The definitions expose port 9464
+  to the monitoring namespace only and add a `PodMonitor` and latency
+  warnings. `GATEWAY_DB_MAX_CONNECTIONS` sets each process's pool ceiling.
 
 ### Changed
 

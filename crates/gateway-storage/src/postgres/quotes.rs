@@ -25,7 +25,7 @@ impl QuoteRepository for PostgresRepository {
         idempotency_key: &str,
         request_hash: &[u8; 32],
     ) -> Result<Option<IssuedQuote>, RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(unavailable)?;
+        let mut transaction = self.begin().await.map_err(unavailable)?;
         let existing = sqlx::query_as::<_, (Vec<u8>, Uuid)>(
             r"
             SELECT request_hash, resource_id
@@ -178,7 +178,7 @@ impl QuoteRepository for PostgresRepository {
         idempotency_key: &str,
         request_hash: &[u8; 32],
     ) -> Result<IdempotentQuote, RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(unavailable)?;
+        let mut transaction = self.begin().await.map_err(unavailable)?;
         let inserted = sqlx::query_scalar::<_, Uuid>(
             r"
             INSERT INTO api_idempotency_records (
@@ -410,7 +410,7 @@ impl QuoteRepository for PostgresRepository {
         now: OffsetDateTime,
         limit: u32,
     ) -> Result<ExpiryResult, RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(unavailable)?;
+        let mut transaction = self.begin().await.map_err(unavailable)?;
         let limit = i64::from(limit);
         let due_attempts = sqlx::query_as::<_, (Uuid, Uuid, Uuid, Uuid)>(
             r"
