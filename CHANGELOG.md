@@ -15,7 +15,10 @@ them, by the slice that added it.
 - **Supply chain.** Every GitHub Action is pinned to a commit SHA (the
   `dtolnay/rust-toolchain@master` branch reference is gone), both Docker base
   images are pinned by digest, and `cargo deny` treats a duplicated crate
-  version as a finding. The image job no longer holds a registry token or an
+  version as a finding: `tower-http` follows the 0.6 line `reqwest` pins and
+  the test-only `k256` follows `alloy-primitives`, so the binaries carry one
+  copy of each; the remaining transitive duplicates are named in `deny.toml`
+  with their reason. The image job no longer holds a registry token or an
   OIDC identity on pull requests: publishing and signing moved to a `publish`
   job that exists only on a version tag, takes the SBOM and the scan from the
   published digest, pushes with provenance and attaches the SBOM to the

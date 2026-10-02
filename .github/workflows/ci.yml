@@ -192,6 +192,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: compose config
+        env:
+          # The production file refuses to resolve without an image digest; a
+          # syntactically valid placeholder lets the file itself be validated.
+          GATEWAY_IMAGE: ghcr.io/sskutushev/crypto-gateway-project@sha256:0000000000000000000000000000000000000000000000000000000000000000
         run: |
           for example in deploy/env/*.env.example; do cp "$example" "${example%.example}"; done
           docker compose -f deploy/compose.production.yaml config --quiet

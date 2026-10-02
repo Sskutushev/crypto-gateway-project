@@ -31,11 +31,17 @@ denominator, stricter clippy lints in the parsing crates, splitting
   observation conflicts, outbox dead letters and backlog, reconciliation
   stale or with discrepancies, expiry stale, collector nearly full).
 - ADRs 0003–0007. Repository description and topics set.
-- Verified locally: `kubectl kustomize` of the base, the overlay and the
-  monitoring directory. Not verified locally: `cargo deny` with
-  `multiple-versions = "deny"` (CI decides; a duplicate found there is
-  either converged or named in `deny.toml` with its reason), the workflows
-  themselves (they run on the pull request).
+- `cargo deny` with `multiple-versions = "deny"`: two direct dependencies
+  converged (`tower-http` on the 0.6 line `reqwest` pins, the test-only
+  `k256` on the 0.13 line `alloy-primitives` uses), the graph limited to the
+  Linux targets the image is built for, and the eight remaining transitive
+  duplicates named in `deny.toml` with the upstream that still asks for
+  each. The yanked `yoke-derive 0.8.3` was moved to 0.8.4.
+- Verified locally in the container: `cargo deny check` (advisories, bans,
+  licenses, sources all ok), `cargo fmt --check`, `cargo clippy --workspace
+  --all-targets -D warnings`, `cargo test --workspace` and the 57 ignored
+  PostgreSQL scenarios; `kubectl kustomize` of the base, the overlay and the
+  monitoring directory. The workflows themselves run on the pull request.
 - Not done, deliberately: no tag yet. `v0.1.0-rc.1` is the owner's call after
   this merges and the publish job has run once on a tag.
 
