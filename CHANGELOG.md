@@ -8,7 +8,27 @@ follows [Semantic Versioning](https://semver.org/) once it is released.
 
 Nothing yet.
 
+## [0.1.0-rc.2] - 2026-10-02
+
+The release candidate `0.1.0-rc.1` was tagged and its image was pushed, but
+the `publish and sign` job failed after the push: the SBOM and scan steps
+named the image with the repository owner's capital letter, which is not a
+valid image reference, so the digest was never signed and no GitHub Release
+was created. `ghcr.io/sskutushev/crypto-gateway-project:0.1.0-rc.1` exists
+in the registry unsigned; do not deploy it. This candidate carries the same
+code with the publish job fixed: one lower-case reference, computed once
+from the pushed digest, feeds the SBOM, the scan and the signature.
+
+### Fixed
+
+- **The publish job signs what it pushed.** Every step after the push
+  reads the image reference from one output built from the lower-cased
+  owner and the pushed digest; a push that reports no digest fails the job
+  before anything is described.
+
 ## [0.1.0-rc.1] - 2026-10-02
+
+Tagged; its publish job failed before the signature (see `0.1.0-rc.2`).
 
 The first tagged build: a release candidate, not a release. It exists so the
 publish-and-sign path, the GitHub Release and the upgrade procedure run once
