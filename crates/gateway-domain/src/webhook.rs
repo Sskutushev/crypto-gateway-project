@@ -3,6 +3,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::chain::hex_digit;
+
 type HmacSha256 = Hmac<Sha256>;
 
 /// The minimum length of the master key a deployment must supply.
@@ -104,11 +106,10 @@ pub fn sign_event(secret: &SigningSecret, timestamp_unix: i64, body: &[u8]) -> S
 }
 
 fn hex(bytes: &[u8]) -> String {
-    const DIGITS: [u8; 16] = *b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     for byte in bytes {
-        out.push(char::from(DIGITS[usize::from(byte >> 4)]));
-        out.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+        out.push(hex_digit(byte >> 4));
+        out.push(hex_digit(byte & 0x0f));
     }
     out
 }
@@ -121,6 +122,12 @@ pub enum WebhookError {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        clippy::integer_division,
+        clippy::string_slice
+    )]
     use uuid::Uuid;
 
     use super::{SigningSecret, WebhookError, sign_event};

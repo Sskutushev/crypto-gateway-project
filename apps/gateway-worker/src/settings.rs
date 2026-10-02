@@ -5,7 +5,7 @@
 //! schedule than the operator configured, and nobody finds out until the
 //! numbers disagree.
 
-use std::{env, time::Duration};
+use std::{env, net::SocketAddr, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use gateway_application::{DeliveryFairness, RetentionPolicy, SelfCheckConfig};
@@ -80,6 +80,9 @@ impl Role {
 #[derive(Debug, Clone)]
 pub struct WorkerSettings {
     pub database_url: String,
+    pub db_max_connections: u32,
+    /// Where process metrics are served; `None` means no listener.
+    pub metrics_bind_address: Option<SocketAddr>,
     pub instance: String,
     pub roles: Vec<Role>,
     pub chain: String,
@@ -140,6 +143,18 @@ impl WorkerSettings {
     /// not the kind of value it must be.
     pub fn from_env() -> Result<Self> {
         let database_url = required("GATEWAY_DATABASE_URL")?;
+        let db_max_connections = count("GATEWAY_DB_MAX_CONNECTIONS", 10)?;
+        if db_max_connections == 0 {
+            bail!("GATEWAY_DB_MAX_CONNECTIONS must be at least 1");
+        }
+        let metrics_bind_address = match read("GATEWAY_METRICS_BIND_ADDRESS") {
+            Some(value) => Some(
+                value
+                    .parse()
+                    .context("GATEWAY_METRICS_BIND_ADDRESS must be a socket address")?,
+            ),
+            None => None,
+        };
         let roles = roles()?;
         let chain = read("GATEWAY_CHAIN").unwrap_or_else(|| "tron".to_owned());
         let network = read("GATEWAY_NETWORK").unwrap_or_else(|| "mainnet".to_owned());
@@ -185,6 +200,8 @@ impl WorkerSettings {
 
         Ok(Self {
             database_url,
+            db_max_connections,
+            metrics_bind_address,
             instance,
             roles,
             chain,

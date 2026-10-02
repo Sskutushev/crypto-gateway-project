@@ -13,7 +13,7 @@
 
 use alloy_primitives::U256;
 use thiserror::Error;
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 
 use crate::RawAmount;
 
@@ -99,8 +99,13 @@ pub fn aggregate(
             discarded.push((index, PriceDiscardReason::FutureDated));
             continue;
         }
-        let age = (now - reading.observed_at).whole_seconds();
-        if age > policy.max_age_seconds {
+        // Stale once a whole `max_age_seconds + 1` has passed, which is what
+        // "age in whole seconds exceeds the limit" means; a limit that cannot
+        // be added to the reading's time is a limit the reading is past.
+        let cutoff = reading
+            .observed_at
+            .checked_add(Duration::seconds(policy.max_age_seconds.saturating_add(1)));
+        if cutoff.is_none_or(|cutoff| now >= cutoff) {
             discarded.push((index, PriceDiscardReason::Stale));
             continue;
         }
@@ -205,8 +210,14 @@ fn deviation_bps(
     let numerator = difference
         .checked_mul(U256::from(BPS_SCALE))
         .ok_or(PriceAggregationError::Overflow)?;
-    let quotient = numerator / scaled_low;
-    let remainder = numerator % scaled_low;
+    // `scaled_low` is at least `scaled_high - difference`, and a zero would
+    // mean a zero price, which `RawAmount::positive` refused earlier.
+    let quotient = numerator
+        .checked_div(scaled_low)
+        .ok_or(PriceAggregationError::Overflow)?;
+    let remainder = numerator
+        .checked_rem(scaled_low)
+        .ok_or(PriceAggregationError::Overflow)?;
     let rounded = if remainder.is_zero() {
         quotient
     } else {
@@ -220,6 +231,8 @@ fn deviation_bps(
 /// The middle rate. With an even number of readings it is the exact rational
 /// mean of the two middle ones, which needs no rounding and favours neither
 /// side.
+// The divisor is the literal 2 and the count is at least 2 on the even path.
+#[allow(clippy::integer_division, clippy::arithmetic_side_effects)]
 fn median(
     sorted: &[(usize, &PriceReading)],
 ) -> Result<(RawAmount, RawAmount), PriceAggregationError> {
@@ -263,9 +276,14 @@ fn median(
         .and_then(|product| product.checked_mul(U256::from(2_u8)))
         .ok_or(PriceAggregationError::Overflow)?;
 
+    // The divisor is at least one: the function below never returns zero.
     let divisor = greatest_common_divisor(numerator, denominator);
-    let numerator = numerator / divisor;
-    let denominator = denominator / divisor;
+    let numerator = numerator
+        .checked_div(divisor)
+        .ok_or(PriceAggregationError::Overflow)?;
+    let denominator = denominator
+        .checked_div(divisor)
+        .ok_or(PriceAggregationError::Overflow)?;
     Ok((
         RawAmount::positive(numerator).map_err(|_| PriceAggregationError::Overflow)?,
         RawAmount::positive(denominator).map_err(|_| PriceAggregationError::Overflow)?,
@@ -278,7 +296,11 @@ fn greatest_common_divisor(left: U256, right: U256) -> U256 {
     let mut left = left;
     let mut right = right;
     while !right.is_zero() {
-        let remainder = left % right;
+        // Guarded by the loop condition; `None` cannot happen and is treated
+        // as a finished reduction rather than a panic.
+        let Some(remainder) = left.checked_rem(right) else {
+            break;
+        };
         left = right;
         right = remainder;
     }

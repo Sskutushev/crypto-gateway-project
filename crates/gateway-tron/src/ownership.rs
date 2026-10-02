@@ -70,7 +70,13 @@ pub fn verify_ownership(
     signature_hex: &str,
     now: OffsetDateTime,
 ) -> Result<(), OwnershipError> {
-    if issued_at > now + Duration::minutes(5) || now - issued_at > OWNERSHIP_PROOF_TTL {
+    // Issued more than five minutes ahead of this clock, or past its
+    // lifetime, or so far out that neither bound can be computed: expired.
+    let latest_issue = now.checked_add(Duration::minutes(5));
+    let expiry = issued_at.checked_add(OWNERSHIP_PROOF_TTL);
+    if latest_issue.is_none_or(|latest| issued_at > latest)
+        || expiry.is_none_or(|expiry| now > expiry)
+    {
         return Err(OwnershipError::Expired);
     }
     let statement = ownership_statement(merchant_id, address, issued_at)?;
@@ -101,7 +107,12 @@ pub fn recover_signer(message: &str, signature_hex: &str) -> Result<AddressKey, 
 }
 
 fn message_digest(message: &str) -> alloy_primitives::B256 {
-    let mut payload = Vec::with_capacity(TRON_MESSAGE_PREFIX.len() + 20 + message.len());
+    let mut payload = Vec::with_capacity(
+        TRON_MESSAGE_PREFIX
+            .len()
+            .saturating_add(20)
+            .saturating_add(message.len()),
+    );
     payload.extend_from_slice(TRON_MESSAGE_PREFIX.as_bytes());
     payload.extend_from_slice(message.len().to_string().as_bytes());
     payload.extend_from_slice(message.as_bytes());
@@ -110,6 +121,12 @@ fn message_digest(message: &str) -> alloy_primitives::B256 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        clippy::integer_division,
+        clippy::string_slice
+    )]
     use alloy_primitives::keccak256;
     use k256::ecdsa::SigningKey;
     use time::{Duration, OffsetDateTime};

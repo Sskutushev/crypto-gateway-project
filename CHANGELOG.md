@@ -10,8 +10,30 @@ No version has been released yet. The first groups below are the changes
 since the P0 hardening branch; the last `Added` group is what existed before
 them, by the slice that added it.
 
+### Added
+
+- **Process metrics.** Every process serves request, batch and provider
+  latency histograms, outbox first-attempt delay, webhook delivery duration
+  and the pool's shape on `GATEWAY_METRICS_BIND_ADDRESS`, a listener of its
+  own with no key (`crates/gateway-telemetry`, ADR 0008). The definitions
+  expose port 9464 to the monitoring namespace only and add a `PodMonitor`
+  and latency warnings. `GATEWAY_DB_MAX_CONNECTIONS` sets each process's
+  pool ceiling.
+
 ### Changed
 
+- **`RawAmount::mul_div_ceil` refuses a zero denominator** with
+  `MoneyError::DivisionByZero` instead of panicking inside a price
+  conversion; overflow on the round-up is named as such.
+- **The parsing crates deny four more lints.** `gateway-domain`,
+  `gateway-tron` and `gateway-webhook` deny `arithmetic_side_effects`,
+  `indexing_slicing`, `integer_division` and `string_slice`; every slice
+  of outside bytes is checked, every operation that could overflow is the
+  checked, saturating or wrapping form it means, and a transfer log with
+  the wrong topic count is a named parse error.
+- **`gateway-storage`'s `postgres.rs` is split** into the repository and
+  its row types, the payment-intent implementation, the quote
+  implementation and a separate test file.
 - **Supply chain.** Every GitHub Action is pinned to a commit SHA (the
   `dtolnay/rust-toolchain@master` branch reference is gone), both Docker base
   images are pinned by digest, and `cargo deny` treats a duplicated crate

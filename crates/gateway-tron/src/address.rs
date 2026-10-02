@@ -99,21 +99,27 @@ pub fn decode_hex(value: &str) -> Result<Vec<u8>, TronAddressError> {
     if !value.len().is_multiple_of(2) {
         return Err(TronAddressError::NotHex);
     }
-    let mut bytes = Vec::with_capacity(value.len() / 2);
+    let mut bytes = Vec::with_capacity(value.len().wrapping_div(2));
     let raw = value.as_bytes();
     for pair in raw.chunks_exact(2) {
-        let high = hex_value(pair[0])?;
-        let low = hex_value(pair[1])?;
+        let &[high, low] = pair else {
+            // `chunks_exact(2)` yields pairs only; anything else is a bug in
+            // the standard library, not in the input.
+            return Err(TronAddressError::NotHex);
+        };
+        let high = hex_value(high)?;
+        let low = hex_value(low)?;
         bytes.push((high << 4) | low);
     }
     Ok(bytes)
 }
 
+/// The value of one hex digit; every arm subtracts a bound the range proves.
 const fn hex_value(byte: u8) -> Result<u8, TronAddressError> {
     match byte {
-        b'0'..=b'9' => Ok(byte - b'0'),
-        b'a'..=b'f' => Ok(byte - b'a' + 10),
-        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        b'0'..=b'9' => Ok(byte.wrapping_sub(b'0')),
+        b'a'..=b'f' => Ok(byte.wrapping_sub(b'a').wrapping_add(10)),
+        b'A'..=b'F' => Ok(byte.wrapping_sub(b'A').wrapping_add(10)),
         _ => Err(TronAddressError::NotHex),
     }
 }
@@ -139,6 +145,12 @@ pub enum TronAddressError {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        clippy::integer_division,
+        clippy::string_slice
+    )]
     use super::{TronAddressError, from_base58, from_evm_bytes, from_hex, to_base58};
 
     /// The official USDT TRC20 contract, which is also a convenient known
@@ -209,6 +221,12 @@ mod tests {
 /// why these stand in for a fuzzer.
 #[cfg(test)]
 mod fuzz_smoke {
+    #![allow(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        clippy::integer_division,
+        clippy::string_slice
+    )]
     use std::fmt::Write as _;
 
     use gateway_domain::AddressKey;

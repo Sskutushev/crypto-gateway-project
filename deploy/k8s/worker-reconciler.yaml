@@ -58,7 +58,12 @@ spec:
         - name: worker
           image: ghcr.io/sskutushev/crypto-gateway-project:0.1.0
           command: ["/usr/local/bin/gateway-worker"]
+          ports:
+            - name: metrics
+              containerPort: 9464
           env:
+            - name: GATEWAY_METRICS_BIND_ADDRESS
+              value: 0.0.0.0:9464
             - name: GATEWAY_WORKER_ROLES
               value: reconciler
             - name: GATEWAY_INSTANCE_NAME

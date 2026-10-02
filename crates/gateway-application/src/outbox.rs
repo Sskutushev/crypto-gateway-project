@@ -7,7 +7,7 @@ use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
-use crate::{Clock, RepositoryError};
+use crate::{Clock, RepositoryError, telemetry};
 
 /// One effect that must leave the system, written inside the transaction that
 /// caused it.
@@ -395,6 +395,13 @@ where
                 continue;
             }
 
+            if event.attempts == 0 {
+                // A negative delay is a clock behind the database's; it is
+                // reported as no delay rather than dropped.
+                let delay = std::time::Duration::try_from(self.clock.now() - event.created_at)
+                    .unwrap_or_default();
+                telemetry::record_first_attempt_delay(delay);
+            }
             if self.deliver_to_all(&event, &targets).await? {
                 self.repository
                     .mark_delivered(event.id, self.clock.now())
@@ -490,21 +497,31 @@ where
                 .sender
                 .deliver(endpoint, event.id, &body, &signature)
                 .await;
-            let (status, error, duration_ms, accepted) = match result {
+            let (status, error, duration_ms, accepted, outcome) = match result {
                 DeliveryResult::Accepted {
                     status,
                     duration_ms,
-                } => (Some(i32::from(status)), None, duration_ms, true),
+                } => (Some(i32::from(status)), None, duration_ms, true, "accepted"),
                 DeliveryResult::Refused {
                     status,
                     duration_ms,
                     detail,
-                } => (Some(i32::from(status)), Some(detail), duration_ms, false),
+                } => (
+                    Some(i32::from(status)),
+                    Some(detail),
+                    duration_ms,
+                    false,
+                    "refused",
+                ),
                 DeliveryResult::Unreachable {
                     detail,
                     duration_ms,
-                } => (None, Some(detail), duration_ms, false),
+                } => (None, Some(detail), duration_ms, false, "unreachable"),
             };
+            telemetry::record_delivery(
+                outcome,
+                std::time::Duration::from_millis(u64::from(duration_ms)),
+            );
             self.repository
                 .record_attempt(
                     &DeliveryAttempt {

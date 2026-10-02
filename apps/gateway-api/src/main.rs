@@ -1,5 +1,6 @@
 mod expiry_settings;
 mod limit_settings;
+mod process_settings;
 
 use std::{env, net::SocketAddr, sync::Arc};
 
@@ -7,7 +8,8 @@ use anyhow::{Context, Result, bail};
 use gateway_application::{HonorApprovalPolicy, SelfCheckConfig, SelfCheckService, SystemClock};
 use gateway_http::{AppState, router};
 use gateway_scheduler::ExpiryScheduler;
-use gateway_storage::{PgPoolOptions, PostgresRepository, migrate};
+use gateway_storage::{PgPoolOptions, PostgresRepository, migrate, sample_pool};
+use gateway_telemetry::MetricsListener;
 use gateway_tron::from_base58;
 use tokio::{net::TcpListener, signal, sync::watch};
 use tracing::{error, info};
@@ -16,6 +18,7 @@ use tracing_subscriber::EnvFilter;
 use crate::{
     expiry_settings::expiry_config,
     limit_settings::{max_open_leases_per_collector, rate_limit_config},
+    process_settings::{db_max_connections, metrics_bind_address},
 };
 
 #[tokio::main]
@@ -29,9 +32,10 @@ async fn main() -> Result<()> {
     let expiry_config = expiry_config()?;
     let rate_limits = rate_limit_config()?;
     let lease_cap = max_open_leases_per_collector()?;
+    let metrics_address = metrics_bind_address()?;
 
     let pool = PgPoolOptions::new()
-        .max_connections(20)
+        .max_connections(db_max_connections(20)?)
         .connect(&database_url)
         .await
         .context("connect to PostgreSQL")?;
@@ -75,6 +79,19 @@ async fn main() -> Result<()> {
     }
     let (shutdown, expiry_shutdown) = watch::channel(false);
     let http_shutdown = shutdown.subscribe();
+    // Bound before serving: a listener the operator configured and cannot
+    // scrape is a process that must not look started.
+    let metrics = if let Some(address) = metrics_address {
+        let listener = MetricsListener::bind(address)
+            .await
+            .context("bind the process metrics listener")?;
+        let stop = shutdown.subscribe();
+        Some(tokio::spawn(async move { listener.serve(stop).await }))
+    } else {
+        info!("process metrics listener disabled; GATEWAY_METRICS_BIND_ADDRESS is unset");
+        None
+    };
+    let pool_sampler = tokio::spawn(sample_pool(state.pool.clone(), shutdown.subscribe()));
 
     let expiry = if let Some(config) = expiry_config {
         let scheduler = ExpiryScheduler::new(Arc::clone(&state.quotes), config)
@@ -108,6 +125,13 @@ async fn main() -> Result<()> {
     }
     if let Some(expiry) = expiry {
         expiry.await.context("join the quote expiry scheduler")?;
+    }
+    pool_sampler.await.context("join the pool sampler")?;
+    if let Some(metrics) = metrics {
+        metrics
+            .await
+            .context("join the process metrics listener")?
+            .context("serve process metrics")?;
     }
     served
 }

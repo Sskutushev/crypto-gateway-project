@@ -1,3 +1,10 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    clippy::integer_division,
+    clippy::string_slice
+)]
+
 use std::{error::Error, str::FromStr};
 
 use time::{Duration, OffsetDateTime};

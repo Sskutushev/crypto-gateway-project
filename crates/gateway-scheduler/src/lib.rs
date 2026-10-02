@@ -9,6 +9,7 @@ mod expiry;
 mod metrics;
 mod observer;
 mod pipeline;
+mod telemetry;
 mod worker;
 
 pub use config::{BatchConfig, RetryPolicy, SchedulerConfigError};

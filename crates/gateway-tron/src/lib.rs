@@ -9,10 +9,23 @@
 //! its identity. The address-indexed endpoints of every provider are hints
 //! about which transaction to read, never the reading itself.
 
+// These crates parse bytes and numbers that arrive from outside: a provider's
+// answer, a merchant's signature, a price. An index past the end or an
+// overflow here is a panic a stranger can cause, so every slice is checked
+// and every operation that can overflow is spelled as the checked, saturating
+// or wrapping form it means. A test module relaxes this for its fixtures.
+#![deny(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    clippy::integer_division,
+    clippy::string_slice
+)]
+
 pub mod address;
 pub mod event;
 pub mod ownership;
 pub mod source;
+mod telemetry;
 
 pub use address::{TronAddressError, from_base58, from_evm_bytes, from_hex, to_base58};
 pub use event::{

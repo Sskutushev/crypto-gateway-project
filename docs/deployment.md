@@ -51,6 +51,14 @@ hosts and reached only over TLS.
 - `/metrics` is served by the API under the operator `read` scope and is
   scraped from inside the cluster (the `monitoring` namespace in the network
   policy); it is not exposed through the edge.
+- Process metrics (request, batch and provider latency, pool shape) are
+  served by every process on `GATEWAY_METRICS_BIND_ADDRESS` (port 9464 in
+  the definitions) with no key. The port is on no Service and no ingress;
+  the network policy admits the monitoring namespace alone. Unset the
+  variable to serve none.
+- `GATEWAY_DB_MAX_CONNECTIONS` caps each process's pool (20 for the API, 10
+  for a worker by default). The sum over every replica must stay under the
+  database's limit with headroom for operators and migrations.
 - Egress: observers and the verifier reach HTTPS providers; the outbox reaches
   HTTPS merchant endpoints; everything reaches the database; nothing reaches
   anything else. IPv4 private, loopback, link-local, carrier-grade NAT,
@@ -132,9 +140,11 @@ digest the GitHub Release names (replace the placeholder in its
 `kustomization.yaml`; a placeholder that reaches the cluster fails the pull)
 and adds the second observer, in a second provider group, with its own
 ConfigMap entries, API credential and database login. Alert rules and the
-scrape definition for a cluster running the Prometheus Operator are in
-`deploy/k8s/monitoring` (`kubectl apply -k deploy/k8s/monitoring`); the
-scrape uses an operator key with the `read` scope, held in a Secret.
+scrape definitions for a cluster running the Prometheus Operator are in
+`deploy/k8s/monitoring` (`kubectl apply -k deploy/k8s/monitoring`): a
+`ServiceMonitor` for the API's `/metrics`, under an operator key with the
+`read` scope held in a Secret, and a `PodMonitor` for every pod's process
+metrics on the `metrics` port, with no key.
 
 The namespace enforces the `restricted` Pod Security Standard; every pod runs
 non-root, read-only, without capabilities, under the runtime seccomp profile.

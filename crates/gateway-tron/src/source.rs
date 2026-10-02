@@ -15,14 +15,18 @@
 //! decides, so a hidden retry inside a client can never turn one reading into
 //! two or hide an outage from the operator.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 use gateway_application::{
     ChainEventKey, ChainReader, ChainReaderError, ChainScanner, CollectorWatch, CursorKind,
     CursorPosition, ScanError, ScanPage,
 };
-use gateway_domain::{AddressKey, ChainEnvironment, ObservedTransfer, TxHash};
+use gateway_domain::{AddressKey, ChainEnvironment, ObservedTransfer, TxHash, hex_digit};
 use reqwest::{Client, header::HeaderName};
 use serde::Deserialize;
 use serde_json::json;
@@ -35,6 +39,7 @@ use crate::{
         BlockRef, ChainContext, HeadState, TokenView, TransactionInfo, block_time, parse_transfers,
         to_observation,
     },
+    telemetry,
 };
 
 /// The fence token a scanner writes into the cursor it proposes.
@@ -153,6 +158,8 @@ pub struct ReqwestTransport {
     client: Client,
     base_url: String,
     api_key: Option<(HeaderName, String)>,
+    /// The host of `base_url`, the label a dashboard knows the provider by.
+    provider: String,
 }
 
 impl ReqwestTransport {
@@ -182,56 +189,77 @@ impl ReqwestTransport {
             client,
             base_url: config.base_url.trim_end_matches('/').to_owned(),
             api_key,
+            provider: telemetry::provider_label(&config.base_url),
         })
     }
 
     fn url(&self, path: &str) -> String {
         format!("{}/{}", self.base_url, path.trim_start_matches('/'))
     }
+
+    /// Sends one request and records how long the provider took and how it
+    /// ended, whatever the answer was.
+    async fn send(
+        &self,
+        path_and_query: &str,
+        mut request: reqwest::RequestBuilder,
+    ) -> Result<String, TronSourceError> {
+        if let Some((name, value)) = self.api_key.as_ref() {
+            request = request.header(name.clone(), value);
+        }
+        let endpoint = telemetry::endpoint_label(path_and_query);
+        let started = Instant::now();
+        let response = request.send().await;
+        let (outcome, result) = match response {
+            Ok(response) => read_body(response).await,
+            Err(error) => (
+                telemetry::Outcome::Unreachable,
+                Err(TronSourceError::Unreachable(error.to_string())),
+            ),
+        };
+        telemetry::record_request(&self.provider, &endpoint, outcome, started.elapsed());
+        result
+    }
 }
 
 #[async_trait]
 impl TronTransport for ReqwestTransport {
     async fn post(&self, path: &str, body: serde_json::Value) -> Result<String, TronSourceError> {
-        let mut request = self.client.post(self.url(path)).json(&body);
-        if let Some((name, value)) = self.api_key.as_ref() {
-            request = request.header(name.clone(), value);
-        }
-        let response = request
-            .send()
+        self.send(path, self.client.post(self.url(path)).json(&body))
             .await
-            .map_err(|error| TronSourceError::Unreachable(error.to_string()))?;
-        read_body(response).await
     }
 
     async fn get(&self, path_and_query: &str) -> Result<String, TronSourceError> {
-        let mut request = self.client.get(self.url(path_and_query));
-        if let Some((name, value)) = self.api_key.as_ref() {
-            request = request.header(name.clone(), value);
-        }
-        let response = request
-            .send()
+        self.send(path_and_query, self.client.get(self.url(path_and_query)))
             .await
-            .map_err(|error| TronSourceError::Unreachable(error.to_string()))?;
-        read_body(response).await
     }
 }
 
-async fn read_body(response: reqwest::Response) -> Result<String, TronSourceError> {
+async fn read_body(
+    response: reqwest::Response,
+) -> (telemetry::Outcome, Result<String, TronSourceError>) {
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|error| TronSourceError::Unreachable(error.to_string()))?;
+    let body = match response.text().await {
+        Ok(body) => body,
+        Err(error) => {
+            return (
+                telemetry::Outcome::Unreachable,
+                Err(TronSourceError::Unreachable(error.to_string())),
+            );
+        }
+    };
     if status.is_success() {
-        return Ok(body);
+        return (telemetry::Outcome::Ok, Ok(body));
     }
     // A rate limit or a provider outage is an outage, not a chain state. It is
     // reported as such so the worker can retry and the operator can see it.
-    Err(TronSourceError::Unreachable(format!(
-        "provider answered {status}: {}",
-        truncate(&body)
-    )))
+    (
+        telemetry::Outcome::Refused,
+        Err(TronSourceError::Unreachable(format!(
+            "provider answered {status}: {}",
+            truncate(&body)
+        ))),
+    )
 }
 
 fn truncate(body: &str) -> String {
@@ -685,12 +713,11 @@ fn missing_head() -> TronSourceError {
 }
 
 fn sha256_hex(body: &str) -> String {
-    const DIGITS: [u8; 16] = *b"0123456789abcdef";
     let digest = Sha256::digest(body.as_bytes());
-    let mut hex = String::with_capacity(digest.len() * 2);
+    let mut hex = String::with_capacity(digest.len().saturating_mul(2));
     for byte in digest {
-        hex.push(char::from(DIGITS[usize::from(byte >> 4)]));
-        hex.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+        hex.push(hex_digit(byte >> 4));
+        hex.push(hex_digit(byte & 0x0f));
     }
     hex
 }

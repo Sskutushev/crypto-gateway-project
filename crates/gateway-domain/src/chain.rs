@@ -78,11 +78,10 @@ impl AddressKey {
 
     #[must_use]
     pub fn to_hex(&self) -> String {
-        const DIGITS: [u8; 16] = *b"0123456789abcdef";
-        let mut hex = String::with_capacity(self.0.len() * 2);
+        let mut hex = String::with_capacity(self.0.len().saturating_mul(2));
         for byte in &self.0 {
-            hex.push(char::from(DIGITS[usize::from(byte >> 4)]));
-            hex.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+            hex.push(hex_digit(byte >> 4));
+            hex.push(hex_digit(byte & 0x0f));
         }
         hex
     }
@@ -392,8 +391,38 @@ pub enum ChainError {
     UnknownTransferState(String),
 }
 
+/// One hex digit for a nibble. The match is total over the sixteen values a
+/// nibble can take, so no table is indexed.
+#[must_use]
+pub const fn hex_digit(nibble: u8) -> char {
+    match nibble & 0x0f {
+        0 => '0',
+        1 => '1',
+        2 => '2',
+        3 => '3',
+        4 => '4',
+        5 => '5',
+        6 => '6',
+        7 => '7',
+        8 => '8',
+        9 => '9',
+        10 => 'a',
+        11 => 'b',
+        12 => 'c',
+        13 => 'd',
+        14 => 'e',
+        _ => 'f',
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        clippy::integer_division,
+        clippy::string_slice
+    )]
     use std::str::FromStr;
 
     use time::OffsetDateTime;

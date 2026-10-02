@@ -1,0 +1,19 @@
+# Process metrics: request, batch and provider latency from every gateway
+# pod, on the `metrics` port, with no key. These complement the
+# database-backed series the API serves on /metrics; the alert rules page on
+# those, the dashboards read these.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: gateway-process
+  labels:
+    app.kubernetes.io/part-of: crypto-gateway
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: crypto-gateway
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 5s

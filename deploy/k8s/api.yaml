@@ -48,9 +48,14 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            # Process metrics: no key, not on the Service, scraped by pod.
+            - name: metrics
+              containerPort: 9464
           env:
             - name: GATEWAY_BIND_ADDRESS
               value: 0.0.0.0:8080
+            - name: GATEWAY_METRICS_BIND_ADDRESS
+              value: 0.0.0.0:9464
             # Migrations are a release step under the migrator role, and the
             # expiry sweep is a worker; the API role has neither privilege.
             - name: GATEWAY_RUN_MIGRATIONS

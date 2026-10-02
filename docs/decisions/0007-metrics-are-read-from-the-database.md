@@ -4,7 +4,7 @@ Date: 2026-10-02
 
 ## Status
 
-Accepted, with a stated gap
+Accepted. The stated gap is closed by `0008`.
 
 ## Context
 

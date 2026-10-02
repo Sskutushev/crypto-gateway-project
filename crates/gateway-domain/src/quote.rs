@@ -346,8 +346,12 @@ fn validate_age(
     observed_at: OffsetDateTime,
     max_age_seconds: i64,
 ) -> Result<(), ()> {
-    let age = now - observed_at;
-    if age.is_negative() || age > Duration::seconds(max_age_seconds) {
+    // A reading from the future, or one whose deadline cannot be computed,
+    // is as unusable as one that is past it.
+    let deadline = observed_at
+        .checked_add(Duration::seconds(max_age_seconds))
+        .ok_or(())?;
+    if observed_at > now || now > deadline {
         return Err(());
     }
     Ok(())
@@ -381,6 +385,12 @@ pub enum QuoteError {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        clippy::integer_division,
+        clippy::string_slice
+    )]
     use std::str::FromStr;
 
     use serde_json::json;
