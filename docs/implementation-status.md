@@ -1,6 +1,49 @@
 # Implementation Status
 
-Last updated: 2026-09-28
+Last updated: 2026-10-02
+
+## Session 2026-10-02: supply chain, release hygiene, HA, retention, monitoring
+
+Branch `feat/supply-chain-release-ha`, from `main` at `c6db946`. Answers the
+release-blocking and HA findings of the two 2026-10-02 reviews that need no
+Rust change; the Rust items (process metrics, `mul_div_ceil` on a zero
+denominator, stricter clippy lints in the parsing crates, splitting
+`postgres.rs`) are the next slice.
+
+- Every GitHub Action pinned to a commit SHA; `dtolnay/rust-toolchain@master`
+  gone. Base images pinned by digest. `cargo deny` bans duplicate versions.
+- `ci.yml`: the `image` job builds, scans and produces the SBOM with
+  `contents: read` only; a new `publish` job (tag only) pushes with
+  provenance, scans and SBOMs the published digest, signs it and attaches
+  the SBOM as an attestation. `release.yml` is unchanged: it still verifies
+  the signature against `ci.yml@refs/tags/vX.Y.Z`.
+- `deploy/compose.production.yaml`: `GATEWAY_IMAGE` required, no `latest`.
+- `deploy/k8s`: `worker-retention.yaml` (hourly, bounded batches, 90/90/180
+  days, `gateway-db-retention` secret), `priorityclasses.yaml`,
+  `pdb-workers.yaml`; two replicas with RollingUpdate, anti-affinity and
+  zone spread for observer, verifier, settlement, outbox and reconciler;
+  the API gets the same spread and the critical class.
+- `deploy/overlays/production`: image by digest (placeholder that fails the
+  pull until replaced), second observer `gateway-worker-observer-b` with its
+  own ConfigMap, API-key and database secrets.
+- `deploy/k8s/monitoring`: ServiceMonitor (30 s, bearer from a Secret) and
+  PrometheusRule (absent scrape, component not healthy, rail stopped,
+  observation conflicts, outbox dead letters and backlog, reconciliation
+  stale or with discrepancies, expiry stale, collector nearly full).
+- ADRs 0003–0007. Repository description and topics set.
+- `cargo deny` with `multiple-versions = "deny"`: two direct dependencies
+  converged (`tower-http` on the 0.6 line `reqwest` pins, the test-only
+  `k256` on the 0.13 line `alloy-primitives` uses), the graph limited to the
+  Linux targets the image is built for, and the eight remaining transitive
+  duplicates named in `deny.toml` with the upstream that still asks for
+  each. The yanked `yoke-derive 0.8.3` was moved to 0.8.4.
+- Verified locally in the container: `cargo deny check` (advisories, bans,
+  licenses, sources all ok), `cargo fmt --check`, `cargo clippy --workspace
+  --all-targets -D warnings`, `cargo test --workspace` and the 57 ignored
+  PostgreSQL scenarios; `kubectl kustomize` of the base, the overlay and the
+  monitoring directory. The workflows themselves run on the pull request.
+- Not done, deliberately: no tag yet. `v0.1.0-rc.1` is the owner's call after
+  this merges and the publish job has run once on a tag.
 
 ## Repository state
 

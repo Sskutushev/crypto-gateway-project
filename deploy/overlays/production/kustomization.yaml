@@ -1,0 +1,24 @@
+# Production: the base plus what a production verification policy needs and
+# the base cannot assume.
+#
+# - Two observers from two provider GROUPS. Independence is counted per
+#   group, so the second observer must be a different company on different
+#   infrastructure, with its own API credential and its own database login
+#   (chain_sources.db_principal). The verifier's own source makes the third
+#   reading.
+# - The image by its immutable digest, as the release names it. Replace the
+#   placeholder with the digest from the GitHub Release before applying; a
+#   placeholder that reaches the cluster fails the pull, which is the point.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: crypto-gateway
+
+resources:
+  - ../../k8s
+  - worker-observer-b.yaml
+  - pdb-observer-b.yaml
+
+images:
+  - name: ghcr.io/sskutushev/crypto-gateway-project
+    digest: sha256:REPLACE_WITH_THE_RELEASE_DIGEST_0000000000000000000000000000000000000000

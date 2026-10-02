@@ -18,6 +18,23 @@ spec:
         app.kubernetes.io/component: api
     spec:
       automountServiceAccountToken: false
+      priorityClassName: gateway-critical
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: gateway-api
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway-api
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001

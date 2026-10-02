@@ -29,7 +29,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # First, so a tag without notes fails in seconds rather than after CI.
       - name: notes from CHANGELOG.md
@@ -67,7 +67,7 @@ jobs:
       - name: SBOM from the ci run
         run: gh run download "${{ steps.ci.outputs.run_id }}" --repo "$GITHUB_REPOSITORY" --name sbom.spdx.json --dir sbom
 
-      - uses: docker/login-action@v4
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -85,7 +85,7 @@ jobs:
           echo "repo=$repo" >> "$GITHUB_OUTPUT"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
 
       # The release names a digest only after its signature verifies against
       # the identity of ci.yml on this very tag.

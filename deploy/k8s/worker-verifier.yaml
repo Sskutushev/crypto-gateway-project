@@ -7,9 +7,16 @@ metadata:
     app.kubernetes.io/component: worker
     gateway.role: verifier
 spec:
-  replicas: 1
+  # Two replicas, one leader: the component lease in PostgreSQL decides which
+  # replica works and fences the other out of writes, so a node drain or a
+  # rollout moves the work instead of stopping it. The non-leader idles and
+  # reports itself as such.
+  replicas: 2
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
   revisionHistoryLimit: 3
   selector:
     matchLabels:
@@ -22,6 +29,25 @@ spec:
         gateway.role: verifier
     spec:
       automountServiceAccountToken: false
+      priorityClassName: gateway-critical
+      # The two replicas never share a node, and spread across zones where
+      # the cluster has them; a single-node cluster still schedules both.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: gateway-worker-verifier
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway-worker-verifier
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001

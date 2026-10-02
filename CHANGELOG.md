@@ -6,9 +6,37 @@ follows [Semantic Versioning](https://semver.org/) once it is released.
 
 ## [Unreleased]
 
-No version has been released yet. The first three groups below are the
-changes since the P0 hardening branch; the last `Added` group is what existed
-before them, by the slice that added it.
+No version has been released yet. The first groups below are the changes
+since the P0 hardening branch; the last `Added` group is what existed before
+them, by the slice that added it.
+
+### Changed
+
+- **Supply chain.** Every GitHub Action is pinned to a commit SHA (the
+  `dtolnay/rust-toolchain@master` branch reference is gone), both Docker base
+  images are pinned by digest, and `cargo deny` treats a duplicated crate
+  version as a finding: `tower-http` follows the 0.6 line `reqwest` pins and
+  the test-only `k256` follows `alloy-primitives`, so the binaries carry one
+  copy of each; the remaining transitive duplicates are named in `deny.toml`
+  with their reason. The image job no longer holds a registry token or an
+  OIDC identity on pull requests: publishing and signing moved to a `publish`
+  job that exists only on a version tag, takes the SBOM and the scan from the
+  published digest, pushes with provenance and attaches the SBOM to the
+  image as a cosign attestation.
+- **Production Compose requires an immutable image.** `GATEWAY_IMAGE` is
+  mandatory and meant to be the release's digest; the `:latest` fallback is
+  gone.
+- **Kubernetes.** The leased workers (observer, verifier, settlement, outbox,
+  reconciler) run two replicas behind a PodDisruptionBudget, spread across
+  nodes and zones, with PriorityClasses that evict the money path last; the
+  retention worker has its Deployment and its own database credential;
+  `deploy/overlays/production` pins the image by digest and adds the second
+  observer in a second provider group; `deploy/k8s/monitoring` carries the
+  ServiceMonitor and the alert rules.
+- **Decisions recorded.** ADRs 0003–0007: observations versus canonical
+  transfers, independence by provider group, exact-amount matching, singleton
+  workers by fenced lease, and the database-backed metrics with the process
+  metrics still to come.
 
 ### Fixed
 

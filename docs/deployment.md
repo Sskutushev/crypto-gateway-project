@@ -113,15 +113,28 @@ metadata and other special-use networks.
 
 ## Kubernetes
 
-`deploy/k8s` is a kustomization: one Deployment per role, a Service and a
-PodDisruptionBudget for the API, a ConfigMap for non-secret configuration,
-and the network policies above. Secrets are created separately from
-`deploy/k8s/secrets.example.yaml` (names and keys, no values).
+`deploy/k8s` is a kustomization: one Deployment per role (the retention
+worker included, under the only database group that may delete), a Service
+for the API, a PodDisruptionBudget for the API and for every two-replica
+worker, two PriorityClasses (the money path is evicted last), a ConfigMap
+for non-secret configuration, and the network policies above. Secrets are
+created separately from `deploy/k8s/secrets.example.yaml` (names and keys,
+no values), from a secret manager rather than a shell.
 
 ```
 kubectl kustomize deploy/k8s | less     # review
 kubectl apply -k deploy/k8s
 ```
+
+The base names the image by tag so it builds on its own. Production applies
+`deploy/overlays/production` instead: it pins the image to the immutable
+digest the GitHub Release names (replace the placeholder in its
+`kustomization.yaml`; a placeholder that reaches the cluster fails the pull)
+and adds the second observer, in a second provider group, with its own
+ConfigMap entries, API credential and database login. Alert rules and the
+scrape definition for a cluster running the Prometheus Operator are in
+`deploy/k8s/monitoring` (`kubectl apply -k deploy/k8s/monitoring`); the
+scrape uses an operator key with the `read` scope, held in a Secret.
 
 The namespace enforces the `restricted` Pod Security Standard; every pod runs
 non-root, read-only, without capabilities, under the runtime seccomp profile.
@@ -135,10 +148,14 @@ is process presence.
   "Request budgets").
 - Quote throughput per merchant grows with its addresses: quotes spread over
   every active address of the merchant, least loaded first.
-- Workers hold a fenced lease per role. A second replica of a role is safe
-  (the loser of the lease waits) but is not what the `Recreate` strategy
-  intends: the way to more throughput is a larger batch or a shorter interval
-  in that role's `GATEWAY_<ROLE>_*` settings, not a second copy.
+- Workers hold a fenced lease per role, and the leased roles run two
+  replicas behind a PodDisruptionBudget, spread across nodes and zones: the
+  lease decides which replica works and fences the other out of writes, so
+  a node drain or a rollout moves the work instead of stopping it
+  (`docs/decisions/0006`). A second replica buys availability, not
+  throughput: the way to more throughput is a larger batch or a shorter
+  interval in that role's `GATEWAY_<ROLE>_*` settings. The expiry worker
+  stays at one replica; it takes no lease and its sweep is idempotent.
 - A second chain provider is a second observer Deployment with its own
   source, secret and login role, and a chain source row in a different
   provider group.

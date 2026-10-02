@@ -125,18 +125,18 @@ mod tests {
         seed: u8,
     ) -> Result<(SigningKey, gateway_domain::AddressKey), Box<dyn std::error::Error>> {
         let key = SigningKey::from_bytes(&[seed; 32].into())?;
-        let public = key.verifying_key().to_sec1_point(false);
+        let public = key.verifying_key().to_encoded_point(false);
         let hash = keccak256(&public.as_bytes()[1..]);
         Ok((key, from_evm_bytes(&hash[12..])?))
     }
 
     /// What a TRON wallet returns for `signMessageV2`: r || s || v with v = 27/28.
-    fn sign(key: &SigningKey, message: &str) -> String {
+    fn sign(key: &SigningKey, message: &str) -> Result<String, Box<dyn std::error::Error>> {
         let digest = message_digest(message);
-        let (signature, recovery) = key.sign_prehash_recoverable(digest.as_slice());
+        let (signature, recovery) = key.sign_prehash_recoverable(digest.as_slice())?;
         let mut raw = signature.to_bytes().to_vec();
         raw.push(27 + recovery.to_byte());
-        alloy_primitives::hex::encode(raw)
+        Ok(alloy_primitives::hex::encode(raw))
     }
 
     #[test]
@@ -144,7 +144,7 @@ mod tests {
     {
         let (key, address) = wallet(7)?;
         let issued = OffsetDateTime::UNIX_EPOCH + Duration::days(20_000);
-        let signature = sign(&key, &ownership_statement(MERCHANT, &address, issued)?);
+        let signature = sign(&key, &ownership_statement(MERCHANT, &address, issued)?)?;
         assert_eq!(
             verify_ownership(
                 MERCHANT,
@@ -165,7 +165,7 @@ mod tests {
         let (_, other_address) = wallet(8)?;
         let issued = OffsetDateTime::UNIX_EPOCH + Duration::days(20_000);
         let now = issued + Duration::hours(1);
-        let signature = sign(&key, &ownership_statement(MERCHANT, &address, issued)?);
+        let signature = sign(&key, &ownership_statement(MERCHANT, &address, issued)?)?;
 
         // The key signed for its own address; it proves nothing about another.
         assert_eq!(

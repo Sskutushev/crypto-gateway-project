@@ -136,10 +136,13 @@ that adds it. A release note says "expand-only" or explains why it is not.
    git push origin vX.Y.Z
    ```
 
-4. `ci.yml` runs on the tag: every check, the image, the SBOM and the scan;
-   then a refusal to publish when `CHANGELOG.md` has no `[X.Y.Z]` section or
-   the Cargo version differs; then the push to GHCR and a keyless cosign
-   signature on the pushed digest.
+4. `ci.yml` runs on the tag: every check, then the `image` job (build,
+   SBOM, scan, and a refusal when `CHANGELOG.md` has no `[X.Y.Z]` section or
+   the Cargo version differs), then the `publish` job, which exists only on
+   a tag and is the only job holding a registry token and an OIDC identity:
+   it builds again from the same commit, pushes to GHCR with provenance,
+   takes the SBOM and the scan from the published digest itself, signs the
+   digest with keyless cosign and attaches the SBOM to it as an attestation.
 5. `release.yml` runs on the same tag: it extracts the `[X.Y.Z]` section of
    `CHANGELOG.md` (and fails when it is missing), waits for the `ci` run of
    the tag to succeed, resolves the image digest, verifies its signature, and
@@ -172,5 +175,18 @@ To accept any release tag of this repository rather than one version, use
 A signature made by a fork, another workflow or a branch build fails both
 forms.
 
-The SBOM attached to the release is SPDX JSON, generated from the image the
-same workflow built and scanned.
+The SBOM attached to the release is SPDX JSON, generated from the published
+digest itself; the same document is attached to the image as a cosign
+attestation and can be read from the registry without the release:
+
+```sh
+cosign verify-attestation --type spdxjson \
+  ghcr.io/sskutushev/crypto-gateway-project@sha256:<digest> \
+  --certificate-identity 'https://github.com/Sskutushev/crypto-gateway-project/.github/workflows/ci.yml@refs/tags/vX.Y.Z' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Every GitHub Action the workflows run is pinned to a commit SHA (the version
+is the comment beside it), and both Docker base images are pinned by digest;
+a moved tag or branch upstream cannot change what a release is built with.
+Updates to those pins arrive as their own pull requests.
