@@ -252,7 +252,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: SBOM
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           image: crypto-gateway-project:ci
           format: spdx-json
@@ -334,7 +334,7 @@ jobs:
           esac
           echo "ref=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/crypto-gateway-project@${DIGEST}" >> "$GITHUB_OUTPUT"
       - name: SBOM of the published digest
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           image: ${{ steps.image.outputs.ref }}
           format: spdx-json
